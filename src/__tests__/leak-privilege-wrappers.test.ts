@@ -33,9 +33,31 @@ const SPEC = {
       ...['--pty', '--no-pty', '--help', '--version'],
     ],
   },
+  'systemd-run': {
+    value: [
+      ...['-H', '-M', '-E', '-p', '-u', '--host', '--machine', '--unit', '--property', '--description'],
+      ...['--slice', '--expand-environment', '--service-type', '--uid', '--gid', '--nice'],
+      ...['--working-directory', '--root-directory', '--setenv', '--json', '--job-mode', '--background'],
+      ...['--path-property', '--socket-property', '--timer-property', '--on-active', '--on-boot'],
+      ...['--on-startup', '--on-unit-active', '--on-unit-inactive', '--on-calendar'],
+    ],
+    flag: [
+      ...['-h', '-r', '-t', '-T', '-P', '-q', '-v', '-G', '-d', '-R', '--help', '--version'],
+      ...['--no-ask-password', '--user', '--system', '--scope', '--slice-inherit', '--no-block'],
+      ...['--remain-after-exit', '--wait', '--send-sighup', '--same-dir', '--same-root-dir', '--pty'],
+      ...['--pty-late', '--pipe', '--quiet', '--verbose', '--collect', '--ignore-failure', '--no-pager'],
+      ...['--on-timezone-change', '--on-clock-change'],
+    ],
+  },
 } as const
 
-const SHELL_OPTIONS = { doas: ['-s'], run0: ['-i', '--via-shell'], pkexec: [], su: [] } as const
+const SHELL_OPTIONS = {
+  doas: ['-s'],
+  run0: ['-i', '--via-shell'],
+  pkexec: [],
+  su: [],
+  'systemd-run': ['-S', '--shell'],
+} as const
 
 type Wrapper = keyof typeof SPEC
 const WRAPPERS = Object.keys(SPEC) as Wrapper[]
@@ -45,9 +67,12 @@ const tableOptions = (name: Wrapper, kind: 'Value' | 'Flag' | 'Shell') => {
   return [...[...t[`short${kind}`]].map(c => `-${c}`), ...t[`long${kind}`]].sort()
 }
 
+/** A unit property must name an allow-listed property, so its decoy cannot look like an option. */
+const PROPERTY_OPTIONS = ['-p', '--property', '--path-property', '--socket-property', '--timer-property']
+
 /** Rows for every option the spec lists; su's -s takes a shell, so its decoy cannot look like an option. */
 const valueRows = WRAPPERS.flatMap(w =>
-  SPEC[w].value.filter(o => !['-s', '--shell'].includes(o)).map(o => [w, o] as const),
+  SPEC[w].value.filter(o => ![...PROPERTY_OPTIONS, '-s', '--shell'].includes(o)).map(o => [w, o] as const),
 )
 const flagRows = WRAPPERS.flatMap(w => SPEC[w].flag.map(o => [w, o] as const))
 const gluedRows = valueRows.filter(([w, o]) => w !== 'pkexec' && o !== '-s')
@@ -125,6 +150,96 @@ describe('run0', () => {
     expect(run('run0', '-i', 'git', 'push')).toEqual({ shell: ['sh', '-c', 'git push'] })
     expect(run('run0', '--via-shell')).toEqual({ shell: ['sh'] })
     expect(run('run0', '--via-shell', 'echo', 'a b')).toEqual({ shell: ['sh', '-c', 'echo a\\ b'] })
+  })
+})
+
+describe('systemd-run', () => {
+  it.each([
+    [['systemd-run', 'git', 'push'], 1],
+    [['systemd-run', '--user', '-t', 'make'], 3],
+    [['systemd-run', '-E', 'A=1', '--uid=root', 'ls'], 4],
+    [['systemd-run', '--', 'git', 'push'], 2],
+  ])('finds the command in %j at %i', (words, at) => {
+    expect(run(...words)).toEqual({ at })
+  })
+
+  it('runs a shell for -S and --shell', () => {
+    expect(run('systemd-run', '-t', '-S')).toEqual({ shell: ['sh'] })
+    expect(run('systemd-run', '--shell')).toEqual({ shell: ['sh'] })
+  })
+
+  it.each([
+    [['systemd-run', '-E', 'P=push', 'git', '$P']],
+    [['systemd-run', 'git', '${P}']],
+    [['systemd-run', 'sh', '-c', 'git $P']],
+  ])('fails closed on a $ it would expand from the unit environment in %j', words => {
+    expect(run(...words)).toBeUndefined()
+  })
+})
+
+const ALLOWED = [
+  ...['CPUQuota=50%', 'CPUWeight=10', 'StartupCPUWeight=10', 'AllowedCPUs=0-1', 'MemoryMin=1M'],
+  ...['MemoryLow=1M', 'MemoryHigh=1G', 'MemoryMax=1G', 'MemorySwapMax=0', 'TasksMax=10', 'IOWeight=10'],
+  ...['Nice=5', 'CPUSchedulingPolicy=batch', 'CPUSchedulingPriority=1', 'RuntimeMaxSec=60'],
+  'TimeoutStopSec=5',
+]
+const REFUSED = [
+  ...['StandardInputText=git push --no-verify', 'StandardInputData=Z2l0IHB1c2gK', 'StandardInput=file:/tmp/s'],
+  ...['Environment=GIT_CONFIG_COUNT=0', 'EnvironmentFile=/tmp/e', 'WorkingDirectory=/tmp', 'User=root'],
+  ...['ExecStart=/bin/true', 'ExecStartPre=/bin/true', 'ExecStartPost=/bin/true', 'ExecCondition=/bin/true'],
+  ...['ExecReload=/bin/true', 'ExecStop=/bin/true', 'ExecStopPost=/bin/true', 'execstart=/bin/true'],
+  ...[' ExecStartPre=/bin/true', ' MemoryMax=1G', 'MemoryMax =1G', 'MemoryMax', ''],
+]
+/** Each way to spell a property option, as words before the command. */
+const SPELLINGS: readonly [string, (p: string) => string[]][] = [
+  ['systemd-run -p', p => ['-p', p]],
+  ['systemd-run -p glued', p => [`-p${p}`]],
+  ['systemd-run -tp', p => ['-tp', p]],
+  ['systemd-run --property', p => ['--property', p]],
+  ['systemd-run --property=', p => [`--property=${p}`]],
+  ['run0 --property', p => ['--property', p]],
+  ['run0 --property=', p => [`--property=${p}`]],
+]
+const propertyRows = (properties: readonly string[]) =>
+  SPELLINGS.flatMap(([label, spell]) => properties.map(p => [label, p, spell] as const))
+const wrapper = (label: string) => label.split(' ')[0] as string
+
+describe('a unit property lands on the command only when allow-listed', () => {
+  it.each(propertyRows(ALLOWED))('%s %j', (label, p, spell) => {
+    const before = spell(p)
+    expect(run(wrapper(label), ...before, 'make')).toEqual({ at: before.length + 1 })
+  })
+
+  it.each(propertyRows(REFUSED))('%s %j fails closed', (label, p, spell) => {
+    expect(run(wrapper(label), ...spell(p), 'sh')).toBeUndefined()
+  })
+
+  it.each([
+    [['systemd-run', '--user', '-p', 'MemoryMax=1G', '-p', 'CPUQuota=50%', 'make'], 6],
+    [['run0', '--property=Nice=5', 'apt', 'update'], 2],
+  ])('%j runs the command at %i', (words, at) => {
+    expect(run(...words)).toEqual({ at })
+  })
+
+  it.each([
+    [['systemd-run', '-p', 'StandardInputText=git push --no-verify', 'sh']],
+    [['systemd-run', '--user', '--property=StandardInputText=gh\\ pr\\ list', 'bash']],
+    [['run0', '--property=StandardInputText=git push', 'sh']],
+    [['run0', '-p', 'StandardInput=file:/tmp/s', 'sh']],
+    [['systemd-run', '-p', 'Environment=GIT_CONFIG_COUNT=0', 'git', 'status']],
+    [['systemd-run', '-p', ' ExecStartPre=/bin/true', 'ls']],
+    [['systemd-run', '-p', 'MemoryMax=1G', '-p', 'ExecStopPost=/bin/true', 'ls']],
+  ])('%j fails closed', words => {
+    expect(run(...words)).toBeUndefined()
+  })
+
+  it.each([
+    [['systemd-run', '--path-property=PathExists=/tmp/x', 'ls']],
+    [['systemd-run', '--socket-property=ListenStream=1', 'ls']],
+    [['systemd-run', '--timer-property=AccuracySec=1s', 'ls']],
+    [['systemd-run', '--timer-property', 'MemoryMax=1G', 'ls']],
+  ])('%j fails closed: a path, socket or timer property denies any value', words => {
+    expect(run(...words)).toBeUndefined()
   })
 })
 
