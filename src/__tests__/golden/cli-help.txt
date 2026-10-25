@@ -1273,6 +1273,8 @@ Commands:
                                                keep its branch
   resume [options] <name>                      bring a stopped agent back on its own conversation
                                                (headless by default)
+  move-account [options] <account>             move a live session (default: this one) to another
+                                               account, resuming its same conversation
   worktrees [options]                          worktrees agent-chat is holding, and which nobody is
                                                using
   surface <name>                               bring a headless agent into a window you can answer
@@ -1360,6 +1362,17 @@ Options:
   --host <value>           the machine to resume on, through its host launcher (default: the
                            broker's)
   -h, --help               display help for command
+
+=== agent-chat agent move-account
+Usage: agent-chat agent move-account [options] <account>
+
+move a live session (default: this one) to another account, resuming its same conversation
+
+Options:
+  --name <value>  the session to move (default: the one CLAUDE_CODE_SESSION_ID names)
+  --force         lift the usage ceilings only; every other refusal stands
+  --dry-run       run every account check and end nothing
+  -h, --help      display help for command
 
 === agent-chat agent worktrees
 Usage: agent-chat agent worktrees [options]
