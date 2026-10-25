@@ -418,6 +418,8 @@ macOS `script [file [command ...]]`, which runs its trailing words, is not cover
 | `gh api` whose `-f`, `-F` or `--input` values have a finding                                                                                                                                                                                    | the same text by another route                              |
 | a command word that is an expansion, followed by the words of one of those gh commands                                                                                                                                                          | `$G pr create` may run gh unscanned                         |
 | a command word that is an expansion, followed by a command that any row above denies                                                                                                                                                            | `$E gh pr create` runs gh when `E` is empty                 |
+| an unquoted command word the shell may split, reading a value the line sets unreadably (`read`, `mapfile`, `readarray`, `for`, `x=$(...)`), or a `$(...)` on a line that names git or gh                                                        | `read -r l <<< '<push>'; $l` runs the push                  |
+| a command word that is an expansion run as a shell, whose `-c` string or fed text a row above denies, or whose fed text the guard cannot read                                                                                                   | `b=bash; echo '<push>' \| $b` runs it                       |
 | `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                                                                                                                                                          | the text may be a push or a gh command                      |
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                                                                                                                                            | `git rebase -x` runs a shell command unseen                 |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)                                                                                                                                | git passes it on to every git that command runs             |
@@ -605,6 +607,21 @@ them apart, and a sourced file can run `git push --no-verify` itself anyway. A w
 would not take as an alias name, one that starts with anything but a letter or holds anything
 but letters, digits and `-`, is never looked up. `echo pnv | xargs git` is denied: the
 subcommand comes from stdin, so the guard reads it as a word it cannot resolve (below).
+
+A command word the shell may split into several is itself a whole command the guard never sees
+(CC-1411). An unquoted `$l`, `${l}`, `${a[@]}`, `"${a[@]}"`, zsh's `${=l}` or a `$(...)` is denied
+when what it reads is a value the guard cannot read: a variable the line names anywhere other
+than in a plain `NAME=word` of characters no shell splits (so `read`, `mapfile`, `readarray`,
+`for` and `x=$(...)` all count, wherever they sit, since a loop may run a later `read` first),
+`$1`, `$@`, `$REPLY` and the other unnamed ones, a word that names git, and a `$(...)` on a line
+that names git or gh, the same gate as `eval` of text the guard cannot read. So `read -r l <<<
+'<push>'; $l`, `while read -r l; do $l; done < f`, `mapfile -t a < f; ${a[0]}` and `$(cat f) gh
+pr create` deny, while `x=git; $x status`, `"$l"`, `$PYTHON -m pytest` and `eval "$(ssh-agent
+-s)"; npm test` stay allowed. The guard also reads every expanded command word as a shell: its
+`-c` string and the text it is fed are checked as a script, and a feed it cannot read denies on
+a line that may reach git or gh, so `b=bash; $b -c '<push>'`, `${SHELL:-bash} -c '<push>'` and
+`echo '<push>' | $(echo bash)` deny. The words xargs or find fill, and the name of a `name()`
+definition, are left to their own checks. Quote the word, or write the command out.
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
