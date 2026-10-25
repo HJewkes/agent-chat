@@ -2432,9 +2432,7 @@ const wordMayBeGit = (word: string): boolean =>
 const withEnv = (word: string, env: Env): string =>
   word.replace(REFERENCE, ref => env[ref.replace(/[${}]/g, '')] ?? '')
 
-/** A shell git starts reaches git whatever its text says: git's exec-path is first on its PATH (TP-4236). */
 function lineMayReachGit(scope: Scope, ctx: GuardContext): boolean {
-  if (scope.gitShell) return true
   scope.hiddenStarts.reachesGit ??= mayReachGit(scope.line, ctx.env)
   return scope.hiddenStarts.reachesGit
 }
@@ -3364,8 +3362,7 @@ function checkProgramEnvLine(
   if (events.includes(EXT_LISTED)) return REASONS.extProtocol
   const scan = uses.flatMap(use => use.scan).join(' ')
   // A nested script cannot show the git its outer line runs, so it is judged by that line (TP-2499).
-  const reaches =
-    scope.gitShell === true || mayReachGit(scan, ctx.env) || (depth > 0 && lineMayReachGit(scope, ctx))
+  const reaches = mayReachGit(scan, ctx.env) || (depth > 0 && lineMayReachGit(scope, ctx))
   if (!reaches) return undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
