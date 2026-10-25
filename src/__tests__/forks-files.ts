@@ -46,6 +46,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/leak-pretool-push-expansion.test.ts',
   'src/__tests__/leak-pretool-job-wrappers.test.ts',
   'src/__tests__/leak-pretool-exec-wrappers.test.ts',
+  'src/__tests__/leak-pretool-busybox.test.ts',
 ]
 
 /**
