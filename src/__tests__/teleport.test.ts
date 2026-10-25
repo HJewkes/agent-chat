@@ -756,6 +756,27 @@ describe('the descendant', () => {
     expect(JSON.parse(env.AGENT_CHAT_SUBSCRIPTIONS ?? 'null')).toEqual(subscriptions)
   })
 
+  // CC-1611: seats kept the pre-CC-1500 spawn-time opt-in by teleporting it forward, generation after generation.
+  // Mutation caught: carrying `spawnedBy` subscriptions across a teleport again.
+  it('does not carry a spawned-agents subscription, so the successor is not pushed its workers’ attaches', async () => {
+    const agentId = await spawnAgent()
+    const legacy = { selector: { spawnedBy: 'self' as const }, kinds: ['agent_attached' as const, 'agent_exited' as const] }
+    const tagged = { selector: { tag: 'cc-20' }, kinds: ['registered' as const] }
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { subscriptions: [legacy, tagged] }),
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    const carried = JSON.parse(planFor(result.agentId as string).env.AGENT_CHAT_SUBSCRIPTIONS ?? '[]')
+    const successor = fakeConn()
+    core.registry.register(successor, { name: 'seat', workingOn: 'w', cwd: workspace(), pid: 1, subscriptions: carried })
+    core.registry.recordSpawn(successor, 'worker')
+
+    expect(carried).toEqual([tagged])
+    expect(core.registry.subscribersFor({ kind: 'agent_attached', subject: 'worker' })).toEqual([])
+  })
+
   /**
    * The whole payoff: the plan and the MCP config are rebuilt now, so the
    * descendant's MCP subprocess execs the CURRENT cli entry and reads the
