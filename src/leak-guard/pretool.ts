@@ -853,7 +853,8 @@ const SUDO_SHELL_LONG = new Set(['--shell', '--login'])
 
 /**
  * The command sudo runs, or undefined on a long option this guard does not know, an ambiguous -h,
- * or an option word the shell expands, which may be any option.
+ * an option word the shell expands, which may be any option, or an option value the shell expands, which an
+ * empty or split expansion turns into the command word (as readOption in privilege-wrappers.ts denies).
  */
 function dropSudoOptions(words: readonly string[], i: number): SudoRun | undefined {
   let shell = false
@@ -865,6 +866,7 @@ function dropSudoOptions(words: readonly string[], i: number): SudoRun | undefin
     if (a.includes(LIVE)) return undefined
     const option = a.startsWith('--') ? sudoLongOption(a) : sudoCluster(a, i + 1 < words.length)
     if (option === undefined) return undefined
+    if (option.width === 1 && words[i + 1]?.includes(LIVE)) return undefined
     shell ||= option.shell
     envShell ||= option.envShell
     i += option.width

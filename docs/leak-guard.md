@@ -338,7 +338,8 @@ It denies a Bash command when any simple command in it, after `env`, `command`, 
 short clusters such as `-it 5` whose value letter takes the next word), so a value is never read as
 the command. Under `sudo` the guard treats the directory and config as
 unknown, because sudo resets HOME and `-D`, `-R` and `-i` move the cwd; a `sudo` long option it does
-not know, an option word the shell expands, or a bare `-h` before another word (`--help` or `--host`,
+not know, an option word or option value the shell expands (an empty `$U` in `sudo -u $U` shifts the
+command word, CC-1291), or a bare `-h` before another word (`--help` or `--host`,
 by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, so the guard checks
 `sh -c` on the words joined and escaped as sudo does, or the shell's stdin when no words follow;
 an expansion or xargs input among those words denies (CC-1209).
