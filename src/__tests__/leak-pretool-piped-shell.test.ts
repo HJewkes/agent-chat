@@ -237,12 +237,13 @@ const PIPED_SUBSTITUTIONS = [
   `printf '${PUSH}\\n' | cat | $(bash)`,
 ]
 
-// Fail closed on a heredoc or redirect too, though bash and dash open it only after the substitution
-// ran. Mutation: drop the heredoc or the unread redirect from ownsStdin.
+// Fail closed on a heredoc or redirect too, though shells open it only after the substitution ran.
+// Mutation: drop the heredoc or the unread redirect from ownsStdin. A redirect on an expanded
+// command word (`$(bash) < push.sh`) denies without this, so the redirect row names `echo`.
 const REDIRECTED_SUBSTITUTIONS = [
   `$(bash) <<< '${PUSH}'`,
   `$(bash) <<'EOF'\n${PUSH}\nEOF`,
-  `$(bash) < push.sh`,
+  `echo $(bash) < push.sh`,
 ]
 
 // Mutation: make every command in a substitution read 'unknown'.
