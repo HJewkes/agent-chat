@@ -23,6 +23,7 @@ import {
 import { crashCause, type FailOpen } from './failopen.js'
 import {
   configPrograms,
+  configWriteScript,
   extEnablerWrite,
   extPrograms,
   listsExt,
@@ -86,9 +87,10 @@ import {
   hasUnreadableConfig,
   hasUnreadableOption,
 } from './git-unresolved.js'
-import { pushFlagMayForm } from './push-words.js'
+import { pushFlagMayForm, pushOptionsEnd } from './push-words.js'
 import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
+import { globMayFormPush } from './glob-push.js'
 import {
   indirectFeed,
   isNothing,
@@ -203,6 +205,7 @@ const MAX_FED_CHECKS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
+  globPush: `leak-guard: an unquoted glob or brace word here may expand to push or --no-verify, which the guard reads as written, so this may be a push that skips the pre-push leak scan. Write the word out, or quote it. ${DOCS}`,
   gitConfig: `leak-guard: git -c or --config-env on core.hooksPath or an alias would bypass the pre-push leak scan. ${DOCS}`,
   configWrite: `leak-guard: writing core.hooksPath, or an alias that skips hooks, is not allowed for agents. ${DOCS}`,
   assignmentSubscript: `leak-guard: a word that opens an assignment subscript, NAME[...], but is not a complete NAME[idx]=value, so the guard cannot tell where the command starts. Keep the subscript free of blanks, or run the command without a prefix assignment. ${DOCS}`,
@@ -236,6 +239,7 @@ export const REASONS = {
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
   configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
+  configProgramWrite: `leak-guard: this git config write may store a value git later runs as a program (core.pager, core.editor, core.sshCommand, an alias and the like), and the guard cannot read the key or the value. Write them out literally. ${DOCS}`,
   programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
   operatorExpansion: `leak-guard: this line holds a \${...} expansion with a quote, a nested expansion or a flag, or one with an operator beside a gh command, which the guard cannot read the way the shell will. Compute the value in an earlier Bash call, or write it out. ${DOCS}`,
@@ -1071,8 +1075,8 @@ export function checkGit(args: readonly string[]): string | undefined {
     i = next
   }
   const [sub, ...rest] = args.slice(i)
-  const opts = rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest
-  if (sub === 'push') return opts.some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
+  if (sub === 'push')
+    return rest.slice(0, pushOptionsEnd(rest, 0)).some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
   if (sub === 'config') return configWritesGuard(rest)
   return undefined
 }
@@ -1141,10 +1145,12 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkPrograms(run, ctx, scope, depth) ??
     checkExtEnablers(run, scope) ??
     checkTrustWrites(run, scope) ??
+    checkProgramWrites(run, ctx, scope, depth) ??
     checkFedPush(run, scope) ??
     checkPrivilegedPush(run, scope) ??
     checkHiddenSubcommand(run, scope) ??
-    checkAlias(run, ctx, scope, depth)
+    checkAlias(run, ctx, scope, depth) ??
+    checkGlobPush(run, scope)
   )
 }
 
@@ -1185,6 +1191,12 @@ function checkPushExpansion(run: GitRun, scope: Scope): string | undefined {
     ? REASONS.noVerify
     : undefined
 }
+
+/** A glob or brace word the guard reads as written that may expand to push or `--no-verify` (TP-4235). */
+const checkGlobPush = (run: GitRun, scope: Scope): string | undefined =>
+  globMayFormPush(run, subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams)))
+    ? REASONS.globPush
+    : undefined
 
 /** git push options that take no value, so a `--` after them ends the options. */
 const PUSH_FLAGS = new Set(
@@ -1267,6 +1279,21 @@ function checkTrustWrites(run: GitRun, scope: Scope): string | undefined {
   }
   // An unmatched option makes git itself refuse; an unread word naming a template stays the env gap TP-2444 accepts.
   return sub !== undefined && templateOption(sub, args) === true ? REASONS.templateDir : undefined
+}
+
+/**
+ * A `git config` write that persists a value a later git runs as a program (TP-4240), checked as
+ * the `-c` form is: the guard does not read that later git's config, so it judges the value here.
+ */
+function checkProgramWrites(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  if (!run.tied) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (run.resolved[at] !== 'config') return undefined
+  const script = configWriteScript({ resolved: run.resolved.slice(at + 1), written: run.args.slice(at + 1) })
+  if (script === undefined) return REASONS.configProgramWrite
+  return script === null
+    ? undefined
+    : checkShellText(script, ctx, { ...scope, cwd: undefined, env: undefined }, depth)
 }
 
 const unresolvedReason = (run: GitRun): string =>

@@ -17,6 +17,8 @@ const DEFAULT = '\x02'
 const BRACKET = String.raw`\[[!^]?\]?(?:\[:\w+:\]|[^\]/])*\]`
 const SEGMENT = new RegExp(String.raw`(?:[\w.?*#-]|${BRACKET})+`, 'g')
 const PIECE = new RegExp(String.raw`${BRACKET}|[\s\S]`, 'g')
+/** zsh's EXTENDED_GLOB operators, which a line may switch on with `setopt extendedglob`; the splitter leaves them unmarked. */
+export const EXTENDED_GLOB = /[#^~]/
 const INNERMOST_GROUP = /[{(]([^{}()]*)[})]/
 const RANGE = /^(?:(-?\d+)\.\.(-?\d+)|([A-Za-z])\.\.([A-Za-z]))(?:\.\.-?\d+)?$/
 const MAX_LENGTH = 1024
@@ -91,9 +93,19 @@ function pieceSource(piece: string, previous: string | undefined): string {
   return piece.length > 1 ? bracketClass(piece) : escapeRegExp(piece)
 }
 
+/**
+ * Whether a glob segment may match `name`. zsh's `^x` (anything but x) and `x~y` (x but not y) are
+ * read as `*` from the operator on, which matches at least as much; a leading `~` is the home directory.
+ */
 function segmentMatches(segment: string, name: string): boolean {
   const source: string[] = []
-  for (const piece of segment.match(PIECE) ?? []) source.push(pieceSource(piece, source.at(-1)))
+  for (const piece of segment.match(PIECE) ?? []) {
+    if (piece === '^' || (piece === '~' && source.length > 0)) {
+      source.push('.*')
+      break
+    }
+    source.push(pieceSource(piece, source.at(-1)))
+  }
   try {
     return new RegExp(`^${source.join('')}$`).test(name)
   } catch {
@@ -101,14 +113,23 @@ function segmentMatches(segment: string, name: string): boolean {
   }
 }
 
+const plainText = (raw: string): string =>
+  decodeAnsiC(raw).replace(REFERENCE, '').replace(EXPANSION_OPEN, `{${DEFAULT}`).replace(QUOTING, '')
+
 /** Whether the word may expand to a path segment `name`, by the same expansions as mayExpandToGit. */
 export function mayExpandTo(raw: string, name: string): boolean {
   if (raw.length > MAX_LENGTH) return true
-  const plain = decodeAnsiC(raw)
-    .replace(REFERENCE, '')
-    .replace(EXPANSION_OPEN, `{${DEFAULT}`)
-    .replace(QUOTING, '')
-  return expandedWords(plain).some(word => (word.match(SEGMENT) ?? []).some(seg => segmentMatches(seg, name)))
+  return expandedWords(plainText(raw)).some(word =>
+    (word.match(SEGMENT) ?? []).some(seg => segmentMatches(seg, name)),
+  )
+}
+
+/** Whether the word may expand to the whole word `name`, as `--no-verif?` may to `--no-verify` and `feat/*` may not. */
+export function mayExpandToWord(raw: string, name: string): boolean {
+  if (raw.length > MAX_LENGTH) return true
+  return expandedWords(plainText(raw)).some(word =>
+    word.split(/\s+/).some(part => segmentMatches(part, name)),
+  )
 }
 
 export const mayExpandToGit = (raw: string): boolean => mayExpandTo(raw, 'git')
