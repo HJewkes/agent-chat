@@ -461,10 +461,12 @@ export async function agentSpawn(
   // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
   // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
   // CC-1059: `--host` names the machine to launch on; absent, a remote broker hands the launch back here.
+  // TP-4214: `--account` names the account or asks for the least-used one; the broker picks it.
   options: {
     briefing?: string
     briefStdin?: boolean
     configDir?: string
+    account?: string
     task?: string
     role?: string
     surface?: SurfaceName
@@ -492,6 +494,7 @@ export async function agentSpawn(
       cwd: process.cwd(),
       ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
       ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
+      ...(options.account === undefined ? {} : { account: options.account }),
       ...(options.task === undefined ? {} : { task: options.task }),
       ...(options.role === undefined ? {} : { workRole: options.role }),
       ...(options.surface === undefined ? {} : { surface: options.surface }),
@@ -510,6 +513,7 @@ export async function agentSpawn(
   )
 
   for (const warning of res.warnings ?? []) console.log(warning)
+  if (res.account !== undefined) console.log(`account: ${res.account}`)
   const on = res.host === undefined ? '' : ` on ${res.host}`
   console.log(res.ok ? `Spawned ${res.name} (${res.agentId})${on}.` : `Not spawned: ${res.reason}`)
   if (!res.ok && res.code !== undefined)

@@ -14,6 +14,7 @@ import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
 import { describeMirror, readMirrorFacts } from '../mirror/status.js'
 import { heldClaims, isStalled, readLedger } from '../agents/burndown/ledger.js'
 import { loadResolvedConfig } from '../agents/burndown/settings-store.js'
+import { readSeatPolicy, seatPolicyPath, type SeatPolicyState } from '../agents/seat-policy.js'
 import { eligibleCount } from '../agents/burndown/tick.js'
 import {
   burndownLedgerPath,
@@ -466,6 +467,21 @@ async function checkStatusline(live: boolean): Promise<Check[]> {
 /** Files only; a missing config is a state, not a fault. */
 const checkMirror = (): Check => describeMirror(readMirrorFacts())
 
+/** An absent policy is the default; an invalid one fails because the owner meant to grant something. */
+export function checkSeatPolicy(state: SeatPolicyState = readSeatPolicy()): Check {
+  const file = seatPolicyPath()
+  if (state.status === 'absent')
+    return { name: 'seat-policy', status: 'ok', detail: `no ${file}, no root seats` }
+  if (state.status === 'invalid') {
+    return { name: 'seat-policy', status: 'fail', detail: `${file} ignored, no root seats: ${state.reason}` }
+  }
+  const seats = Object.keys(state.policy.seats)
+  const roots = `${seats.length} root seat${seats.length === 1 ? '' : 's'}${seats.length > 0 ? `: ${seats.join(', ')}` : ''}`
+  const ignored = state.ignored.length > 0 ? `; ignored keys: ${state.ignored.join(', ')}` : ''
+  const status = seats.length === 0 || ignored !== '' ? 'warn' : 'ok'
+  return { name: 'seat-policy', status, detail: `${roots}${ignored}` }
+}
+
 /** Whether the tick may act, what the ledger holds, and how many claims wait on the human. */
 function checkBurndown(): Check {
   try {
@@ -507,6 +523,7 @@ export async function runChecks(): Promise<Check[]> {
     ...(await checkStatusline(live)),
     checkMirror(),
     checkBurndown(),
+    checkSeatPolicy(),
   ]
 }
 

@@ -357,8 +357,13 @@ properties (`MemoryMax`, `CPUQuota`, `Nice` and the like), since others such as 
 without `-u` it reads as `su`. `machinectl shell [host] <command>` runs the words after the machine
 name; its other verbs run no command. `su -c '<line>'`, `doas -s`, `run0 -i` and `--via-shell`, and a
 bare `su`, `run0` or `pkexec` run a shell, so the guard checks that shell's script or its stdin, with
-the `$SHELL` rule below; xargs input to one denies. `sg`, `gosu`, `su-exec`, `chpst`, `setuidgid`,
-`s6-setuidgid` and `capsh --user` are not covered.
+the `$SHELL` rule below; xargs input to one denies. `sg <group> [-c] <command>` runs its one command
+in a shell, so the guard checks it as a script; a second candidate command (util-linux and shadow
+pick differently) or any word the shell expands denies. `newgrp`, the binary `sg` links to, is read
+the same way; with no command it runs a shell on stdin, which the guard checks. `capsh` runs nothing unless `--` or `-+`
+hands the words after it to bash or a `--shell=` shell, which the guard checks; a `--shell=` that is
+not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `gosu`, `su-exec`,
+`chpst`, `setuidgid` and `s6-setuidgid` are not covered.
 
 Behind any of these wrappers, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or
 `find -exec`) and any `gh` or `agent-chat gh-write`, reads included, deny outright. sudo's
@@ -401,6 +406,18 @@ derives as it derives git's config env: from the command's assignments (`env` in
 exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named
 on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
 macOS `script [file [command ...]]`, which runs its trailing words, is not covered. `sudo -s` and `--shell` run `$SHELL` too and get the same rule; `sudo -i` runs the passwd-entry shell, so a `SHELL` on the line does not change it.
+
+`prlimit`, GNU `time` (a bare `time` is read both ways and denies if either reading does: as GNU
+time, which dash, a quote, a pipe or `command` give, and as the bash and zsh keyword, which skips
+every option word, since a word such as `-o` after it is a command that may run the rest),
+`numactl`, `nsenter`, `chroot <root>`, `setarch [<arch>]` and its `linux32`, `linux64`, `i386`,
+`x86_64` and `uname26` names, `enosys`, `uclampset`, `coresched <function>` and `busybox setsid`
+are read the same way, each from its own binary's getopt string (CC-1424). `nsenter`, `chroot`
+and `setarch` with no command run a shell, read as one reading stdin. `coresched` permutes, so its
+command is read only when it ends the line with no option among it, and a `chroot` command word
+starting with `-` denies, since uutils' chroot may read it as an option. `scriptlive`, which types a
+log file into what it runs, and `busybox` with any applet but `setsid`, deny on a line that may
+reach git or gh.
 
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -1560,10 +1577,16 @@ Not covered, by design or by cost:
   `diff <(git show a:f) <(git show b:f)` and a process substitution running no shell stay
   allowed.
 
-  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 and
-  CC-1412 track them, with a CC-1408 follow-up for the shells outside the list:
-  - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
-    the backtick form, and `x=$( bash )`;
+  A shell in a command substitution reads the stdin of the command it sits in (CC-1412):
+  `echo P | $(bash)`, the backtick form, `echo P | $( (bash) )`, `echo P | $( $(bash) )` and
+  `echo P | x=$(bash)`; real bash and dash run the push, while zsh runs a pipeline's last stage
+  in the shell itself. When that command has a pipe, heredoc, here-string or redirect of its own,
+  the substitution reads text the guard cannot read. This fails closed for a heredoc and a
+  redirect too (`$(bash) <<< TEXT`), though shells open those only after the substitution ran.
+  `x=$( (bash) ); git status` reads the line's own stdin and stays allowed.
+
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 tracks
+  them, with a CC-1408 follow-up for the shells outside the list:
   - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
     word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
     variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as

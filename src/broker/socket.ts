@@ -27,7 +27,7 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
-import { type Escalation, type RouteResult } from './registry.js'
+import { type EntryView, type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
 import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
@@ -55,7 +55,13 @@ import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
-import { claudeCodeAncestor, linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
+import {
+  claudeCodeAncestorOf,
+  humanProofGap,
+  linuxPeerPorts,
+  provePeerLocal,
+  type PeerPorts,
+} from './peer-locality.js'
 import { HostDirectory, type LauncherHello } from './host-directory.js'
 import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
@@ -283,6 +289,9 @@ const replyTeleport = (conn: Conn, outcome: TeleportOutcome): void =>
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
 const optionalCallerHost = (callerHost: string | undefined): { callerHost?: string } =>
   callerHost === undefined ? {} : { callerHost }
+/** CC-1614: read from the requester's own entry, never from a frame. */
+const requesterBindingOf = (entry: EntryView | undefined): { requesterBinding?: IdentityBinding } =>
+  entry?.binding === undefined ? {} : { requesterBinding: entry.binding }
 /** CC-1059: a launch report's verdict, with only a string reason kept. */
 const reportOf = (msg: { ok: unknown; reason?: unknown }): { ok: boolean; reason?: string } => ({
   ok: msg.ok === true,
@@ -346,18 +355,21 @@ export const sanitizeCallerAgent = (value: unknown): string | undefined =>
  * Code ancestor of the socket peer. It only ever lowers trust, so its absence proves no human:
  * `env -u AGENT_CHAT_NAME` drops the claim, and a caller detached from its own tree (`setsid`,
  * `nohup … &`, `tmux new -d`, `systemd-run --user`) or a raw socket write from such a process has
- * no Claude Code ancestor. Off Linux and through a forwarded socket there is no peer pid, so only
- * the claim applies. Positive proof of a human is CC-1246.
+ * no Claude Code ancestor. So CC-1246 adds positive proof: with no agent found, the spawn is the
+ * human's only when `humanProofGap` finds none, and otherwise carries the gap as `humanUnproven`.
  */
 const callerAgentOf = (
   conn: Conn,
   msg: { callerAgent?: unknown },
   peer: PeerPorts,
-): { callerAgent?: string } => {
+): Pick<SpawnRequest, 'callerAgent' | 'humanUnproven'> => {
   const claimed = sanitizeCallerAgent(msg.callerAgent)
   if (claimed !== undefined) return { callerAgent: claimed }
-  const pid = claudeCodeAncestor(conn, peer)
-  return pid === undefined ? {} : { callerAgent: `claude-code:${pid}` }
+  const peerPid = peer.peerPid(conn)
+  const agent = claudeCodeAncestorOf(peerPid, peer)
+  if (agent !== undefined) return { callerAgent: `claude-code:${agent}` }
+  const gap = humanProofGap(peerPid, peer)
+  return gap === undefined ? {} : { humanUnproven: gap }
 }
 
 /** CC-1472: a launcher's transcript verdict, kept only when well formed, so a garbled one reads as none. */
@@ -564,10 +576,12 @@ export class SocketServer {
       // registration, which the broker observed rather than took on trust. The
       // frame's copy exists for the human at the CLI, who holds no entry to read.
       ...(msg.configDir === undefined ? {} : { configDir: msg.configDir }),
+      ...(typeof msg.account === 'string' && msg.account !== '' ? { account: msg.account } : {}),
       ...(spawnerConfigDir === undefined ? {} : { spawnerConfigDir }),
       // CC-156: an observed Claude session id proves the requester is a session, whose unset var means ~/.claude.
       ...(observed?.claudeSessionId === undefined ? {} : { spawnerIsSession: true }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
       ...(anchor === undefined ? {} : { anchor }),
       ...optionalCallerHost(this.callerHostOf(conn, msg)),
       ...spawnSiteFields(msg),
@@ -603,7 +617,7 @@ export class SocketServer {
     conn: Conn,
     msg: Extract<ClientMessage, { t: 'spawn' }>,
     requestedBy: string,
-  ): Pick<SpawnRequest, 'spawnedAs' | 'callerAgent' | 'launchedBy' | 'launchReason'> {
+  ): Pick<SpawnRequest, 'spawnedAs' | 'callerAgent' | 'humanUnproven' | 'launchedBy' | 'launchReason'> {
     if (requestedBy !== HUMAN) return {}
     const spawnedAs = spawnedAsOf(msg)
     const caller = spawnedAs.spawnedAs === undefined ? callerAgentOf(conn, msg, this.peer) : {}
@@ -1084,6 +1098,7 @@ export class SocketServer {
       requestedBy: requester?.name ?? HUMAN,
       ...(anchor === undefined ? {} : { anchor }),
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
@@ -1102,6 +1117,7 @@ export class SocketServer {
       requestedBy: requester?.name ?? HUMAN,
       ...(anchor === undefined ? {} : { anchor }),
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
     })
     replySwitch(conn, outcome)
   }
@@ -2109,6 +2125,7 @@ export class SocketServer {
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
             ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+            ...requesterBindingOf(requester),
             ...(msg.noFixRoundCheck === true ? { noFixRoundCheck: true } : {}),
           })
           .then(result =>

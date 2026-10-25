@@ -216,13 +216,13 @@ export const REASONS = {
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
   jobShell: `leak-guard: flock, script, unshare or sudo -s runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
-  jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
+  jobOption: `leak-guard: an exec wrapper (setsid, flock, taskset, chrt, script, unshare, prlimit, time, numactl, nsenter, chroot, setarch, enosys, uclampset, coresched, busybox or scriptlive) with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   privilegedHidden: `leak-guard: under sudo or another privilege wrapper, the command word is an expansion the guard cannot read, on a line that may reach git or gh. Privilege drops the agent's GIT_CONFIG_* hooks path and PATH shims, so nothing would catch a push or gh call at run time. Write the command out literally, or run it without the wrapper. ${DOCS}`,
-  privilegeOption: `leak-guard: a privilege wrapper (doas, run0, systemd-run, pkexec, su, runuser, setpriv or machinectl) with an option this guard does not know, an option without its value, or an option word or value the shell expands, so it cannot tell which word is the command. Spell the option in full, or run the command without the wrapper. ${DOCS}`,
-  privilegedPush: `leak-guard: git push under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell) runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
-  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell) skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
+  privilegeOption: `leak-guard: a privilege wrapper (doas, run0, systemd-run, pkexec, su, runuser, setpriv, machinectl, sg, newgrp or capsh) with an option this guard does not know, an option without its value, or an option word or value the shell expands, so it cannot tell which word is the command. Spell the option in full, or run the command without the wrapper. ${DOCS}`,
+  privilegedPush: `leak-guard: git push under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell, sg, newgrp, capsh) runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
+  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell, sg, newgrp, capsh) skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -500,7 +500,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
       at++
-    } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
+    } else if (PREFIX_WORDS.has(head) && head !== 'time') at = dropOptions(rest, at + 1)
     else if (next !== undefined) {
       if (movesCommand(rest, at + 1, next, values, splits)) return { reason: REASONS.wrapperValue }
       at = next
@@ -561,6 +561,8 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         viaShellVar = true
       }
     } else if (JOB_WRAPPERS.has(name)) {
+      if (head === 'time')
+        siblings = [...(siblings ?? []), keywordTime(rest, at, { assigns, chdir, fed, privileged })]
       const run = jobRun(rest, at + 1, name, splits)
       if (run === undefined) return { reason: REASONS.jobOption }
       chdir ||= run.chdir === true
@@ -581,6 +583,17 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     } else return done()
   }
 }
+
+/**
+ * A bare `time` is the bash and zsh keyword or GNU time, by the shell that runs it (dash has no keyword),
+ * a quote or a pipe before it, so unwrap reads it both ways. The keyword takes only -p and --, and
+ * a later word such as `-o` is a command that may run the rest, so this reading skips every option word.
+ */
+const keywordTime = (rest: readonly string[], at: number, lead: Lead): Sibling => ({
+  ...lead,
+  assigns: [...lead.assigns],
+  words: rest.slice(dropOptions(rest, at + 1)),
+})
 
 /** The words xargs runs: unwrap has put its replace words in place, and here it appends the rest. */
 const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] => {
@@ -3166,19 +3179,30 @@ function feeds(
 /** What the line holds that changes the stdin its nested commands inherit. */
 interface LineFeeds {
   processSubstitution: boolean
+  /** The commands a substitution runs inside a command with a stdin of its own. */
+  fedSubstitutions: ReadonlySet<SimpleCommand>
 }
+
+const ownsStdin = (cmd: SimpleCommand): boolean =>
+  cmd.before === '|' || cmd.stdin !== undefined || cmd.stdinLive
 
 const lineFeeds = (cmds: readonly SimpleCommand[]): LineFeeds => ({
   processSubstitution: cmds.some(cmd => cmd.marked.some(isProcessSubstitution)),
+  fedSubstitutions: new Set(
+    cmds.filter(ownsStdin).flatMap(cmd => cmd.substitutions.flatMap(sub => sub.commands)),
+  ),
 })
 
 /**
  * The stdin a command with no pipe or heredoc of its own inherits. A process substitution's stdin
  * is the output of the command that writes to it (`echo P > >(bash)`, CC-1416), and the splitter
- * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'.
+ * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'. A
+ * command substitution's is that of the command it sits in (`echo P | $(bash)`, CC-1412), which
+ * the splitter reads only after it, so a pipe, heredoc or redirect there makes it 'unknown' too.
  */
 function inheritedFeed(cmd: SimpleCommand, scope: Scope, line: LineFeeds): Feed {
-  return line.processSubstitution && cmd.nested ? 'unknown' : scope.stdin
+  if (line.processSubstitution && cmd.nested) return 'unknown'
+  return line.fedSubstitutions.has(cmd) ? 'unknown' : scope.stdin
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -3321,13 +3345,14 @@ const workerConfigPaths = (env: NodeJS.ProcessEnv): string[] => {
     : fragments
 }
 
-const LAUNCHER_KEY_FILES = ['launcher.key', 'launcher-keys']
+const OWNER_ONLY_FILES = ['launcher.key', 'launcher-keys', 'seat-policy.json']
 
-// The per-host hello secrets (CC-1063) are owner-provisioned only, so every role is denied, coordinators included.
-const launcherKeyPaths = (env: NodeJS.ProcessEnv): string[] => {
-  const fragments = LAUNCHER_KEY_FILES.map(file => `.agent-chat/${file}`)
+// The per-host hello secrets (CC-1063) and the seat spawn policy (CC-1580) are owner-provisioned
+// only, so every role is denied, coordinators included.
+const ownerOnlyPaths = (env: NodeJS.ProcessEnv): string[] => {
+  const fragments = OWNER_ONLY_FILES.map(file => `.agent-chat/${file}`)
   const relocated = env.AGENT_CHAT_HOME
-  return relocated ? [...fragments, ...LAUNCHER_KEY_FILES.map(file => path.join(relocated, file))] : fragments
+  return relocated ? [...fragments, ...OWNER_ONLY_FILES.map(file => path.join(relocated, file))] : fragments
 }
 
 export function guardContext(
@@ -3349,7 +3374,7 @@ export function guardContext(
       '.agent-chat/git-hooks',
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
-      ...launcherKeyPaths(env),
+      ...ownerOnlyPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),

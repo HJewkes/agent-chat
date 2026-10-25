@@ -126,6 +126,8 @@ interface Entry {
    * just went away when the socket drops.
    */
   agentId?: string
+  /** CC-1614: how `agentId` was bound; set with it by `bindIdentity`, so a re-register clears it. */
+  binding?: IdentityBinding
   /**
    * Claude Code's own pid, as opposed to `pid` above, which is the MCP
    * subprocess that sent the registration.
@@ -212,12 +214,21 @@ interface Entry {
   lastSeen: number
 }
 
+/**
+ * CC-1614: how a connection came to hold its agent id. Only `launch` is proof:
+ * the frame carried the id the broker handed to a process it launched, under the
+ * name it was launched as. `session` is a self-reported session id that matched
+ * an identity, with no name check; `adopted` is an identity minted on the spot.
+ */
+export type IdentityBinding = 'launch' | 'session' | 'adopted'
+
 /** What a caller holding a connection may read back about it. */
 export interface EntryView {
   name: string
   workingOn: string
   status: SessionStatus
   agentId?: string
+  binding?: IdentityBinding
   /** Claude Code's pid. Never persisted; see `Entry.hostPid`. */
   hostPid?: number
   host?: string
@@ -889,9 +900,11 @@ export class Registry<C> {
    * NOT a second route to the takeover rule above: by the time this runs, the
    * name is already held by this connection.
    */
-  bindIdentity(conn: C, agentId: string): void {
+  bindIdentity(conn: C, agentId: string, binding: IdentityBinding): void {
     const entry = this.entries.get(conn)
-    if (entry) entry.agentId = agentId
+    if (!entry) return
+    entry.agentId = agentId
+    entry.binding = binding
   }
 
   entryFor(conn: C): EntryView | undefined {
@@ -902,6 +915,7 @@ export class Registry<C> {
       workingOn: entry.workingOn,
       status: entry.status,
       ...(entry.agentId === undefined ? {} : { agentId: entry.agentId }),
+      ...(entry.binding === undefined ? {} : { binding: entry.binding }),
       ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
       ...(entry.host === undefined ? {} : { host: entry.host }),
       registeredAt: entry.registeredAt,
