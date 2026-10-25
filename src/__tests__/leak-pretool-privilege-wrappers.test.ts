@@ -64,6 +64,51 @@ const WRAPPERS = [
     gh: ["su -c 'gh pr list'", "su root -c 'gh pr create --title t --body b'"],
     noVerify: "su -c 'git push --no-verify'",
   },
+  {
+    name: 'systemd-run, the binary run0 links to',
+    pushes: [
+      'systemd-run --user -t git push origin main',
+      'systemd-run --uid=root -t git push',
+      "systemd-run --user -t sh -c 'git push'",
+      'systemd-run -p Nice=5 --scope git push',
+      '/usr/bin/systemd-run -P git push',
+    ],
+    gh: ['systemd-run -t gh pr list', 'systemd-run --user -E A=b gh pr create --title t --body b'],
+    noVerify: 'systemd-run --user -t git push --no-verify',
+  },
+  {
+    name: 'runuser',
+    pushes: [
+      "runuser -l root -c 'git push'",
+      'runuser -u root git push origin main',
+      'runuser -u root -- git push origin main',
+      "runuser root -c 'git push'",
+    ],
+    gh: ['runuser -u root gh pr list', "runuser - root -c 'gh pr list'"],
+    noVerify: 'runuser -u root -- git push --no-verify',
+  },
+  {
+    name: 'setpriv',
+    pushes: ['setpriv --reuid=0 git push', 'setpriv --reuid 0 --regid 0 --init-groups git push origin main'],
+    gh: ['setpriv --reuid=0 gh pr list', 'setpriv --reset-env --reuid 0 gh api repos/o/r'],
+    noVerify: 'setpriv --reuid=0 git push --no-verify',
+  },
+  {
+    name: 'machinectl shell',
+    pushes: [
+      'machinectl shell root@ /usr/bin/git push',
+      'machinectl --uid=root shell .host git push origin main',
+      'machinectl shell -q root@.host git push',
+    ],
+    gh: ['machinectl shell root@ /usr/bin/gh pr list', 'machinectl shell .host gh api repos/o/r'],
+    noVerify: 'machinectl shell root@ /usr/bin/git push --no-verify',
+  },
+  {
+    name: 'sudo-rs, sudo.ws and su-rs, the other names of sudo and su',
+    pushes: ['sudo-rs git push origin main', 'sudo.ws -u root git push', "su-rs -c 'git push'"],
+    gh: ['sudo-rs gh pr list', "su-rs root -c 'gh pr list'"],
+    noVerify: 'sudo-rs git push --no-verify',
+  },
 ]
 
 describe.each(WRAPPERS)('the bypass guard reads the command behind $name', ({ pushes, gh, noVerify }) => {
@@ -83,12 +128,16 @@ describe.each(WRAPPERS)('the bypass guard reads the command behind $name', ({ pu
 const PY = 'import os;os.system("git push --no-verify origin HEAD:main")'
 
 describe('the bypass guard reads doas -s, run0 -i and su as the shell they run', () => {
-  it.each(["doas -s <<< 'git push origin main'", 'run0 --via-shell <<< "git push"', "su <<< 'git push'"])(
-    'denies %s',
-    line => {
-      deny(line, REASONS.privilegedPush)
-    },
-  )
+  it.each([
+    "doas -s <<< 'git push origin main'",
+    'run0 --via-shell <<< "git push"',
+    "su <<< 'git push'",
+    "systemd-run -t -S <<< 'git push'",
+    "runuser -u root <<< 'git push'",
+    "machinectl shell root@ <<< 'git push'",
+  ])('denies %s', line => {
+    deny(line, REASONS.privilegedPush)
+  })
 
   it.each([`echo '${PY}' | SHELL=/usr/bin/python3 doas -s`, `echo '${PY}' | SHELL=/usr/bin/python3 su -m`])(
     'denies %s, whose $SHELL the line sets',
@@ -108,6 +157,15 @@ describe('the bypass guard fails closed on a privilege wrapper it cannot read', 
     'run0 --user=$U git push',
     'su -s /usr/bin/git root -c push',
     'echo x | xargs su -c',
+    "systemd-run --user -E P=push git '$P'",
+    "systemd-run --user git '${P}'",
+    "systemd-run -p 'ExecStartPre=/usr/bin/git push' true",
+    "run0 --property='ExecStartPost=/usr/bin/git push' true",
+    'systemd-run --frob git push',
+    "runuser -u root -c 'git push'",
+    'setpriv --frob git push',
+    'machinectl --frob shell root@ git push',
+    'machinectl shell $HOST git push',
   ])('denies %s', line => {
     deny(line, REASONS.privilegeOption)
   })
@@ -130,6 +188,12 @@ describe('the bypass guard allows privilege-wrapped lines that skip no hook', ()
     'echo su',
     'doas git status',
     'doas ls; git push origin main',
+    'systemd-run --user -t ls',
+    'runuser -u nobody -- ls',
+    'setpriv --reuid=1000 ls',
+    'machinectl list',
+    'machinectl shell root@ /usr/bin/ls',
+    'sudo-rs apt update',
   ])('allows %s', line => {
     expect(checkCommand(line, ctx())).toBeUndefined()
   })
