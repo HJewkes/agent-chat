@@ -337,7 +337,7 @@ class ShellLexer {
   /**
    * Open `case` statements, each true when it opened where a `)` can end the span, and whether a
    * pattern, whose `)` ends no group, comes next. There only the case grammar bash and zsh share is
-   * read; see `noteCaseBrace`.
+   * read; see `noteBrace`.
    */
   private cases: boolean[] = []
   private patternNext = false
@@ -444,8 +444,7 @@ class ShellLexer {
   private step(): void {
     const c = this.src[this.pos] as string
     if (c === '\\' && this.src[this.pos + 1] === '\n') return void (this.pos += 2)
-    this.noteCaseBrace(c)
-    this.noteStrayBrace(c)
+    if (c === '{' || c === '}') this.noteBrace(c)
     if (this.braceWord(c)) return
     if (c === ' ' || c === '\t') return this.skip(() => this.endWord())
     if (c === '\n') return this.newline()
@@ -607,10 +606,11 @@ class ShellLexer {
   /**
    * zsh reserves a `{` or `}` in places bash does not, even ending a word as in `echo a}`, and its
    * `}` closes a case. So in a case opened in such a span, any unquoted brace the lexer reads makes
-   * the line unreadable, and only `esac` closes the case.
+   * the line unreadable, and only `esac` closes the case. A stray case's `{` is `noteStrayCase`'s.
    */
-  private noteCaseBrace(c: string): void {
-    if ((c === '{' || c === '}') && this.cases.includes(true)) this.budget.expansion = 'unreadable'
+  private noteBrace(c: string): void {
+    const stray = c === '{' && this.straySubject && this.word === null && this.pending === null
+    if (stray || this.cases.includes(true)) this.budget.expansion = 'unreadable'
   }
 
   /**
@@ -623,11 +623,6 @@ class ShellLexer {
   private noteStrayCase(word: string, quoted: boolean, stray: boolean): void {
     this.straySubject = stray
     this.strayCase = !quoted && word === 'case' && this.closable()
-  }
-
-  private noteStrayBrace(c: string): void {
-    if (c === '{' && this.straySubject && this.word === null && this.pending === null)
-      this.budget.expansion = 'unreadable'
   }
 
   /** The token bash's read_token_word gives a word that is not reserved: parse.y 3471-3481 and 5784-5847. */
