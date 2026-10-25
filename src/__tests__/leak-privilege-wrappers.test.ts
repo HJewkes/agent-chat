@@ -417,6 +417,27 @@ describe('sg', () => {
   })
 })
 
+describe('newgrp', () => {
+  it.each([
+    [['newgrp', 'wheel'], ['sh']],
+    [['newgrp', '-', 'wheel'], ['sh']],
+    [
+      ['newgrp', 'wheel', '-c', 'git push'],
+      ['sh', '-c', 'git push'],
+    ],
+  ])('reads %j as sg does, running %j', (words, shell) => {
+    expect(run(...words)).toEqual({ shell })
+  })
+
+  it.each([
+    [['newgrp', '--frob', 'wheel']],
+    [['newgrp', live('$G')]],
+    [['newgrp', 'wheel', 'ls', 'git push']],
+  ])('%j fails closed', words => {
+    expect(run(...words)).toBeUndefined()
+  })
+})
+
 describe('capsh', () => {
   it.each([
     [

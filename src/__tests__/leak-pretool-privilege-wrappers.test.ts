@@ -246,6 +246,32 @@ describe('the bypass guard reads the -c script of sg and capsh (CC-1602)', () =>
   )
 })
 
+describe('the bypass guard reads newgrp, the binary sg links to (CC-1602)', () => {
+  it.each([
+    "newgrp wheel <<< 'git push --no-verify'",
+    "printf 'git push --no-verify' | newgrp wheel",
+    "newgrp - wheel <<< 'git push --no-verify'",
+    "newgrp wheel -c 'git push --no-verify'",
+  ])('denies %s', line => {
+    deny(line, REASONS.noVerify)
+  })
+
+  it.each(["newgrp wheel <<< 'git push'", "/usr/bin/newgrp wheel -c 'gh pr list'"])(
+    'denies %s as privileged',
+    line => {
+      expect([REASONS.privilegedPush, REASONS.privilegedGh]).toContain(checkCommand(line, ctx()))
+    },
+  )
+
+  it.each(['newgrp $G <<< ls', "newgrp --frob wheel <<< 'git push'"])('denies %s as unreadable', line => {
+    deny(line, REASONS.privilegeOption)
+  })
+
+  it.each(['newgrp wheel -c ls', 'newgrp wheel <<< ls'])('allows %s', line => {
+    expect(checkCommand(line, ctx())).toBeUndefined()
+  })
+})
+
 const PRIVILEGED_HIDDEN = REASONS.privilegedHidden
 
 describe('the bypass guard denies an expanded command word behind every privilege wrapper', () => {

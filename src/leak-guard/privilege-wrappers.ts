@@ -1,6 +1,6 @@
 /**
  * Option parsers for the privilege wrappers other than sudo: doas, run0 and systemd-run (one
- * binary), pkexec, su and su-rs, runuser, setpriv and machinectl shell (CC-1218), sg and capsh (CC-1602).
+ * binary), pkexec, su and su-rs, runuser, setpriv and machinectl shell (CC-1218), sg and newgrp, and capsh (CC-1602).
  * Each returns where the command it runs starts, or the words of the shell it runs instead, so
  * the guard can read that command. An option a table here does not know, an option with no value,
  * and any option word or value the shell expands give undefined: the caller denies rather than
@@ -8,7 +8,7 @@
  * Tables: run0 and systemd-run (systemd 259), su, runuser and setpriv (util-linux) and su-rs
  * (sudo-rs) from `--help`, pkexec (polkit 127) from its usage, doas from the OpenBSD and opendoas
  * getopt string `+a:C:Lnsu:`, machinectl from systemd's docs (doas and machinectl UNVERIFIED on this box),
- * sg (util-linux 2.41) from `--help` and runs, and capsh (libcap 2) from `--help`.
+ * sg and newgrp (util-linux 2.41) from `--help` and runs, and capsh (libcap 2) from `--help`.
  */
 
 import { LIVE } from './shell-words.js'
@@ -264,6 +264,8 @@ export const PRIVILEGE_OPTIONS: ReadonlyMap<string, OptionTable> = new Map([
   ['setpriv', SETPRIV],
   ['machinectl', MACHINECTL],
   ['sg', SG],
+  // sg is a link to newgrp, which takes the same words in util-linux; shadow's runs only a shell on stdin.
+  ['newgrp', SG],
   ['capsh', CAPSH],
 ])
 

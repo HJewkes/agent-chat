@@ -359,7 +359,8 @@ name; its other verbs run no command. `su -c '<line>'`, `doas -s`, `run0 -i` and
 bare `su`, `run0` or `pkexec` run a shell, so the guard checks that shell's script or its stdin, with
 the `$SHELL` rule below; xargs input to one denies. `sg <group> [-c] <command>` runs its one command
 in a shell, so the guard checks it as a script; a second candidate command (util-linux and shadow
-pick differently) or any word the shell expands denies. `capsh` runs nothing unless `--` or `-+`
+pick differently) or any word the shell expands denies. `newgrp`, the binary `sg` links to, is read
+the same way; with no command it runs a shell on stdin, which the guard checks. `capsh` runs nothing unless `--` or `-+`
 hands the words after it to bash or a `--shell=` shell, which the guard checks; a `--shell=` that is
 not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `gosu`, `su-exec`,
 `chpst`, `setuidgid` and `s6-setuidgid` are not covered.
