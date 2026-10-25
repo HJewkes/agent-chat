@@ -15,6 +15,7 @@ import {
   shellAlias,
   splitAlias,
   unfillableAtSet,
+  type AliasValue,
   type GitCall,
   type Overrides,
   type ReadAlias,
@@ -1321,11 +1322,42 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   if (call === undefined) return undefined
   if (WRITES_CONFIG.some(pattern => pattern.test(scope.said)))
     return run.literal || NAMES_GIT.test(scope.said) ? REASONS.aliasWritten : undefined
-  if (call === UNSURE_CALL) return unsure(run)
+  if (call === UNSURE_CALL) return unsure(run) ?? checkAliasWhereHookLooks(run, ctx, scope, depth)
   const env = aliasEnv(run, call.vars, ctx, scope)
-  if (env === undefined) return unsure(run)
+  if (env === undefined) return unsure(run) ?? checkAliasWhereHookLooks(run, ctx, scope, depth)
   const alias = ctx.readAlias(call.sub, call.dir, call.globals, env)
   if (alias === undefined) return undefined
+  return checkFoundAlias(run, call, alias, env, ctx, scope, depth)
+}
+
+/**
+ * An untied expanded command word whose directory or config env the guard cannot tell still has its
+ * subcommand looked up where it can look: the known directory or the hook's, with the hook's env
+ * (CC-1315). This is a best guess, so an alias only the unknown directory or root's config defines
+ * stays unseen, as TP-613 accepts.
+ */
+function checkAliasWhereHookLooks(
+  run: GitRun,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const call = gitCall(run.resolved, scope.cwd ?? ctx.cwd, scope.gitParams)
+  if (call === undefined || call === UNSURE_CALL) return undefined
+  const alias = ctx.readAlias(call.sub, call.dir, call.globals, {})
+  return alias && checkFoundAlias(run, call, alias, {}, ctx, scope, depth)
+}
+
+/** Re-checks a git command whose subcommand is `alias`, as the words the alias expands to. */
+function checkFoundAlias(
+  run: GitRun,
+  call: GitCall,
+  alias: AliasValue,
+  env: Overrides,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
   if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
   const inner = { ...scope, aliases: scope.aliases + 1 }
   if (alias.value.startsWith('!'))
