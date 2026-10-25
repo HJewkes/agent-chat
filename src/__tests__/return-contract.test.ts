@@ -914,8 +914,16 @@ describe('the Concerns and Notes lines (CC-399)', () => {
 
     expect(text).toContain('Then `Concerns:` (what <spawner> must act on, or none;')
     expect(text).toContain('DONE_WITH_CONCERNS needs one)')
-    expect(text).toContain('and `Notes:` (the rest).')
+    expect(text).toContain('and `Notes:`, each at most 3 one-line items.')
     expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  // CC-1591. Mutation caught: dropping the cap, which let each report re-send its PR body.
+  it.each([
+    ['default', RETURN_CONTRACT_BLOCKS.implementer],
+    ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('in the %s block caps the report at ~10 lines with detail in the PR body', (_which, block) => {
+    expect(flat(block)).toContain('Keep the report to ~10 lines; detail goes in the PR body or the task note.')
   })
 
   it('leaves the reviewer block without either line', () => {
