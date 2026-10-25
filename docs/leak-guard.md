@@ -1057,17 +1057,43 @@ name uses and the git scan also read the command the guard's own unwrap says run
 assignments and words, including those `env -S` splits out of one word, behind any wrapper. So
 `env -S "GIT_PAGER=less git log"` and `nice env -S "GIT_EDITOR=x git commit"` deny.
 
-A hidden variable name also denies, as `programEnv` or `searchPathEnv`, when anything the call
-runs is a command the guard cannot name, which may be git though no git shows (TP-4231). The
-guard records that while it walks the call, in the same places it would check git: a command
-word it cannot resolve (`$G`, `${G:-x}`, `./$G`, behind `sudo`, `env` or `xargs` too), a wrapper
-whose options it cannot read (`setsid $G`), and a shell or `source /dev/stdin` fed a script it
-cannot read. That covers the text `eval` joins, `sh -c` strings and fed scripts, and the hidden
-name may sit in any script the call runs. So `read $A <<< ext; $G fetch o`,
-`export $A=ext; sh <<< '$G fetch o'` and `eval 'read $A <<< ext'; $G fetch o` deny, while
-`$G status` and `read $A <<< ext; echo hi` stay allowed. A child shell cannot pass a name back,
-so `bash -c 'read $A'; $G x` is a false deny the guard accepts, as is `env -C /x $X q`, where env
-may read `$X` as a name or run it.
+A variable whose name the shell builds (`read $A`, `export $A=`, `printf -v "$A"`,
+`declare -n R=$A; R=…`, `${!A:=…}`) may be any name, and a call that shows no git may still
+run it. So on such a call the hidden name denies as `programEnv` unless every command of the
+call is proven inert (TP-4231). A command is proven inert when its head, after the guard's own
+unwrap and read with no env value (the hidden name may have changed any of them), is in a closed
+allowlist of commands that never run a word or their stdin as a program or shell text: the
+declaration and name-operand builtins, `echo`, `printf`, `test`, `[`, `cd`, `ls`, `cat`, `grep`,
+`tee`, `cp` and a few more. Literal `eval`, `trap` and plain `sh -c` text is inert when every
+command parsed from it is, checked recursively, and so are the commands of each substitution.
+A function definition is never inert. The rule asks which commands are known safe, not where a
+command may start, so a command missing from the allowlist over-denies and never lets a line
+through. So `read $A <<< ext; $G fetch o`, `watch $G fetch o`, `parallel ::: $G`,
+`trap '$G fetch o' EXIT`, `sort --compress-program=$G f` and `declare -n R=$A; R=ext; $G fetch o`
+deny, while `read $A <<< ext; ls $D`, `sh -c 'echo hi'` and `trap 'echo bye' EXIT` stay allowed.
+A nested script is judged against every command of the outer call, so `eval 'read $A <<< ext';
+$G fetch o` denies too.
+
+An allowlist entry may be added only for a command that never runs a word or its stdin as code
+(`sed`, `awk`, `find`, `sort`, `env`, `xargs`, `watch`, `timeout`, `let` and shells never qualify).
+Each addition needs a test row.
+
+The rule's boundary. It closes one class: a variable whose name the shell builds, set in a Bash
+call that shows no git, denies unless every command of the call is proven inert. It does not
+change:
+
+- Unread eval/source. Lines that set no hidden name but `eval` or `source` text the guard cannot
+  read (`eval "$A=ext"; $G …`, `eval "$(cat f)"; $G …`, `. /dev/stdin <<< "$S"; $G …`) are
+  allowed, and the pinned `eval "$(ssh-agent -s)"; npm test` allow constrains a fix.
+- `SEARCH_UNREAD` (the CC-1236 pins `PATH=$X make` and `hash -p "$X" make`).
+- Programs that run git from a file's content (`./x.sh`, `. ./x.sh`, a PATH-hijacked `ls` after
+  `read $A $B`).
+- Any line where git already shows. The rules above are unchanged there.
+
+These over-denies are accepted, and each one needs a hidden-name write on the same call:
+`read $A; python x.py`, `make` and any other command not on the allowlist; `env -C /x $X q`,
+where env may read `$X` as a name or run it; `bash -c 'read $A'; $G x`, since a child shell
+cannot pass a name back; and `trap - EXIT`.
 
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of

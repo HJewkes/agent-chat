@@ -771,3 +771,49 @@ describe('a hidden variable name on a line whose command word is only an expansi
     expect(hookReason(command)).toBeUndefined()
   })
 })
+
+describe('a hidden variable name on a line with no git denies unless every command is proven inert (TP-4231)', () => {
+  it.each([
+    'read $A <<< ext; watch $G fetch o',
+    'read $A <<< ext; watch -n1 $G fetch o',
+    'read $A <<< ext; watch "$C"',
+    'read $A <<< ext; parallel $G ::: fetch',
+    'read $A <<< ext; parallel ::: $G',
+    `read $A <<< ext; trap '$G fetch o' EXIT`,
+    'read $A <<< ext; trap "$G fetch o" EXIT',
+    `read $A <<< ext; bash -c 'trap "\\$G fetch o" EXIT'`,
+    'read $A <<< ext; sort --compress-program=$G f',
+    'read $A <<< ext; python x.py',
+    'read $A <<< ext; make',
+    'read $A <<< ext; let "$X"',
+  ])('denies a command that may run a word as code: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  // TP-4234: a nameref to a built name hides the name its assignment writes.
+  it.each([
+    'declare -n R=$A; R=ext; $G fetch o',
+    'typeset -n R=$A; R=ext; $G fetch o',
+    'declare -n R=$A; R=ext; watch $G fetch o',
+    ': ${!A:=ext}; $G push o',
+  ])('denies a nameref or indirect default before a command it cannot prove inert: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'export $A=ext; echo hi',
+    'printf -v "$A" ext; cat f',
+    'read $A <<< ext; ls $D',
+    'read $A <<< ext; [ -n "$B" ] && echo y',
+    `read $A <<< ext; sh -c 'echo hi'`,
+    `read $A <<< ext; eval 'echo hi'`,
+    `read $A <<< ext; trap 'echo bye' EXIT`,
+    'declare -n R=$A; R=x; ls',
+    `trap 'declare -n R=$A; R=x' DEBUG; ls`,
+    'PATH=$X make',
+    'hash -p "$X" make',
+    'eval "$(ssh-agent -s)"; npm test',
+  ])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
