@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import type { AgentIdentity, RosterHidden, RosterView, ServerMessage } from '../../protocol.js'
 import { accountReader, accountUsageLines, budgetSegment, readBudget } from '../../agents/budget.js'
+import { loadSeatPolicy, type SeatPolicy } from '../../agents/seat-policy.js'
+import { rootSeatEntry } from '../../agents/seat-root.js'
 import { transcriptLine } from '../../agents/transcript.js'
 import { accountName } from '../../agents/config-dir.js'
 import { callerName, viewRoster } from '../../agents/roster-filter.js'
@@ -33,9 +35,13 @@ const kindSegment = (agent: AgentIdentity, withSurface: boolean): string =>
       ? `${agent.profile}, ${agent.surface}`
       : agent.profile
 
-function detailRow(a: AgentIdentity, state: string, budget: string): string {
+/** CC-1616: a row the owner's seat policy makes a root seat says so, so a reader sees where its authority comes from. */
+const seatMark = (a: AgentIdentity, policy: SeatPolicy): string =>
+  rootSeatEntry(a, policy) === undefined ? '' : ' — root seat (seat-policy.json)'
+
+function detailRow(a: AgentIdentity, state: string, budget: string, mark: string): string {
   return (
-    `- ${a.name} [${state}, ${kindSegment(a, true)}${budget}]` +
+    `- ${a.name} [${state}, ${kindSegment(a, true)}${budget}]${mark}` +
     ` spawned by ${a.spawnedBy}${a.launchedBy ? ` (${a.launchedBy})` : ''}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}` +
     // CC-1059: the machine it launched on, so a row on another host reads as such.
     `${a.host ? `, host: ${a.host}` : ''}\n    ${a.cwd}` +
@@ -46,8 +52,8 @@ function detailRow(a: AgentIdentity, state: string, budget: string): string {
 }
 
 /** CC-1597: one line per agent, so 150 rows fit a coordinator's tool result; a retired row keeps its session. */
-const compactRow = (a: AgentIdentity, state: string, budget: string): string =>
-  `- ${a.name} [${state}, ${kindSegment(a, false)}${budget}]` +
+const compactRow = (a: AgentIdentity, state: string, budget: string, mark: string): string =>
+  `- ${a.name} [${state}, ${kindSegment(a, false)}${budget}]${mark}` +
   (a.state === 'retired' && a.sessionId !== '' ? ` session: ${a.sessionId}` : '')
 
 const DEFAULT_LIMIT = 50
@@ -125,13 +131,15 @@ export const agentList = defineTool({
     const accounts = [...new Set(live.map(a => account(a.configDir)))]
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
     const render = verbose === true ? detailRow : compactRow
+    const policy = loadSeatPolicy()
     const rows = agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
       // rather than adding a whole new line per row. Absent entirely for a
       // non-live row, rather than "no budget reading" — there, absence is the
       // default, not information.
       const read = budgetByName.get(a.name)
-      return render(a, stateSegment(a, registered), read === undefined ? '' : `, ${budgetSegment(read)}`)
+      const budget = read === undefined ? '' : `, ${budgetSegment(read)}`
+      return render(a, stateSegment(a, registered), budget, seatMark(a, policy))
     })
     const hint = verbose === true ? '' : ' (verbose adds spawner, account, cwd and transcript)'
     return `Durable agents${hint}:\n${accountUsageLines(accounts, slots)}\n${rows.join('\n')}\n${footer}`

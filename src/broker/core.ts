@@ -784,17 +784,21 @@ export class BrokerCore<C = Conn> {
    *   still belong to the agent it named, or its teleport successor (CC-420).
    *
    * Declining is `dismiss`: it closes the item and delivers nothing.
+   *
+   * `channel` names a non-socket human channel (TP-1989: `owner-console`) on the
+   * rows this writes, for audit only. It changes no check.
    */
-  endorse(msgId: string, approval: EndorseApproval): VerdictResult {
+  endorse(msgId: string, approval: EndorseApproval, channel?: string): VerdictResult {
     const request = this.events.openEndorsement(msgId)
     if (!request) return { ok: false, reason: `${msgId} is not an open endorsement request` }
+    const audit = channel === undefined ? {} : { meta: { channel } }
     const refusal = approvalMismatch(request, approval) ?? staleness(request) ?? this.recipientMoved(request)
     if (refusal) {
-      this.append({ kind: 'verdict_refused', actor: HUMAN, ref: msgId, body: refusal })
+      this.append({ kind: 'verdict_refused', actor: HUMAN, ref: msgId, body: refusal, ...audit })
       return { ok: false, reason: refusal }
     }
 
-    this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed' })
+    this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed', ...audit })
     const written = this.append({
       kind: 'message',
       actor: request.composer,

@@ -13,7 +13,7 @@ import { ALIAS_TIMEOUT_MS, withOverrides, type Overrides } from './git-alias.js'
 /** Whether the files the command's own `-c` and `--config-env` include may set core.hooksPath. */
 export type ReadIncludedHooksPath = (dir: string, globals: readonly string[], env: Overrides) => boolean
 
-const INCLUDE_KEY = /^include(?:if\..*)?\.path$/i
+export const INCLUDE_KEY = /^include(?:if\..*)?\.path$/i
 // The agent's own hooks path arrives as command-scope config too, so the lookup runs without it.
 const GUARD_VARS = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$/
 const CONFIG_ENV_OPT = '--config-env='

@@ -226,6 +226,18 @@ describe('agent ls --json inferred and spawnedAt', () => {
     const [row] = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
     expect(row?.spawnedAt).toBe('1970-01-01T00:00:00.001Z')
   })
+
+  it('reports the exit time of an exited agent as an ISO string (CC-1577)', async () => {
+    roster.sessions = []
+    roster.agents = [{ ...exited({ code: 0, summary: 'done' }), exitedAt: 120_000 }]
+    const [row] = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(row?.exitedAt).toBe('1970-01-01T00:02:00.000Z')
+  })
+
+  it('omits exitedAt for an agent that has not exited (CC-1577)', async () => {
+    const [row] = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(row).not.toHaveProperty('exitedAt')
+  })
 })
 
 describe('agent ls --json when one transcript cannot be read', () => {

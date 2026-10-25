@@ -1,4 +1,4 @@
-import { brokerHost, signalSessionPid } from '../broker/host-guard.js'
+import { brokerHost, isLocalHost, signalSessionPid } from '../broker/host-guard.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -55,6 +55,15 @@ import {
   type ProcessProbe,
 } from './detached-reap.js'
 import { HARNESS_UNSUPPORTED, harnessRefusal, loadProfileSource, recordedRole, roleOf } from './profiles.js'
+import { loadSeatPolicy, seatPolicyPath } from './seat-policy.js'
+import {
+  ceilingDriftRefusal,
+  ceilingRefusal,
+  policySeat,
+  seatRootOf,
+  startsSeatRoot,
+  type SeatClaim,
+} from './seat-root.js'
 import {
   refusalOf,
   resolve as resolveIsolation,
@@ -153,6 +162,7 @@ import {
 import {
   retireFinished,
   type FinishedRetireOutcome,
+  type FinishedRetirePort,
   type NamePresence,
   type RetireScope,
 } from './isolation/retire-finished.js'
@@ -230,6 +240,7 @@ import {
 import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
+import { defaultAutonomyRoot } from './seats/io.js'
 import {
   isAdoptedSuccessor,
   SuccessorNotStarted,
@@ -242,9 +253,15 @@ import {
   type TeleportHost,
   type TeleportOutcome,
   type TeleportRequest,
+  type TeleportSubject,
   type LauncherSite,
 } from './teleport.js'
-import type { AccountMoves } from './teleport-account.js'
+import {
+  accountMoveRefusal,
+  realAccountMoves,
+  type AccountMoveRequest,
+  type AccountMoves,
+} from './teleport-account.js'
 import {
   DEFAULT_SURFACE_LIFETIME,
   type AgentProfile,
@@ -441,12 +458,16 @@ interface Requester {
   /** Coordinator links above the requester; a human-started root is 0. */
   coordinatorDepth: number
   profile: string
+  /** CC-1615: the policy seat the requester holds, which makes it a root under that seat's ceiling. */
+  seat?: string
 }
 
 /** Where a new agent sits: its spawn-tree depth and its coordinator depth. */
 interface Lineage {
   depth: number
   coordinatorDepth: number
+  /** CC-1615: the root seat whose ceiling admitted this spawn, recorded as `seat_ceiling`. */
+  seat?: string
 }
 
 interface Resolved {
@@ -549,6 +570,10 @@ async function remoteBrief(
   return { brief: [contracted.brief, allocation.note].filter(Boolean).join('\n\n'), warnings }
 }
 
+/** CC-1615: on the row so an audit can tell a spawn the seat ceiling admitted from one CC-39/40 did. */
+const seatCeilingMeta = (lineage: Lineage): { seat_ceiling?: string } =>
+  lineage.seat === undefined ? {} : { seat_ceiling: lineage.seat }
+
 /** The remote spawn's `agent_spawned` meta: the local row's facts, with `host` and `site` naming where it runs. */
 function remoteSpawnMeta(
   req: SpawnRequest,
@@ -579,6 +604,7 @@ function remoteSpawnMeta(
     depth: String(lineage.depth),
     role: roleOf(profile),
     coordinator_depth: String(lineage.coordinatorDepth),
+    ...seatCeilingMeta(lineage),
     ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
     ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
     ...callerAgentMeta(req),
@@ -877,6 +903,9 @@ export interface SpawnOutcome {
   /** CC-1546: the account a worker spawn's rotation chose, and the readings it compared. */
   account?: string
 }
+
+/** Who asks to act on an existing agent, as the broker resolved it from the connection. */
+type OwnershipClaim = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId' | 'requesterBinding'>
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
 /** CC-282: who asked, resolved by the broker from the connection, for the worker ownership rule. */
@@ -1229,6 +1258,8 @@ export class Supervisor implements TeleportHost {
   /** CC-1059: spawns recorded here for a requester on another host to launch. */
   private readonly remoteSpawns: RemoteSpawns
   private readonly hosts: LauncherSite | undefined
+  /** CC-1592: the one seam both a move and its dry run read, so they refuse alike. */
+  private readonly accountMoves: AccountMoves
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
   private readonly profileBaseline: ProfileBaseline
@@ -1283,6 +1314,8 @@ export class Supervisor implements TeleportHost {
           reason: err instanceof Error ? err.message : String(err),
         }),
     })
+    this.accountMoves =
+      options.accountMoves ?? realAccountMoves(options.seatTeleport?.autonomyRoot ?? defaultAutonomyRoot())
     this.teleporter = new Teleport(
       core,
       this,
@@ -1290,7 +1323,7 @@ export class Supervisor implements TeleportHost {
       options.argvReader,
       options.seatTeleport,
       options.hosts,
-      options.accountMoves,
+      this.accountMoves,
     )
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
@@ -2147,6 +2180,7 @@ export class Supervisor implements TeleportHost {
     const row = req.lineageFrom === undefined ? undefined : this.spawnEventOf(req.lineageFrom)
     if (row === undefined || row.target !== req.name) return computed
     return {
+      ...computed,
       depth: raised(computed.depth, row.meta.depth),
       coordinatorDepth: raised(computed.coordinatorDepth, row.meta.coordinator_depth ?? row.meta.depth),
     }
@@ -2156,17 +2190,29 @@ export class Supervisor implements TeleportHost {
    * The requester's role and coordinator depth, read from its own spawn row so
    * both survive its spawner. No parent is a human-started root; a parent with
    * no row resolves to a worker, because a cap that opens on missing data is not one.
+   *
+   * CC-1615: the holder of a policy seat is a root coordinator whatever depth its row carried.
+   * The policy is read per request, so a revoke applies to the next one.
    */
-  private requesterOf(parentAgentId: string | undefined): Requester {
+  private requesterOf(parentAgentId: string | undefined, claim: SeatClaim = {}): Requester {
     if (!parentAgentId) return { role: 'coordinator', coordinatorDepth: 0, profile: '' }
-    const meta = this.spawnEventOf(parentAgentId)?.meta ?? {}
+    const row = this.spawnEventOf(parentAgentId)
+    const meta = row?.meta ?? {}
+    const profile = meta.profile ?? ''
+    const seat = seatRootOf(row, claim, loadSeatPolicy())
+    if (seat !== undefined) return { role: 'coordinator', coordinatorDepth: 0, profile, seat }
     // A row from before CC-163 has only `depth`, which counts every link and so never undercounts.
     const recorded = Number.parseInt(meta.coordinator_depth ?? meta.depth ?? '1', 10)
     return {
       role: recordedRole(meta),
       coordinatorDepth: Number.isFinite(recorded) ? recorded : 1,
-      profile: meta.profile ?? '',
+      profile,
     }
+  }
+
+  /** The requester of a spawn, with what its connection proved about the seat it holds. */
+  private requesterFor(req: SpawnRequest): Requester {
+    return this.requesterOf(req.parentAgentId, { binding: req.requesterBinding, name: req.requestedBy })
   }
 
   /**
@@ -2203,6 +2249,25 @@ export class Supervisor implements TeleportHost {
     if ('error' in profile) return profile
     const harness = harnessRefusal(profile)
     return harness === undefined ? profile : { error: harness }
+  }
+
+  /**
+   * CC-1615: a launch under a policy seat's name. With a listed launch profile it starts the seat's
+   * root holder, which the coordinator depth cap does not bound. With any other profile it is an
+   * ordinary agent, and the spawn result says so.
+   */
+  private seatLaunchOf(
+    req: SpawnRequest,
+    profile: AgentProfile,
+  ): { profile: AgentProfile; startsRoot: boolean } {
+    const policy = loadSeatPolicy()
+    if (policySeat(policy, req.name) === undefined) return { profile, startsRoot: false }
+    if (startsSeatRoot(policy, req.name, profile.name)) return { profile, startsRoot: true }
+    logEvent('seat_root_denied', { name: req.name, profile: profile.name, by: req.requestedBy })
+    const warning =
+      `"${req.name}" is a root seat in ${seatPolicyPath()}, but profile "${profile.name}" is not one ` +
+      'of its launch profiles, so this agent holds no seat authority'
+    return { profile: { ...profile, warnings: [...(profile.warnings ?? []), warning] }, startsRoot: false }
   }
 
   /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
@@ -2280,6 +2345,8 @@ export class Supervisor implements TeleportHost {
     profile: AgentProfile,
   ): { refusal: string } | { exempted: string[] } {
     if (req.requestedBy === HUMAN) return { exempted: [] }
+    const { seat } = this.requesterFor(req)
+    if (seat !== undefined) return this.checkCeiling(seat, profile)
 
     let exempted: string[] = []
     const granted = this.grantedTools(req.parentAgentId)
@@ -2313,12 +2380,24 @@ export class Supervisor implements TeleportHost {
     return { exempted }
   }
 
+  /**
+   * CC-1615: a root seat spawns exactly its ceiling, by profile name, in place of CC-39/40. Trusting a
+   * name means trusting its file, so a ceiling profile changed since broker start is refused under
+   * any `profileDrift` mode.
+   */
+  private checkCeiling(seat: string, profile: AgentProfile): { refusal: string } | { exempted: string[] } {
+    const entry = policySeat(loadSeatPolicy(), seat)
+    if (entry === undefined) return { refusal: `seat "${seat}" is no longer in ${seatPolicyPath()}` }
+    const outside = ceilingRefusal(seat, entry, profile.name)
+    if (outside !== undefined) return { refusal: outside }
+    const { source } = loadProfileSource(profile.name)
+    const drift = this.profileBaseline.drift(profile.name, source)
+    if (drift !== undefined) return { refusal: ceilingDriftRefusal(seat, profile.name, drift) }
+    return { exempted: [] }
+  }
+
   private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
-    return coordinatorExemption(
-      this.requesterOf(req.parentAgentId).role,
-      profile,
-      resolveCoordinatorGrantableTools(),
-    )
+    return coordinatorExemption(this.requesterFor(req).role, profile, resolveCoordinatorGrantableTools())
   }
 
   /**
@@ -2400,7 +2479,7 @@ export class Supervisor implements TeleportHost {
   }
 
   private async spawnUnguarded(req: SpawnRequest): Promise<SpawnOutcome> {
-    const requester = this.requesterOf(req.parentAgentId)
+    const requester = this.requesterFor(req)
     const blocked = this.preflight(req, requester)
     if (blocked) return this.refuse(req, blocked)
     const drained = this.drainRefusal()
@@ -2411,20 +2490,17 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const profile = this.loadCheckedProfile(
-      req.profile,
-      req.requestedBy,
-      isHumanSpawn(req),
-      req.humanUnproven,
-    )
-    if ('error' in profile) return this.refuse(req, profile.error)
+    const loaded = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req), req.humanUnproven)
+    if ('error' in loaded) return this.refuse(req, loaded.error)
+    const { profile, startsRoot } = this.seatLaunchOf(req, loaded)
     const harness = harnessRefusal(profile)
     if (harness) return this.refuse(req, harness, { code: HARNESS_UNSUPPORTED, retryable: false })
     const lineage = this.lineageOf(req, {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
+      ...(requester.seat === undefined ? {} : { seat: requester.seat }),
     })
-    const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
+    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
@@ -2942,6 +3018,7 @@ export class Supervisor implements TeleportHost {
         // CC-163: on the row so the agent's own spawns are judged by it after its spawner is gone.
         role: roleOf(profile),
         coordinator_depth: String(lineage.coordinatorDepth),
+        ...seatCeilingMeta(lineage),
         // Recorded because a fork carries content the profile's tool list says
         // nothing about: reading the row later is the only way to know this
         // agent started holding someone else's conversation, and whose.
@@ -3465,10 +3542,15 @@ export class Supervisor implements TeleportHost {
    * CC-78 closed the other half of the same gap: what `live` held is now also on
    * disk, so a restart no longer costs the worktree and the pane either.
    */
-  async retire(name: string, force = false, actor?: string): Promise<{ ok: boolean; reason?: string }> {
+  async retire(
+    name: string,
+    force = false,
+    actor?: string,
+    claim: OwnershipClaim = {},
+  ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    return this.retireIdentity(identity, { force }, actor)
+    return this.retireIdentity(identity, { force }, actor, claim)
   }
 
   /** CC-408: the bulk form retires the row it planned, never whichever row now holds the name. */
@@ -3476,12 +3558,13 @@ export class Supervisor implements TeleportHost {
     agentId: string,
     actor?: string,
     release: ReleaseOptions = {},
+    claim: OwnershipClaim = {},
   ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
     // CC-1453: a hand-started seat's teleport successor leases the name, so the seat watchdog retires it by id.
     if (identity === undefined || !launchedByBroker(identity) || identity.state === 'retired')
       return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
-    return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
+    return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor, claim)
   }
 
   /** CC-959: a stale seat row by id; never whichever row holds the name now, and never a live one. */
@@ -3489,6 +3572,7 @@ export class Supervisor implements TeleportHost {
     agentId: string,
     name: string,
     actor?: string,
+    claim: OwnershipClaim = {},
   ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
     if (identity !== undefined && identity.name !== name)
@@ -3496,14 +3580,18 @@ export class Supervisor implements TeleportHost {
     const live = identity?.state === 'live' || identity?.state === 'spawning'
     if (identity !== undefined && (live || this.namePresence(identity) === 'self'))
       return { ok: false, reason: `agent ${agentId} (${name}) is still live; not retired` }
-    return this.retireById(agentId, actor)
+    return this.retireById(agentId, actor, {}, claim)
   }
 
+  /** CC-1138: every retire path ends here, so the worker ownership rule is checked before anything is released. */
   private async retireIdentity(
     identity: AgentIdentity,
     release: ReleaseOptions,
     actor?: string,
+    claim: OwnershipClaim = {},
   ): Promise<{ ok: boolean; reason?: string }> {
+    const refused = this.checkOwnership(identity, claim, 'retire')
+    if (refused) return { ok: false, reason: refused }
     const force = release.force === true
     const name = identity.name
     const held = this.live.get(identity.agentId)
@@ -3584,7 +3672,7 @@ export class Supervisor implements TeleportHost {
   async park(name: string, req: ParkRequest = {}): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    const refused = this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'park')
+    const refused = this.checkOwnership(identity, req, 'park')
     if (refused) return { ok: false, reason: refused }
     if (this.parking.has(identity.agentId)) return { ok: false, reason: `${name} is already being parked` }
     const target = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
@@ -3630,22 +3718,32 @@ export class Supervisor implements TeleportHost {
     }
   }
 
-  /** CC-323: retire every finished agent in scope that holds no work, each through `retire` so its refusals apply. */
+  /**
+   * CC-323: retire every finished agent in scope that holds no work, each through `retire` so its refusals apply.
+   * CC-1138: the caller is each row's actor, and a worker caller plans only the agents it spawned.
+   */
   async retireFinished(
-    req: RetireScope & { dryRun?: boolean; caller?: string },
+    req: RetireScope & { dryRun?: boolean; caller?: string } & Omit<OwnershipClaim, 'requestedBy'>,
   ): Promise<FinishedRetireOutcome> {
-    const port = {
+    const { requesterAgentId, requesterBinding, ...scope } = req
+    const claim: OwnershipClaim = {
+      ...(req.caller === undefined ? {} : { requestedBy: req.caller }),
+      ...(requesterAgentId === undefined ? {} : { requesterAgentId }),
+      ...(requesterBinding === undefined ? {} : { requesterBinding }),
+    }
+    const port: FinishedRetirePort = {
       roster: () => this.core.agents.roster(),
       events: () => this.core.events.agentEvents(),
       tracked: (agentId: string) => this.live.has(agentId),
       parking: (agentId: string) => this.parking.has(agentId),
       current: (agentId: string) => this.core.agents.get(agentId),
       presence: (agent: AgentIdentity) => this.namePresence(agent),
-      retire: (agentId: string) => this.retireById(agentId),
+      ownership: (agent: AgentIdentity) => this.checkOwnership(agent, claim, 'retire'),
+      retire: (agentId: string) => this.retireById(agentId, req.caller, {}, claim),
       now: () => Date.now(),
       ...(this.shepherdSkip === undefined ? {} : { skip: this.shepherdSkip }),
     }
-    return retireFinished(port, req)
+    return retireFinished(port, scope)
   }
 
   /** CC-921: park and retire an opted-in spawner's agent that exited on a final report; logs why when it keeps one. */
@@ -4265,7 +4363,7 @@ export class Supervisor implements TeleportHost {
    * relaunch a coordinator or a peer's agent on a message of its own choosing.
    */
   private checkResumer(identity: AgentIdentity, req: ResumeRequest): string | undefined {
-    return this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'resume')
+    return this.checkOwnership(identity, req, 'resume')
   }
 
   /** CC-408: only the newest session under a name is resumed; an older generation is stale. */
@@ -4283,7 +4381,7 @@ export class Supervisor implements TeleportHost {
   /** CC-225: surfacing stops the running process, so it takes resume's rule; surfacing yourself is always allowed. */
   private checkSurfacer(identity: AgentIdentity, req: SwitchRequest): string | undefined {
     if (identity.agentId === req.requesterAgentId) return undefined
-    return this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'surface')
+    return this.checkOwnership(identity, req, 'surface')
   }
 
   /**
@@ -4292,11 +4390,10 @@ export class Supervisor implements TeleportHost {
    */
   private checkOwnership(
     identity: AgentIdentity,
-    requesterAgentId: string | undefined,
-    requestedBy: string | undefined,
-    verb: 'resume' | 'surface' | 'park',
+    { requesterAgentId, requestedBy, requesterBinding }: OwnershipClaim,
+    verb: 'resume' | 'surface' | 'park' | 'retire',
   ): string | undefined {
-    const requester = this.requesterOf(requesterAgentId)
+    const requester = this.requesterOf(requesterAgentId, { binding: requesterBinding, name: requestedBy })
     if (requester.role !== 'worker') return undefined
     if (this.spawnEventOf(identity.agentId)?.meta.parent === requesterAgentId) return undefined
     return (
@@ -4589,6 +4686,27 @@ export class Supervisor implements TeleportHost {
   /** Hand off to a successor and end this session. See `teleport.ts`. */
   async teleport(req: TeleportRequest): Promise<TeleportOutcome> {
     return this.teleporter.start(req)
+  }
+
+  /**
+   * CC-1592: an account move's dry run. Reads what `Teleport.accountMove` reads, so it records no
+   * handoff and ends nothing; the profile and surface checks a real move runs after it are not run.
+   */
+  checkAccountMove(subject: TeleportSubject, account: AccountMoveRequest): TeleportOutcome {
+    const identity = this.core.agents.get(subject.agentId)
+    if (identity === undefined) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
+    const reason = accountMoveRefusal(
+      this.accountMoves,
+      {
+        name: subject.name,
+        onBrokerHost: isLocalHost(subject.host),
+        configDir: subject.configDir ?? this.core.agents.spawnMeta(subject.agentId).config_dir,
+        cwd: this.inheritedIsolation(subject.agentId)?.allocation.cwd ?? subject.cwd,
+        sessionId: identity.sessionId ?? '',
+      },
+      account,
+    )
+    return reason === undefined ? { ok: true, name: subject.name } : { ok: false, reason }
   }
 
   /** CC-881: what a session teleporting from another host waits on: the launch to run there. */

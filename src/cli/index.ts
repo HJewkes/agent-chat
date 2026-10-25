@@ -14,6 +14,7 @@ import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentPark } from './verbs/agent-park.js'
 import { agentResume } from './verbs/agent-resume.js'
+import { agentMoveAccount } from './verbs/agent-move-account.js'
 import { agentSurfaceVerb } from './verbs/agent-surface.js'
 import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
 import { answersVerb } from './verbs/answers.js'
@@ -243,6 +244,7 @@ function addAgentCommands(program: Command): void {
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
   addVerb(agent, agentResume)
+  addVerb(agent, agentMoveAccount)
   addVerb(agent, agentWorktreesVerb)
   addVerb(agent, agentSurfaceVerb)
   addVerb(agent, agentBudgetVerb)

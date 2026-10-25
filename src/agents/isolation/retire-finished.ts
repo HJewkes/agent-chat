@@ -43,6 +43,8 @@ export interface FinishedRetirePort {
   current(agentId: string): AgentIdentity | undefined
   /** CC-408: liveness from the connected process, since a registry row can say `exited` while it runs. */
   presence(agent: AgentIdentity): NamePresence
+  /** CC-1138: why the caller may not retire this agent, keyed on its spawn row's parent id; undefined when it may. */
+  ownership?(agent: AgentIdentity): string | undefined
   /** CC-408: by id, so a stale row never resolves to the newest holder of its name. */
   retire(agentId: string): Promise<{ ok: boolean; reason?: string }>
   git?: GitRunner
@@ -114,7 +116,8 @@ async function planFinished(
     if (retires >= cap) break
     const reason = callers.has(agent.name)
       ? `${agent.name} is the caller itself, not an agent it spawned`
-      : await finishedBlocker(planPort, agent, roster, events, scope.stale === true)
+      : (port.ownership?.(agent) ??
+        (await finishedBlocker(planPort, agent, roster, events, scope.stale === true)))
     const base: Omit<RetirePlanEntry, 'action'> = { name: agent.name, ...duplicateOf(agent, roster) }
     const entry: RetirePlanEntry =
       reason === undefined ? { ...base, action: 'retire' } : { ...base, action: 'skip', reason }

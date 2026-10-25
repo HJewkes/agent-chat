@@ -55,7 +55,7 @@ function onAccount(agent: SeatAgent, account: SeatAccount | undefined): boolean 
  * CC-1453: a row the broker launched leases the seat's name and resumes by name: a spawn, or a teleport
  * successor, which a hand-started session's successor is though it is recorded adopted.
  */
-export const leasesName = (agent: SeatAgent): boolean =>
+export const leasesName = (agent: Pick<SeatAgent, 'origin' | 'teleportFrom'>): boolean =>
   agent.origin !== 'adopted' || agent.teleportFrom !== undefined
 
 /** A row the roster carries is not retired, so every leasing row but the newest still holds the name. */

@@ -12,7 +12,7 @@ import {
   type ReplyType,
   type ServerMessage,
 } from '../protocol.js'
-import { withoutLaunchIdentity } from '../launch-identity.js'
+import { AGENT_ID_ENV, withoutLaunchIdentity } from '../launch-identity.js'
 import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
 import { RetryKeys } from './retry-keys.js'
 import { timeoutAdvice } from './timeout-advice.js'
@@ -173,6 +173,8 @@ export interface BrokerClientOptions {
   autoStart?: boolean
   /** CC-1059: the broker asked the agent `agentId` to end, because it was retired on another host. */
   onEndSelf?: (agentId: string, reason: string) => void
+  /** Where `AGENT_CHAT_AGENT_ID` is read for the `hello`; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv
 }
 
 /**
@@ -257,6 +259,7 @@ export class BrokerClient {
 
   private attach(socket: net.Socket): void {
     this.socket = socket
+    this.sayHello(socket)
     socket.on(
       'data',
       lineReader<ServerMessage & Correlated>(
@@ -266,6 +269,12 @@ export class BrokerClient {
     )
     socket.on('close', () => void this.onDrop())
     socket.on('error', () => void this.onDrop())
+  }
+
+  /** CC-1138: before any other frame, so the broker knows an agent's process from the human's. */
+  private sayHello(socket: net.Socket): void {
+    const agentId = (this.options.env ?? process.env)[AGENT_ID_ENV]?.trim()
+    if (agentId) socket.write(encode({ t: 'hello', agentId }))
   }
 
   /**

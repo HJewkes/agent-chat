@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
-import type { Context } from 'hono'
+import type { Context, MiddlewareHandler } from 'hono'
 import {
   DEFAULT_HISTORY_LIMIT,
   MAX_HISTORY_LIMIT,
+  OWNER_CHANNEL_HEADER,
   type ErrorResponse,
   type HistoryResponse,
   type QueueResponse,
@@ -18,23 +19,32 @@ import { ANSWER_CHANNELS, isAnswerChannel } from '../protocol.js'
 import type { BrokerCore } from './core.js'
 
 /**
- * The read model over HTTP, plus exactly two writes.
+ * The read model over HTTP, plus a small set of writes.
  *
  * `POST /api/answer` and `POST /api/dismiss` call `core.answer()` /
- * `core.dismiss()` and nothing else. Those are the ONLY verdict paths, shared
- * with the socket handler the CLI talks to, and they own the `isOpen` check that
- * makes a second verdict on an item lose deterministically. This file must not
- * re-check it — a duplicate check here would be a second arbiter, and the two
- * would drift. Nothing in this file may ever write to the log directly:
+ * `core.dismiss()` and nothing else, and `POST /api/queue/:msgId/endorse` calls
+ * `core.endorse()`. Those are the ONLY verdict paths, shared with the socket
+ * handler the CLI talks to, and they own the open-item and exact-bytes checks
+ * that make a second or altered verdict lose deterministically. This file must
+ * not re-check them — a duplicate check here would be a second arbiter, and the
+ * two would drift. Nothing in this file may ever write to the log directly:
  * `core.append()` is the single writer, and an HTTP route reaching past it would
  * be the second one.
  *
- * `POST /api/approve` does not exist and never will. A permission verdict is
- * answerable only from the 0600 socket (`approve_permission`, CC-96), because
- * reaching that socket is what stands in for being the human. HTTP is a bearer
- * token on a network surface and cannot make that claim, so a route here would
- * be a backdoor around the guard, not a feature. Its absence is asserted by a
- * test, deliberately.
+ * The owner-console verdict routes (TP-1989) live under `/api/queue/:msgId/`.
+ * The owner decided the console is a second human channel: every
+ * human-in-the-loop item lands in it, endorsements and permission prompts
+ * included (decision 72), and a LAN browser session may answer prompts and
+ * endorse (decision 151). Each such route needs the ui token AND
+ * `X-Owner-Channel: console`, and records `channel: owner-console` on the rows
+ * it writes, so every HTTP verdict is auditable. That is same-user parity with
+ * the unregistered 0600 socket (`approve_permission`, CC-96), not a stronger
+ * proof: any process on the owner's account can read the 0600 token and send
+ * the header, just as it can open the socket. The header is a label for audit,
+ * not a credential.
+ *
+ * A bare `POST /api/approve` still does not exist, and a test asserts it: a
+ * verdict route names the item it acts on and carries the owner-channel header.
  *
  * The registry is read IN-PROCESS. It has to be: the live session list is keyed
  * by socket object and exists only in this process's memory, which is the whole
@@ -156,7 +166,34 @@ export function apiRoutes(core: BrokerCore): Hono {
     return c.json(result)
   })
 
+  /**
+   * The owner endorsing one composed message from the console (TP-1989).
+   *
+   * `text` and `to` are read raw: `core.endorse` delivers only on the stored
+   * bytes, so trimming here would turn a correct approval of `"hello \n"` into a
+   * refusal, or make a trimmed one look like the bytes the owner was shown.
+   */
+  api.post('/queue/:msgId/endorse', requireOwnerChannel, async c => {
+    const body = await readJson(c)
+    const text = rawStringField(body, 'text')
+    const to = rawStringField(body, 'to')
+    if (text === null || text === '') return badRequest(c, 'text is required')
+    if (to === null || to === '') return badRequest(c, 'to is required')
+
+    const result: VerdictResponse = core.endorse(c.req.param('msgId'), { text, to }, 'owner-console')
+    return c.json(result)
+  })
+
   return api
+}
+
+const OWNER_CONSOLE = 'console'
+
+/** Exact match only: no trimming or case folding, so a near miss is refused. */
+const requireOwnerChannel: MiddlewareHandler = async (c, next) => {
+  if (c.req.header(OWNER_CHANNEL_HEADER) === OWNER_CONSOLE) return next()
+  const error: ErrorResponse = { error: `${OWNER_CHANNEL_HEADER}: ${OWNER_CONSOLE} is required` }
+  return c.json(error, 403)
 }
 
 function badRequest(c: Context, message: string): Response {
@@ -177,6 +214,12 @@ function stringField(body: unknown, key: string): string | null {
   if (typeof body !== 'object' || body === null) return null
   const value = (body as Record<string, unknown>)[key]
   return typeof value === 'string' ? value.trim() : null
+}
+
+function rawStringField(body: unknown, key: string): string | null {
+  if (typeof body !== 'object' || body === null) return null
+  const value = (body as Record<string, unknown>)[key]
+  return typeof value === 'string' ? value : null
 }
 
 function historyLimit(raw: string | undefined): number {

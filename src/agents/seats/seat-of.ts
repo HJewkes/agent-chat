@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { HUMAN } from '../../protocol.js'
 import { frontmatterField } from '../active-work.js'
 import { charterSeats, isSeatName, parseSeat, type Seat } from './charter.js'
 import { readText } from './io.js'
@@ -35,9 +36,21 @@ function seatFiles(root: string, onUnreadable?: (seat: string) => void): SeatFil
 }
 
 /**
- * The seat whose prefix is the longest one `agent` is named with. Two seats declaring that prefix are settled by
- * the one named `spawner`; otherwise neither owns it, since either log could be the wrong one.
- * A seat file that cannot be read is skipped and passed to `onUnreadable`.
+ * CC-1606: an unattended seat spawns as itself, as one of its own prefixed agents, or over the CLI (`human`: the
+ * burndown tick and Shepherd). Any other named spawner is a different session that happens to share the prefix.
+ * An attended seat runs under whatever session the owner names, so its prefix alone decides.
+ */
+const spawnedByAnother = ({ seat, text }: SeatFile, spawner: string | undefined): boolean =>
+  spawner !== undefined &&
+  spawner !== HUMAN &&
+  spawner !== seat.name &&
+  !spawner.startsWith(`${seat.prefix}-`) &&
+  !isAttended(text)
+
+/**
+ * The seat whose prefix is the longest one `agent` is named with, leaving out a seat another session spawned for.
+ * Two seats declaring that prefix are settled by the one named `spawner`; otherwise neither owns it, since either
+ * log could be the wrong one. A seat file that cannot be read is skipped and passed to `onUnreadable`.
  */
 export function seatOf(
   root: string,
@@ -45,7 +58,9 @@ export function seatOf(
   spawner?: string,
   onUnreadable?: (seat: string) => void,
 ): SeatMatch {
-  const matching = seatFiles(root, onUnreadable).filter(({ seat }) => agent.startsWith(`${seat.prefix}-`))
+  const matching = seatFiles(root, onUnreadable).filter(
+    file => agent.startsWith(`${file.seat.prefix}-`) && !spawnedByAnother(file, spawner),
+  )
   const longest = Math.max(0, ...matching.map(({ seat }) => seat.prefix.length))
   const owners = matching.filter(({ seat }) => seat.prefix.length === longest)
   const [first] = owners
