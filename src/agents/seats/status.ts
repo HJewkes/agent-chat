@@ -374,6 +374,8 @@ function seatHistory(
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
   /** CC-409: the reading the gate opened on when the last good reading stood in for a missing window. */
   staleOk?: AccountReading
+  /** The state file could not be read; this stop stands whatever the broker's pick, which reads such spend as unmetered. */
+  unknownSpend?: true
 }
 
 /** The seat's caps for `gatePool` given the pool's history, which only the saved meters can tell. */
@@ -415,7 +417,7 @@ function spendVerdict(
     doc = deps.loadDoc()
   } catch (err) {
     const why = `BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`
-    return { ...stopped(why), allowance: pace([]).allowance }
+    return { ...stopped(why), allowance: pace([]).allowance, unknownSpend: true }
   }
   const saved = seatMeters(doc, seat, name, now.getTime())
   const spend = seatHistory(deps, seat, configDir, saved, reading, now)
@@ -463,8 +465,18 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
     configDir === undefined ? undefined : deps.readBudget(expandHome(configDir, deps.homeDir), now.getTime())
   const reading = read === undefined ? undefined : accountReading(read, now.getTime())
   const pace = seatPace(policy, budget, read, reading, now)
-  const { staleOk, ...home } = spendVerdict(deps, budget, configDir ?? '', pace, seat, reading, now, plain)
-  const next = configDir === undefined ? undefined : brokerPool(deps, policy, seat, configDir, now)
+  const { staleOk, unknownSpend, ...home } = spendVerdict(
+    deps,
+    budget,
+    configDir ?? '',
+    pace,
+    seat,
+    reading,
+    now,
+    plain,
+  )
+  const next =
+    configDir === undefined || unknownSpend ? undefined : brokerPool(deps, policy, seat, configDir, now)
   const shown = staleOk ?? reading
   return {
     pool: name ?? null,
@@ -507,7 +519,7 @@ function brokerPool(
 
 /** The broker's decision sets the stop; the home verdict keeps its figures when the spawn bills home. */
 function withBrokerPool(
-  home: Omit<Verdict, 'staleOk'> & { allowance: DayAllowance },
+  home: Omit<Verdict, 'staleOk' | 'unknownSpend'> & { allowance: DayAllowance },
   next: NextSpawnPool | undefined,
   homePool: string | undefined,
 ): Omit<BudgetStatus, 'pool' | 'sevenDay' | 'fiveHour' | 'ageSeconds' | 'stale' | 'staleOk'> {

@@ -64,6 +64,7 @@ const STATUS: SeatStatus = {
     sonnetOnly: false,
     spendSince: null,
     note: null,
+    nextSpawnPool: null,
     allowance: {
       source: 'per_day_points',
       points: null,
