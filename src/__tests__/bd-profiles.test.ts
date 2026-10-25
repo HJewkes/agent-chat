@@ -357,17 +357,6 @@ const QUOTED_SUBCOMMANDS = [
   '$"push"',
   "pu$'s'h",
   'push${X}',
-  '{push,}',
-  '{,push}',
-  // A brace choice can itself open with any quoting, expansion or glob character.
-  '{"push",origin}',
-  "{'push',origin}",
-  '{\\push,origin}',
-  '{"push",}',
-  '{{push,},}',
-  "{$'push',}",
-  '{[p]ush,}',
-  '{?ush,}',
   '[p]ush',
   '?ush',
   'p?sh',
@@ -376,6 +365,46 @@ const QUOTED_SUBCOMMANDS = [
 
 // Without a global option the subcommand is the first word, so any expansion there is denied too.
 const EXPANDED_FIRST_WORDS = ['$P', '${P}', '$(echo push)', '`echo push`', '{p,}ush', 'p{u,}sh']
+
+// CC-1618 round 3 (structural): a comma-brace anywhere after a global option can expand to inject
+// `push`, whatever its first choice opens with, so one boundary rule `Bash(git -*{*,*)` denies them
+// all. These cases are generated from that rule — each global option crossed with each brace shape
+// — rather than listed opener by opener. As the first git word a brace is caught by `Bash(git {*)`,
+// and a brace that starts mid-word by `Bash(git pu{*)` and its siblings.
+const BRACE_PUSHES = [
+  '{push,x}',
+  '{x,push}',
+  '{,push}',
+  '{push,}',
+  'pu{s,}sh', // a brace in the middle of the word
+  '{p,}{ush,}', // two braces whose product includes push
+  '{"push",x}', // a choice that itself opens with a quote, backslash or brace
+  "{'push',x}",
+  '{\\push,x}',
+  '{{push,},}',
+  "{$'push',}",
+  '{[p]ush,}',
+]
+
+// A brace that finishes the global option's own argument and spells push as its next word, e.g.
+// `git -C {.,push} origin …` runs `git -C . push origin …`. The first choice is innocuous, so only
+// the comma-brace boundary catches it.
+const OPTION_ARG_BRACES = ['{.,push}', '{k=v,push}', '{-p,push}']
+
+// CC-1618 round 3: after a global option the literal word `push` followed by a double-quoted or
+// bare expansion that strips to nothing still reaches git as `push`. Denied by the empty-quote,
+// bare-`$` and `push"$`/`push"\`` rules. A bare command substitution right after the word
+// (`` push`:` ``) and a redirection (`push>f`) are left as residual, same class as the backtick
+// and `$P` forms the PR already lists.
+const PUSH_THEN_EXPANSION = [
+  'push"$X"',
+  'push"${X}"',
+  'push"$(:)"',
+  'push"`:`"',
+  'push$X',
+  'push""',
+  "push''",
+]
 
 // A bare `*` expands to every file in the directory, a file named `--delete` included. A rule
 // names a literal star as `\*`, which 2.1.310 matched live.
@@ -388,6 +417,10 @@ const QUOTED_SUBCOMMAND_OVERMATCHES = [
   "git -C x commit -m 'push fix'",
   'git -C x commit -m "Fix [x]"',
   'git -C x commit -m "why ?"',
+  // The one brace boundary cannot see word position, so a comma-brace in a message is denied once a
+  // global option is present. A worker writes `{x}` (no comma) or drops the `-C`.
+  'git -C x commit -m "see {a,b}"',
+  'git -c k=v log --grep "{a,b}"',
 ]
 
 // The quote rules have no word boundary, so a quoted branch, an expansion, or a later command in
@@ -529,6 +562,24 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
 
   it.each(EXPANDED_FIRST_WORDS)('denies `git %s origin --delete x`', word => {
     expect(isDenied(`git ${word} origin --delete x`, denied)).toBe(true)
+  })
+
+  it.each(BRACE_PUSHES)('denies the brace `git %s origin --delete x`, first word and after an option', word => {
+    for (const git of ['git', ...GLOBAL_PRELUDES]) {
+      expect(isDenied(`${git} ${word} origin --delete x`, denied)).toBe(true)
+    }
+  })
+
+  it.each(OPTION_ARG_BRACES)('denies `git -C %s origin --delete x`, the brace finishing the option arg', brace => {
+    for (const opt of ['-C', '-c']) {
+      expect(isDenied(`git ${opt} ${brace} origin --delete x`, denied)).toBe(true)
+    }
+  })
+
+  it.each(PUSH_THEN_EXPANSION)('denies `git <opt> %s origin --delete x` under every global option', word => {
+    for (const git of GLOBAL_PRELUDES) {
+      expect(isDenied(`${git} ${word} origin --delete x`, denied)).toBe(true)
+    }
   })
 
   it.each(GLOBBED_PUSHES)('denies the globbed `git push %s` under every global option', tail => {
