@@ -21,7 +21,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { agentDir, ghWriteKeysDir } from '../paths.js'
+import { agentsDir, ghWriteKeysDir } from '../paths.js'
 import {
   configPrograms,
   configWriteScript,
@@ -80,7 +80,7 @@ import {
   type GhAliasSet,
   type ReadGhAliases,
 } from './gh-runs.js'
-import { editsEnvFile } from './env-files.js'
+import { editsEnvFile, realTarget } from './env-files.js'
 import {
   expandsToWords,
   hasOptionAlternation,
@@ -3561,6 +3561,14 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
   return checkAt(command, ctx, scope, 0)
 }
 
+// Every agent's hooks live in <agents dir>/<id>/settings.json; rewriting one drops them (TP-4256 A5).
+// Matched on the real path of the target, never on command text.
+function isAgentSettings(resolved: string): boolean {
+  const real = realTarget(resolved)
+  if (path.basename(real) !== 'settings.json') return false
+  return path.dirname(path.dirname(real)) === realTarget(agentsDir())
+}
+
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 /** The deny reason for one tool call, or undefined to leave it to the normal permission flow. */
@@ -3573,6 +3581,7 @@ export function checkToolCall(toolName: string, toolInput: unknown, ctx: GuardCo
   if (typeof file !== 'string') return undefined
   const resolved = path.resolve(ctx.cwd, file)
   if (ctx.protectedPaths.some(p => resolved.includes(p))) return REASONS.protectedPath
+  if (isAgentSettings(resolved)) return REASONS.protectedPath
   return editsEnvFile(resolved, ctx.env) ? REASONS.ghHelperEnvFileEdit : undefined
 }
 
@@ -3658,12 +3667,6 @@ const ownerOnlyPaths = (env: NodeJS.ProcessEnv): string[] => {
   return relocated ? [...fragments, ...OWNER_ONLY_FILES.map(file => path.join(relocated, file))] : fragments
 }
 
-// The hooks live in the agent's own settings.json; rewriting it would drop them (TP-4256 A5).
-const ownSettingsPaths = (env: NodeJS.ProcessEnv): string[] => {
-  const agentId = env.AGENT_CHAT_AGENT_ID
-  return agentId ? [path.join(agentDir(agentId), 'settings.json')] : []
-}
-
 export function guardContext(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -3685,7 +3688,6 @@ export function guardContext(
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
       ...ownerOnlyPaths(env),
-      ...ownSettingsPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),

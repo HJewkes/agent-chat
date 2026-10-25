@@ -3059,20 +3059,42 @@ describe('an environment variable git runs as a program (TP-636)', () => {
   })
 })
 
-describe('an agent may not rewrite its own hook settings (TP-4256 A5)', () => {
-  const env = { AGENT_CHAT_AGENT_ID: 'a1-synthetic' }
-  const own = path.join(agentDir('a1-synthetic'), 'settings.json')
+describe("no agent may rewrite any agent's hook settings (TP-4256 A5)", () => {
+  const guard = () => guardContext({ AGENT_CHAT_AGENT_ID: 'a1-synthetic' }, '/work', '/home/example')
 
-  it.each(['Edit', 'Write', 'MultiEdit'])("denies %s on the agent's settings.json", tool => {
-    expect(checkToolCall(tool, { file_path: own }, guardContext(env, '/work', '/home/example'))).toBe(
-      REASONS.protectedPath,
-    )
+  it.each(['Edit', 'Write', 'MultiEdit'])('denies %s on its own settings.json', tool => {
+    const file = path.join(agentDir('a1-synthetic'), 'settings.json')
+    expect(checkToolCall(tool, { file_path: file }, guard())).toBe(REASONS.protectedPath)
   })
 
-  it('leaves another file in a different agent directory alone', () => {
-    const other = path.join(agentDir('a2-synthetic'), 'notes.txt')
-    expect(
-      checkToolCall('Write', { file_path: other }, guardContext(env, '/work', '/home/example')),
-    ).toBeUndefined()
+  it("denies a Write to a sibling agent's settings.json", () => {
+    const file = path.join(agentDir('a2-synthetic'), 'settings.json')
+    expect(checkToolCall('Write', { file_path: file }, guard())).toBe(REASONS.protectedPath)
+  })
+
+  it("denies a Write through a symlink that lands on an agent's settings.json", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-settings-link-'))
+    const previous = process.env.AGENT_CHAT_HOME
+    process.env.AGENT_CHAT_HOME = path.join(dir, 'home')
+    try {
+      fs.mkdirSync(agentDir('a2-synthetic'), { recursive: true })
+      fs.writeFileSync(path.join(agentDir('a2-synthetic'), 'settings.json'), '{}')
+      fs.symlinkSync(path.join(agentDir('a2-synthetic'), 'settings.json'), path.join(dir, 'alias.json'))
+      expect(checkToolCall('Write', { file_path: path.join(dir, 'alias.json') }, guard())).toBe(
+        REASONS.protectedPath,
+      )
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_CHAT_HOME
+      else process.env.AGENT_CHAT_HOME = previous
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['another file in an agent dir', () => path.join(agentDir('a2-synthetic'), 'notes.txt')],
+    ['a settings.json elsewhere', () => '/work/project/settings.json'],
+    ['a settings.json one level too deep', () => path.join(agentDir('a2-synthetic'), 'sub', 'settings.json')],
+  ])('leaves %s alone', (_name, file) => {
+    expect(checkToolCall('Write', { file_path: file() }, guard())).toBeUndefined()
   })
 })
