@@ -19,6 +19,8 @@ export interface PeerPorts {
   /** The command line of `pid`, or undefined when it cannot be read. */
   argv(pid: number): string | undefined
   process(pid: number): { ppid: number; comm: string } | undefined
+  /** CC-1246: the session id and controlling tty (`tty_nr`, 0 for none) of `pid`, or undefined when unread. */
+  terminal(pid: number): { session: number; ttyNr: number } | undefined
 }
 
 /** The MCP server sits at most a wrapper or two below Claude Code; a longer chain is not that shape. */
@@ -65,8 +67,17 @@ const runsClaudeCode = (pid: number, ports: PeerPorts): boolean => {
  * such a process has no Claude Code ancestor and is not caught here.
  */
 export function claudeCodeAncestor(conn: net.Socket, ports: PeerPorts, maxDepth = 64): number | undefined {
+  return claudeCodeAncestorOf(ports.peerPid(conn), ports, maxDepth)
+}
+
+/** `claudeCodeAncestor` from a pid already read, so one spawn reads its peer once. */
+export function claudeCodeAncestorOf(
+  start: number | undefined,
+  ports: PeerPorts,
+  maxDepth = 64,
+): number | undefined {
   const seen = new Set<number>()
-  let pid = ports.peerPid(conn)
+  let pid = start
   while (pid !== undefined && pid > 1 && seen.size < maxDepth && !seen.has(pid)) {
     if (runsClaudeCode(pid, ports)) return pid
     seen.add(pid)
@@ -74,6 +85,46 @@ export function claudeCodeAncestor(conn: net.Socket, ports: PeerPorts, maxDepth 
   }
   return undefined
 }
+
+/**
+ * CC-1246: why the peer `pid` is not proven to be the human at a terminal, or undefined when it is.
+ * Proof is positive: a readable peer pid with a controlling tty, a strict descendant of its own
+ * session leader, which is an interactive process (no `-c` script) with no Claude Code ancestor.
+ * So a missing peer pid (off Linux, a forwarded socket), `setsid` or `systemd-run` (no tty), an
+ * orphan reparented away from its session (`nohup … &`) and `tmux new -d '<cmd>'` (the command
+ * leads its session, or a `sh -c` does) all fail. Not closed: an agent typing into an
+ * interactive shell it owns, e.g. `tmux send-keys`, looks the same as the human to the kernel.
+ */
+export function humanProofGap(pid: number | undefined, ports: PeerPorts): string | undefined {
+  if (pid === undefined) return 'no peer pid'
+  const term = ports.terminal(pid)
+  if (term === undefined) return 'peer terminal unreadable'
+  if (term.ttyNr === 0) return 'no controlling tty'
+  if (!descendsFrom(pid, term.session, ports)) return 'not under its session leader'
+  if (runsScript(ports.argv(term.session))) return 'session leader runs a script'
+  const agent = claudeCodeAncestorOf(term.session, ports)
+  return agent === undefined ? undefined : `session leader under Claude Code ${agent}`
+}
+
+/** A strict descendant: the peer leading its own session (`setsid cmd`, `tmux new -d cmd`) is not. */
+const descendsFrom = (pid: number, leader: number, ports: PeerPorts): boolean => {
+  if (leader <= 1) return false
+  let current: number | undefined = ports.process(pid)?.ppid
+  for (let depth = 0; current !== undefined && current > 1 && depth < 64; depth++) {
+    if (current === leader) return true
+    current = ports.process(current)?.ppid
+  }
+  return false
+}
+
+/** An unreadable command line, or one with a short-flag cluster holding `c` (`sh -c`, `bash -lc`). */
+const runsScript = (argv: string | undefined): boolean =>
+  argv === undefined ||
+  argv
+    .trim()
+    .split(/\s+/)
+    .slice(1)
+    .some(token => /^-[A-Za-z]*c[A-Za-z]*$/.test(token))
 
 const forwarderAt = (pid: number, ports: PeerPorts): boolean => {
   const proc = ports.process(pid)
@@ -92,6 +143,29 @@ export function parseStat(stat: string): { ppid: number; comm: string } | undefi
       .split(/\s+/)[1],
   )
   return Number.isInteger(ppid) ? { ppid, comm: stat.slice(open + 1, close) } : undefined
+}
+
+/** CC-1246: `session` and `tty_nr`, the 4th and 5th fields after comm (`state ppid pgrp session tty_nr`). */
+export function parseStatTerminal(stat: string): { session: number; ttyNr: number } | undefined {
+  const close = stat.lastIndexOf(')')
+  if (close < 0) return undefined
+  const [session, ttyNr] = stat
+    .slice(close + 1)
+    .trim()
+    .split(/\s+/)
+    .slice(3, 5)
+    .map(Number)
+  return Number.isInteger(session) && Number.isInteger(ttyNr)
+    ? { session: session!, ttyNr: ttyNr! }
+    : undefined
+}
+
+const readStat = (pid: number): string | undefined => {
+  try {
+    return fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -147,11 +221,13 @@ export const linuxPeerPortsWith = (runSs: () => string): PeerPorts => ({
   },
   argv: psArgvReader,
   process(pid) {
-    try {
-      return parseStat(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'))
-    } catch {
-      return undefined
-    }
+    const stat = readStat(pid)
+    return stat === undefined ? undefined : parseStat(stat)
+  },
+  // Off Linux there is no /proc, so this reads undefined and a human stays unproven (fail closed).
+  terminal(pid) {
+    const stat = readStat(pid)
+    return stat === undefined ? undefined : parseStatTerminal(stat)
   },
 })
 

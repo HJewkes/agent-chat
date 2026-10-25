@@ -11,7 +11,9 @@ import { SocketServer } from '../broker/socket.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 import {
   claudeCodeAncestor,
+  humanProofGap,
   parseStat,
+  parseStatTerminal,
   peerPidFromSs,
   provePeerLocal,
   type PeerPorts,
@@ -26,11 +28,13 @@ const tree = (
   procs: Record<number, [number, string]>,
   peer: number | undefined,
   argvs: Record<number, string> = {},
+  terminals: Record<number, { session: number; ttyNr: number }> = {},
 ): PeerPorts => ({
   peerPid: () => peer,
   argv: pid =>
     pid in argvs ? argvs[pid] : procs[pid] === undefined ? undefined : `/usr/bin/${procs[pid]![1]} --flag`,
   process: pid => (procs[pid] === undefined ? undefined : { ppid: procs[pid]![0], comm: procs[pid]![1] }),
+  terminal: pid => terminals[pid],
 })
 
 describe('provePeerLocal', () => {
@@ -192,10 +196,80 @@ describe('claudeCodeAncestor', () => {
   })
 })
 
+describe('humanProofGap (CC-1246)', () => {
+  const PTS = 34816
+  /** The human typing `agent-chat spawn` in a tmux pane: node under the pane's interactive zsh. */
+  const TERMINAL = { 700: [650, 'node'], 650: [600, 'zsh'], 600: [1, 'tmux'] } as Record<
+    number,
+    [number, string]
+  >
+  const inSession = (session: number, ttyNr = PTS) => ({ 700: { session, ttyNr }, 650: { session, ttyNr } })
+
+  it('proves the human at an interactive shell with a controlling tty', () => {
+    expect(humanProofGap(700, tree(TERMINAL, 700, {}, inSession(650)))).toBeUndefined()
+  })
+
+  it('accepts a login shell, whose argv starts with a dash', () => {
+    expect(humanProofGap(700, tree(TERMINAL, 700, { 650: '-zsh' }, inSession(650)))).toBeUndefined()
+  })
+
+  it('refuses an undefined peer pid, as off Linux or through a forwarded socket', () => {
+    expect(humanProofGap(undefined, tree(TERMINAL, undefined, {}, inSession(650)))).toBe('no peer pid')
+  })
+
+  it('refuses when the peer’s stat cannot be read, as on darwin with no /proc', () => {
+    expect(humanProofGap(700, tree(TERMINAL, 700))).toBe('peer terminal unreadable')
+  })
+
+  it('refuses a caller with no controlling tty (setsid, systemd-run --user)', () => {
+    expect(humanProofGap(700, tree(TERMINAL, 700, {}, inSession(650, 0)))).toBe('no controlling tty')
+  })
+
+  it('refuses a caller that leads its own session (tmux new -d <cmd>, setsid -c)', () => {
+    expect(humanProofGap(700, tree(TERMINAL, 700, {}, inSession(700)))).toBe('not under its session leader')
+  })
+
+  it('refuses an orphan reparented away from its session leader (nohup … &)', () => {
+    const orphan = { 700: [1, 'node'], 650: [600, 'zsh'], 600: [1, 'tmux'] } as Record<
+      number,
+      [number, string]
+    >
+
+    expect(humanProofGap(700, tree(orphan, 700, {}, inSession(650)))).toBe('not under its session leader')
+  })
+
+  it('refuses a session led by a shell running a -c script, or one whose argv is unreadable', () => {
+    expect(
+      humanProofGap(700, tree(TERMINAL, 700, { 650: '/bin/zsh -lc agent-chat spawn x' }, inSession(650))),
+    ).toBe('session leader runs a script')
+    expect(humanProofGap(700, { ...tree(TERMINAL, 700, {}, inSession(650)), argv: () => undefined })).toBe(
+      'session leader runs a script',
+    )
+  })
+
+  it('refuses a session whose leader sits under Claude Code', () => {
+    const underClaude = { 700: [650, 'node'], 650: [500, 'zsh'], 500: [1, 'claude'] } as Record<
+      number,
+      [number, string]
+    >
+
+    expect(humanProofGap(700, tree(underClaude, 700, {}, inSession(650)))).toBe(
+      'session leader under Claude Code 500',
+    )
+  })
+})
+
 describe('parsers', () => {
   it('reads ppid and comm from stat even when comm holds parentheses', () => {
     expect(parseStat('12 (a) b) S 7 12 12 0')).toEqual({ ppid: 7, comm: 'a) b' })
     expect(parseStat('garbage')).toBeUndefined()
+  })
+
+  it('reads session and tty_nr from stat after the last parenthesis', () => {
+    expect(parseStatTerminal('12 (a) b) S 7 12 9 34816 12 4194560')).toEqual({ session: 9, ttyNr: 34816 })
+    expect(parseStatTerminal('12 (x) S 7 12 12 0 -1')).toEqual({ session: 12, ttyNr: 0 })
+    expect(parseStatTerminal('12 (x) S 7')).toBeUndefined()
+    expect(parseStatTerminal('garbage')).toBeUndefined()
   })
 
   const ss = [
