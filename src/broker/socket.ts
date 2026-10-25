@@ -30,6 +30,7 @@ import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { integrityFrameRefusal } from './integrity-frame.js'
 import { IntegrityLedger } from './integrity-ledger.js'
+import { SettingsWatch } from './settings-watch.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
@@ -463,6 +464,10 @@ export class SocketServer {
   private jobKick: JobKick | undefined
   /** TP-4256: launch nonces and their shell-file baselines. Memory only, so a restart leaves every nonce unknown. */
   readonly integrity = new IntegrityLedger()
+  /** TP-4256 A5: re-hashes the launch files the broker wrote, on every check and on a timer. */
+  readonly settingsWatch = new SettingsWatch(this.integrity, (nonce, mismatch) =>
+    this.noticeQuarantine(nonce, mismatch),
+  )
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -487,6 +492,7 @@ export class SocketServer {
     this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
+    this.settingsWatch.start()
   }
 
   attachJobKick(port: JobKick): void {
@@ -544,6 +550,7 @@ export class SocketServer {
   }
 
   close(): void {
+    this.settingsWatch.stop()
     this.verifier?.stop()
     this.unwatch()
     this.feed.close()
@@ -1880,6 +1887,7 @@ export class SocketServer {
   private handleIntegrityCheck(conn: Conn, msg: Extract<ClientMessage, { t: 'integrity_check' }>): void {
     const refusal = integrityFrameRefusal(msg as unknown as Record<string, unknown>)
     if (refusal !== undefined) return reply(conn, { t: 'integrity_result', ok: false, reason: refusal })
+    this.settingsWatch.sweep()
     const result = this.integrity.check(msg.nonce, msg.session, msg.records)
     if (result.ok) return reply(conn, { t: 'integrity_result', ok: true })
     if (result.reason === 'no baseline')

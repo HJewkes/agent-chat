@@ -21,7 +21,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { ghWriteKeysDir } from '../paths.js'
+import { agentsDir, ghWriteKeysDir } from '../paths.js'
 import {
   configPrograms,
   configWriteScript,
@@ -80,7 +80,7 @@ import {
   type GhAliasSet,
   type ReadGhAliases,
 } from './gh-runs.js'
-import { editsEnvFile } from './env-files.js'
+import { editsEnvFile, realTarget } from './env-files.js'
 import {
   expandsToWords,
   hasOptionAlternation,
@@ -3561,6 +3561,20 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
   return checkAt(command, ctx, scope, 0)
 }
 
+// The native realpath gives the on-disk case of what exists; the fold covers a leaf not made yet.
+const canonical = (file: string, platform: NodeJS.Platform): string => {
+  const real = realTarget(file, fs.realpathSync.native)
+  return platform === 'darwin' || platform === 'win32' ? real.toLowerCase() : real
+}
+
+/**
+ * Every launch file an agent's hooks depend on lives under the agents dir, so one rule on the real
+ * path covers them all, with no list of names (TP-4256 A5). Never matched on command text (CC-1643).
+ */
+export function isUnderAgentsDir(resolved: string, platform: NodeJS.Platform = process.platform): boolean {
+  return canonical(resolved, platform).startsWith(canonical(agentsDir(), platform) + path.sep)
+}
+
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 /** The deny reason for one tool call, or undefined to leave it to the normal permission flow. */
@@ -3573,6 +3587,7 @@ export function checkToolCall(toolName: string, toolInput: unknown, ctx: GuardCo
   if (typeof file !== 'string') return undefined
   const resolved = path.resolve(ctx.cwd, file)
   if (ctx.protectedPaths.some(p => resolved.includes(p))) return REASONS.protectedPath
+  if (isUnderAgentsDir(resolved)) return REASONS.protectedPath
   return editsEnvFile(resolved, ctx.env) ? REASONS.ghHelperEnvFileEdit : undefined
 }
 

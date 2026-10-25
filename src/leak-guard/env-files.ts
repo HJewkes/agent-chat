@@ -35,16 +35,20 @@ const readLink = (file: string): string | undefined => {
  * real path of its nearest existing parent plus the rest, following a dangling symlink to its
  * target, since a write through one creates the target.
  */
-export function realTarget(file: string, links = MAX_LINKS): string {
+export function realTarget(
+  file: string,
+  realpath: (file: string) => string = fs.realpathSync,
+  links = MAX_LINKS,
+): string {
   try {
-    return fs.realpathSync(file)
+    return realpath(file)
   } catch {
     const parent = path.dirname(file)
     if (parent === file) return file
-    const joined = path.join(realTarget(parent, links), path.basename(file))
+    const joined = path.join(realTarget(parent, realpath, links), path.basename(file))
     const link = readLink(joined)
     if (link === undefined || links === 0) return joined
-    return realTarget(path.resolve(path.dirname(joined), link), links - 1)
+    return realTarget(path.resolve(path.dirname(joined), link), realpath, links - 1)
   }
 }
 

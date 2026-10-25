@@ -1474,6 +1474,58 @@ hook value is compared exactly, so `ENV=dev` leaves `src/dev/x.ts` alone. The fi
 symlink points at, edited under its own name, is TP-4256's. The renamed-gh rule leaves a `HOME=`
 prefix in front of a renamed gh copy, and hash/`commands[]` rebinding (TP-2706).
 
+### Agent hook settings (TP-4256 A5)
+
+An agent's hooks depend on the launch files in `<agents dir>/<id>/`: `settings.json`, `mcp.json`,
+`plan.json` and `relaunch`. Rewriting any of them can start the agent, or its next launch, without
+the guard.
+
+**Boundary.**
+
+- Pretool on the Edit route is a convenience. It refuses every Edit, Write, MultiEdit and
+  NotebookEdit call whose target lies under the agents dir, by one rule: the native real path of the
+  target (for a file not made yet, the native real path of its nearest existing parent plus the
+  rest; case-folded on darwin and win32) starts with the real agents dir plus a separator. There is
+  no list of file names, and coordinators are refused too.
+- A Bash write is never refused up front: the guard does not match command text against path
+  spellings (CC-1643).
+- The guarantee is the broker's watch (`src/broker/settings-watch.ts`) over every launch file,
+  **from A3 on**: until A3 calls `SettingsWatch.register` from the launcher, nothing is registered
+  and the watch sees nothing. Once registered, it keeps the sha256 of each file a launch wrote,
+  re-hashes them on every `integrity_check` and on a 60 s timer, and the first changed, deleted or
+  unreadable file quarantines that launch and files one owner notice. It detects; it does not
+  prevent, restore, or stop the agent.
+- The watch reads only bounded regular files: it lstats first, and anything but the same regular
+  file (same dev and inode), such as a FIFO, a device, a symlink or a replacement file, latches
+  `state` without being opened. The read is non-blocking and no-follow, and it stops at the
+  baseline size plus 4 KiB.
+
+**What the watch cannot catch.**
+
+- A file edited and restored between two sweeps (the A3 follow-up: mtime, ctime and inode, or
+  `fs.watch`).
+- Anything within its latency of up to 60 s. A hookless agent sends no `integrity_check`, so until
+  A3 refuses to relaunch a quarantined nonce, the notice is the only consequence. Whether Claude Code
+  re-reads a `--settings` file mid-session is UNVERIFIED.
+- A change made while the broker is down, or after a restart and before re-registration: the
+  ledger and the watch are memory only.
+- Files outside the agents dir that decide whether the hook runs: the agent-chat `dist/` or plugin
+  install the hook command points at, the node binary, and carried user settings. Those need their
+  own task.
+
+The Edit-route rule also leaves two known gaps. A hard link outside the agents dir to a launch file
+has a real path outside it; making it needs Bash, and the watch sees the change. And the case-fold applies only on darwin and win32, so a case-insensitive Linux mount (ext4 casefold,
+vfat) holding the agents dir is not folded for a leaf not made yet.
+
+**Reviewer scope.** In scope: whether the one prefix rule refuses every Edit-family write whose
+canonical real path is under the canonical agents dir (symlinks, a missing leaf, case on a
+case-insensitive volume), and whether the watch latches on any byte or state change of any
+registered file and fails closed on an unknown nonce, an unreadable file or a missing baseline.
+Out of scope: Bash-route prevention (CC-1643), wiring `register` and refusing a quarantined
+relaunch (A3), edit-then-restore (A3 follow-up), persistence across restarts (owner), and hook
+binary or `dist/` integrity (a new task). A finding that is another spelling of a path under the
+agents dir is a defect in the rule's canonicalisation: fix it there, and add no new rule or name.
+
 ### Config the guard cannot read (TP-630)
 
 A `-c` or `--config-env` word that the shell expands in a way the guard cannot tell (`$(cat k)`,
