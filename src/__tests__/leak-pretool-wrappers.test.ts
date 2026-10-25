@@ -68,3 +68,60 @@ describe('stdbuf and ionice run the command after their options (CC-1223)', () =
     expect(checkCommand(command, ctx)).toBeUndefined()
   })
 })
+
+describe('caffeinate and exec read option clusters as getopt does (CC-1300)', () => {
+  it.each([
+    'caffeinate -it 5 git push --no-verify',
+    'caffeinate -iw 12 git push --no-verify',
+    'caffeinate -t5 git push --no-verify',
+    'caffeinate -di -t 5 git push --no-verify',
+    'caffeinate -- git push --no-verify',
+    'exec -la x git push --no-verify',
+    'exec -cla x git push --no-verify',
+    'exec -ax git push --no-verify',
+    'exec -l -a x git push --no-verify',
+    'exec -- git push --no-verify',
+    '/usr/bin/caffeinate -it 5 exec -la x git push --no-verify',
+  ])('denies a push that skips hooks behind it: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.noVerify)
+  })
+
+  it.each(['caffeinate -it 5 env GIT_CONFIG_COUNT=0 git push', 'exec -la x env -u GIT_CONFIG_COUNT git push'])(
+    'denies a git config variable it carries: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBe(REASONS.gitConfigEnv)
+    },
+  )
+
+  it.each(['caffeinate -"$O" 5 git push --no-verify', 'exec -l"$A" x git push --no-verify'])(
+    'denies an option word it cannot read: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBeDefined()
+    },
+  )
+
+  it('denies a variable name built at runtime behind an exec -la cluster', () => {
+    const bare = checkCommand('printf -v "$N" y; git push', ctx)
+
+    const wrapped = checkCommand('exec -la x printf -v "$N" y; git push', ctx)
+
+    expect(bare).toBeDefined()
+    expect(wrapped).toBe(bare)
+  })
+
+  it('scans PR text for private terms behind a caffeinate -it cluster', () => {
+    expect(checkCommand('caffeinate -it 5 gh pr create -t zq7privateseat -b y', ctx)).toMatch(/private data/)
+  })
+
+  it.each([
+    'caffeinate -i make',
+    'caffeinate -it 5 make',
+    'caffeinate -w 12 git status',
+    'exec make',
+    'exec -la x make',
+    'exec -a x git push',
+    'exec 1<>b.md; git status',
+  ])('allows a command that pushes nothing past hooks: %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})

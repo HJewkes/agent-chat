@@ -333,7 +333,10 @@ burndown backstop are what catch a leak.
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
 `nice`, `timeout`, `caffeinate`, `coproc`, `sudo`, zsh's `noglob`, `nocorrect` and `repeat <n>`,
 `if`/`then` and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
-`/usr/bin/nice` is stripped like `nice`. Under `sudo` the guard treats the directory and config as
+`/usr/bin/nice` is stripped like `nice`. The options of `nice`, `timeout`, `stdbuf`, `ionice`,
+`caffeinate` and `exec` are read the way their getopt reads them (long-name prefixes, `--opt value`,
+short clusters such as `-it 5` whose value letter takes the next word), so a value is never read as
+the command. Under `sudo` the guard treats the directory and config as
 unknown, because sudo resets HOME and `-D`, `-R` and `-i` move the cwd; a `sudo` long option it does
 not know, an option word the shell expands, or a bare `-h` before another word (`--help` or `--host`,
 by sudo version) denies. `sudo -s`, `-i`, `--shell` and `--login` run a shell, so the guard checks

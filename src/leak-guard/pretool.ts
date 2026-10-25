@@ -319,6 +319,10 @@ const TIMEOUT_GETOPT: Getopt = {
     version: false,
   },
 }
+// Apple caffeinate: getopt `dimsut:w:`, no long options.
+const CAFFEINATE_GETOPT: Getopt = { shortValue: 'tw', long: {} }
+// bash and zsh exec: `[-cl] [-a name]`, with clusters and a glued value.
+const EXEC_GETOPT: Getopt = { shortValue: 'a', long: {} }
 /** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
 const CHECKED_NAMES = new Set([
   ...PLAIN_WRAPPERS,
@@ -623,11 +627,11 @@ function wrapperEnd(
   values: number[] = [],
 ): number | undefined {
   if (PLAIN_WRAPPERS.has(name)) return dropOptions(words, at + 1)
-  if (name === 'exec') return dropOptions(words, at + 1, ['-a'], values)
+  if (name === 'exec') return dropGetopt(words, at + 1, EXEC_GETOPT, values)
   if (name === 'nice') return dropGetopt(words, at + 1, NICE_GETOPT, values)
   if (name === 'stdbuf') return dropGetopt(words, at + 1, STDBUF_GETOPT, values)
   if (name === 'ionice') return dropGetopt(words, at + 1, IONICE_GETOPT, values)
-  if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'], values)
+  if (name === 'caffeinate') return dropGetopt(words, at + 1, CAFFEINATE_GETOPT, values)
   if (name === 'timeout' || name === 'repeat') return dropGetopt(words, at + 1, TIMEOUT_GETOPT, values) + 1
   return undefined
 }
