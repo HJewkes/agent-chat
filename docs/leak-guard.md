@@ -1744,6 +1744,21 @@ Not covered, by design or by cost:
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on a literal `PATH` (an unread one denies, CC-1236), `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
+- git called under a name the text guard cannot follow (CC-1641) is covered by the shim, not the
+  text reading: a renamed sh copy, python, perl, awk or a `KSH` symlink running `g=gi; ${g}t push
+--no-verify` still reaches the shim, which refuses `--no-verify`. Pinned as F1-F9 in
+  `leak-shim-skip-rows.test.ts`;
+- git reached without passing the shim, so `--no-verify` lands (open, CC-1645). Pinned as
+  landing today in `leak-shim-skip-rows.test.ts`, describe "shim-skipping (CC-1645, flips in S3)":
+  - D1-D11: an absolute `/usr/bin/git` inside `csh`, `sh -c "$(cat s)"` or `sh -c '…'`, `env -i`,
+    a reset `PATH`, `command -p`, a `sudo` shell's secure path, the TP-4245 `eval` of `$G $P1 $P2`,
+    `/usr/lib/git-core/git-push` and `/usr/lib/git-core/git`, a copy of `/usr/bin/git`, and a
+    python subprocess given the absolute path;
+  - T1-T7: a git or gh alias or config key that runs a shell command (`~/.aliases` sourced by
+    `zsh -i`, a copied gh with a `!` alias, `p = !$X`, `diff.external`, `core.editor`), a
+    `printf -v` subscript, python and perl with a reset env or `PATH`, and zsh's `| {sh}`.
+    The planned fix is a run-time sandbox that binds the shim over every git binary (CC-1645 S2 and
+    S3); the pinned assertions flip to refused then.
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
   Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`, `ash`; `SHELLS` in
