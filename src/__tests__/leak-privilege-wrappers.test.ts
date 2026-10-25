@@ -184,7 +184,11 @@ const ALLOWED = [
   'TimeoutStopSec=5',
 ]
 const REFUSED = [
-  ...['StandardInputText=git push --no-verify', 'StandardInputData=Z2l0IHB1c2gK', 'StandardInput=file:/tmp/s'],
+  ...[
+    'StandardInputText=git push --no-verify',
+    'StandardInputData=Z2l0IHB1c2gK',
+    'StandardInput=file:/tmp/s',
+  ],
   ...['Environment=GIT_CONFIG_COUNT=0', 'EnvironmentFile=/tmp/e', 'WorkingDirectory=/tmp', 'User=root'],
   ...['ExecStart=/bin/true', 'ExecStartPre=/bin/true', 'ExecStartPost=/bin/true', 'ExecCondition=/bin/true'],
   ...['ExecReload=/bin/true', 'ExecStop=/bin/true', 'ExecStopPost=/bin/true', 'execstart=/bin/true'],
