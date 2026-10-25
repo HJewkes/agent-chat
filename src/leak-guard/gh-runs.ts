@@ -444,8 +444,14 @@ const GH_AUTH_FLAGS = new Set([
   '--clipboard',
 ])
 
-/** Programs whose words are data, so `auth setup-git` among them runs nothing. */
-const DATA_PROGRAMS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'cat', 'man'])
+/**
+ * Builtins whose words are data, so `auth setup-git` among them runs nothing. Only builtins and only
+ * by bare name: a gh copied to `./grep`, or to a `grep` earlier on PATH, runs as that name.
+ */
+const DATA_BUILTINS = new Set(['echo', 'printf'])
+
+/** Whether the command word runs a builtin that takes its words as data, never a renamed gh. */
+export const ghDataProgram = (head: string): boolean => DATA_BUILTINS.has(head)
 
 /**
  * Whether a program not named gh may be a renamed copy of it writing its own path as git's credential
@@ -453,8 +459,8 @@ const DATA_PROGRAMS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg',
  * `setup-git`, an unresolved subcommand, or a gh-only flag counts; a bare `auth login` or `refresh` does not,
  * since other CLIs take it and it waits on a browser a headless agent cannot open.
  */
-export function renamedGhWritesHelper(name: string, args: readonly (string | undefined)[]): boolean {
-  if (DATA_PROGRAMS.has(name)) return false
+export function renamedGhWritesHelper(head: string, args: readonly (string | undefined)[]): boolean {
+  if (ghDataProgram(head)) return false
   const at = ghCommandWords(args, 2)
   const [verb, sub] = at.map(i => args[i])
   if (verb !== 'auth') return false

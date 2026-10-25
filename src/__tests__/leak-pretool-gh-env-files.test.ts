@@ -29,6 +29,7 @@ describe('a gh helper or config variable written into a file a later shell sourc
     `echo 'path=(/opt/bin $path)' >> ~/.zshrc`,
     `cat >> ~/.zshenv <<'EOF'\nexport GH_PATH=/opt/x\nEOF`,
     `echo 'export GH_PATH=/opt/x' >> /srv/agent/env.sh`,
+    `echo 'export GH_PATH=/opt/x' >> ~/.claude/session-env/s1/sessionstart-hook-0.sh`,
   ])('denies %s, since it names the variable', command => {
     expect(checkCommand(command, ctx({ ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' }))).toBe(
       REASONS.ghHelperEnvFile,
@@ -66,6 +67,10 @@ describe('a gh helper or config variable written into a file a later shell sourc
     `sed -i 's/^#//' ~/.bashrc`,
     `bash -c 'cat /tmp/rc >> ~/.bashrc'`,
     'mv /tmp/rc "$CLAUDE_ENV_FILE"',
+    `LESSOPEN='|cp /tmp/rc %s' less ~/.zshenv`,
+    'less ~/.zshenv',
+    `rg --pre /tmp/x '' ~/.zshenv`,
+    'GREP_OPTIONS=-r grep x ~/.bashrc',
   ])('denies %s, since a command other than a read or echo may write it', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.ghHelperEnvFile)
   })
@@ -89,6 +94,7 @@ describe('a gh helper or config variable written into a file a later shell sourc
     { file: '/srv/agent/.bashrc', tool: 'Write' },
     { file: '/srv/agent/.zshenv', tool: 'Edit' },
     { file: '/srv/agent/env.sh', tool: 'MultiEdit' },
+    { file: '/srv/agent/.claude/session-env/s1/sessionstart-hook-0.sh', tool: 'Write' },
   ])('denies the $tool tool on $file', ({ file, tool }) => {
     const env = { ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' }
     expect(checkToolCall(tool, { file_path: file, content: 'export FOO=1\n' }, ctx(env))).toBe(
@@ -125,14 +131,30 @@ describe('a renamed copy of gh writing its own path as the credential helper (TP
     'x auth --with-token login',
     'x auth login --git-protocol https',
     './x auth "$SUB"',
+    './grep auth setup-git',
+    'grep auth setup-git',
   ])('denies %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.ghRenamed)
   })
 
-  it.each(['gcloud auth login', 'heroku auth login', 'echo auth setup-git', 'grep -rn auth setup-git docs'])(
-    'allows %s',
-    command => {
-      expect(checkCommand(command, ctx())).toBeUndefined()
-    },
-  )
+  it.each([
+    './x sg',
+    'cp "$(command -v gh)" ./x; ./x sg',
+    'GH_CONFIG_DIR=/opt/c ./x a setup-git',
+    'XDG_CONFIG_HOME=/opt/c ./x a',
+    'export GH_CONFIG_DIR=/opt/c; ./x a',
+  ])('denies %s, since a renamed gh expands the alias the guard does not (adversary on #1233)', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghRenamed)
+  })
+
+  it.each([
+    'gcloud auth login',
+    'heroku auth login',
+    'echo auth setup-git',
+    `grep -rn 'auth setup-git' docs`,
+    'npm test',
+    './x pr view 1',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
 })

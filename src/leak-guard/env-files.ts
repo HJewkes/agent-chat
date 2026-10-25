@@ -11,8 +11,9 @@ type Env = Readonly<Record<string, string | undefined>>
 
 // A prefix, so `~/.bash?c` and a `.zshenv` under ZDOTDIR count; `x.bash` is a script, not a startup
 // file. Case-insensitive, as macOS's default filesystem is.
+// Claude Code keeps the files it sources for a session's SessionStart hooks under `session-env/`.
 const STARTUP_FILE =
-  /(?<![\w.-])\.(?:bash|zsh|zlog|zprofile|profile|kshrc|mkshrc|shrc)|\/etc\/(?:profile|bash|zsh|environment)|CLAUDE_ENV_FILE/i
+  /(?<![\w.-])\.(?:bash|zsh|zlog|zprofile|profile|kshrc|mkshrc|shrc)|\/etc\/(?:profile|bash|zsh|environment)|CLAUDE_ENV_FILE|session-env\//i
 
 /** Variables the hook may hold that name a file a later shell sources. */
 const SOURCED_ENV = ['CLAUDE_ENV_FILE', 'BASH_ENV', 'ENV']
@@ -39,11 +40,12 @@ export function namesEnvFile(text: string, env: Env): boolean {
 const HELPER_NAME =
   /(?<![A-Za-z0-9_])(?:GH_PATH|PATH|GH_CONFIG_DIR|XDG_CONFIG_HOME|HOME)(?![A-Za-z0-9_])|(?<![\w$./-])path(?:\[[^\]]*\])?\+?=/
 
-/** Commands that only read files or print the words on the line. */
+/**
+ * Commands that only read files or print the words on the line, and take no option that runs a
+ * program: `less` runs `LESSOPEN` and `rg` runs `--pre`, so neither is here.
+ */
 const PLAIN_COMMANDS = new Set(
-  'cat grep egrep fgrep rg head tail wc ls stat file diff cmp less test [ [[ true : cd echo printf'.split(
-    ' ',
-  ),
+  'cat grep egrep fgrep head tail wc ls stat file diff cmp test [ [[ true : cd echo printf'.split(' '),
 )
 
 const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
@@ -63,13 +65,17 @@ function writesLineText(head: string, args: readonly string[], cmd: SimpleComman
   return head === 'echo' || (!text.includes('%') && text.endsWith('\\n'))
 }
 
-/** Whether a command on a line that names an env file may write it something the guard cannot read. */
+/**
+ * Whether a command on a line that names an env file may write it something the guard cannot read.
+ * A prefix assignment may hand a plain command a program to run (`LESSOPEN`, `GREP_OPTIONS`), so a
+ * command behind one is not plain.
+ */
 function writesUnread(cmd: SimpleCommand, env: Env): boolean {
   if (cmd.arith) return false
   const at = cmd.words.findIndex(word => !ASSIGNMENT_WORD.test(word))
   if (at === -1) return false
   const head = path.basename(cmd.words[at] as string)
-  if (!PLAIN_COMMANDS.has(head)) return true
+  if (at > 0 || !PLAIN_COMMANDS.has(head)) return true
   const targets = cmd.writes.filter(word => word.includes(LIVE) || namesEnvFile(word, env))
   if (targets.length === 0) return false
   const live = cmd.marked.slice(at + 1).some(word => word.includes(LIVE))

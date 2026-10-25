@@ -72,6 +72,7 @@ import {
   ghWritesCredentialHelper,
   unsafeHelperEnv,
   renamedGhWritesHelper,
+  ghDataProgram,
   HIDDEN,
   type GhAlias,
   type GhAliasSet,
@@ -2690,7 +2691,37 @@ function checkSimple(
     return sshRunsLocalProgram(name, marked, cmd.splits) ? REASONS.sshProgram : undefined
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   const resolved = marked.map(word => (word.includes(LIVE) ? undefined : unmark(word)))
-  return renamedGhWritesHelper(name, resolved) ? REASONS.ghRenamed : undefined
+  if (renamedGhWritesHelper(head, resolved)) return REASONS.ghRenamed
+  return renamedGhRunsAlias(head, resolved, unwrapped.assigns, ctx, at) ? REASONS.ghRenamed : undefined
+}
+
+// HOME is left out: a prefix HOME is common on build lines, and an accepted gap here.
+const ALIAS_HOME_VARS: readonly string[] = ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME']
+
+/** Whether the command or an earlier export points gh at a config other than the hook's. */
+function movesGhConfig(assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean {
+  const prefix = assigns.some(word => ALIAS_HOME_VARS.includes(ASSIGNMENT.exec(word)?.[1] ?? ''))
+  return prefix || ALIAS_HOME_VARS.some(v => scope.exports.has(v) && scope.exports.get(v) !== ctx.env[v])
+}
+
+/**
+ * Whether a program not named gh may be a renamed copy running a gh alias (TP-4232), as
+ * `./x a setup-git` does after `gh alias set a auth`: its words name an alias in the hook's gh
+ * config, or the line points gh at another config whose aliases the guard does not read.
+ */
+function renamedGhRunsAlias(
+  head: string,
+  args: readonly (string | undefined)[],
+  assigns: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+): boolean {
+  // A bare assignment has no program to run.
+  if (head === '' || ghDataProgram(head)) return false
+  if (movesGhConfig(assigns, ctx, scope)) return true
+  if (ctx.readGhAliases === undefined) return false
+  const found = ghAliasAt(args, ghCommandWords(args, 3), ctx.readGhAliases)
+  return found !== undefined && typeof found !== 'string' && found.aliases.length > 0
 }
 
 const CD_WORDS = new Set(['cd', 'chdir', 'pushd', 'popd'])
