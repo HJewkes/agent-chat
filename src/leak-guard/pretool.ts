@@ -83,7 +83,7 @@ import {
   hasUnreadableConfig,
   hasUnreadableOption,
 } from './git-unresolved.js'
-import { pushFlagMayForm } from './push-words.js'
+import { pushFlagMayForm, pushOptionsEnd } from './push-words.js'
 import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import { globMayFormPush } from './glob-push.js'
@@ -1067,8 +1067,8 @@ export function checkGit(args: readonly string[]): string | undefined {
     i = next
   }
   const [sub, ...rest] = args.slice(i)
-  const opts = rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest
-  if (sub === 'push') return opts.some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
+  if (sub === 'push')
+    return rest.slice(0, pushOptionsEnd(rest, 0)).some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
   if (sub === 'config') return configWritesGuard(rest)
   return undefined
 }

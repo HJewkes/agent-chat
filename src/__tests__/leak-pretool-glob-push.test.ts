@@ -36,6 +36,50 @@ const DONE_WHEN = [
   "git -c core.pager='git push --no-verif*' log",
 ]
 
+/** git reads a `--` after an option that takes a value as that value, and keeps reading options. */
+const SWALLOWED_END = [
+  'git push -o -- --no-verif?',
+  'git push --push-option -- --no-verif*',
+  'git push --repo -- --no-verif?',
+  'git push --receive-pack -- --no-verif?',
+  'git push --exec -- --no-verif?',
+  'git push -fo -- --no-verif?',
+  'git push -? -- --no-verif?',
+  "sh -c 'git push -o -- --no-verif?'",
+  "git rebase -x 'git push -o -- --no-verif*' main",
+]
+
+const aliased: GuardContext = {
+  ...ctx,
+  readAlias: word => (word === 'p' ? { value: 'push', runsIn: '/work' } : undefined),
+}
+
+describe('a push option that takes the -- as its value (TP-4235)', () => {
+  it.each(SWALLOWED_END)('denies a glob after the swallowed --: %s', command => {
+    expect(checkCommand(command, ctx)).toBe(REASONS.globPush)
+  })
+
+  it('denies a glob after the swallowed -- through an alias for push', () => {
+    expect(checkCommand('git p -o -- --no-verif?', aliased)).toBe(REASONS.globPush)
+  })
+
+  it.each(['git push -o -- --no-verify', 'git push --push-option -- origin --no-verify'])(
+    'denies the literal flag after the swallowed --: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBe(REASONS.noVerify)
+    },
+  )
+
+  it.each([
+    'git push -o x -- --no-verif?',
+    'git push --push-option=x -- --no-verif*',
+    'git push -o -- -- --no-verif?',
+    'git push origin -- --no-verify',
+  ])('allows words after a -- no option takes: %s', command => {
+    expect(checkCommand(command, ctx)).toBeUndefined()
+  })
+})
+
 describe('a glob or brace word that may form push or --no-verify (TP-4235)', () => {
   it.each(DONE_WHEN)('denies it at every depth: %s', command => {
     expect(checkCommand(command, ctx)).toBe(REASONS.globPush)
@@ -91,6 +135,12 @@ describe('the built guard on the done_when rows (TP-4235)', () => {
     const decisions = DONE_WHEN.map(command => decide(command).permissionDecisionReason)
 
     expect(decisions).toEqual(DONE_WHEN.map(() => REASONS.globPush))
+  })
+
+  it('denies a glob after a swallowed -- through the hook', () => {
+    const decisions = SWALLOWED_END.map(command => decide(command).permissionDecisionReason)
+
+    expect(decisions).toEqual(SWALLOWED_END.map(() => REASONS.globPush))
   })
 
   it('allows a quoted glob through the hook', () => {

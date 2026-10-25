@@ -1,4 +1,5 @@
 import { mayExpandToWord } from './git-word.js'
+import { pushOptionsEnd } from './push-words.js'
 import { LIVE, unmark } from './shell-words.js'
 
 /**
@@ -24,7 +25,7 @@ export interface GlobPushRun {
   head?: string
 }
 
-/** Whether the run's command word, or a push option before a literal `--`, may expand to push or `--no-verify`. */
+/** Whether the run's command word, or a push option before the `--` that ends them, may expand to push or `--no-verify`. */
 export function globMayFormPush(run: GlobPushRun, at: number): boolean {
   if (run.tied && run.head !== undefined && mayExpandToAny(run.head, ['push', ...HOOK_SKIPS], GROUP))
     return true
@@ -32,9 +33,10 @@ export function globMayFormPush(run: GlobPushRun, at: number): boolean {
   const sub = run.resolved[at]
   if (sub !== 'push' && !(sub === undefined && mayExpandToAny(run.marked[at] as string, ['push'])))
     return false
-  for (let i = at + 1; i < run.marked.length; i++) {
-    if (run.resolved[i] === '--') return false
-    if (mayExpandToAny(run.marked[i] as string, HOOK_SKIPS)) return true
-  }
-  return false
+  const end = pushOptionsEnd(run.resolved, at + 1, i => mayFormValueOption(run.marked[i] as string))
+  return run.marked.slice(at + 1, end).some(word => mayExpandToAny(word, HOOK_SKIPS))
 }
+
+/** A glob or brace led by `-`, or one that may match `-o`, may be an option that takes the next `--` as its value. */
+const mayFormValueOption = (marked: string): boolean =>
+  GLOB_OR_GROUP.test(marked) && (unmark(marked).startsWith('-') || mayExpandToAny(marked, ['-o']))
