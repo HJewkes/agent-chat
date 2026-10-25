@@ -365,8 +365,8 @@ hands the words after it to bash or a `--shell=` shell, which the guard checks; 
 not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `su -s` and
 `--shell=` take the shells of the one list the rest of the guard uses (`SHELLS` in
 `src/leak-guard/shell-invocation.ts`: `sh`, `ash`, `bash`, `dash` and `zsh`), and the guard reads
-the `-c` text as that shell's (CC-1629). Any other shell there denies (privilegeOption) on a line
-that may reach git or gh (CC-1631). `gosu`, `su-exec`,
+the `-c` text as that shell's (CC-1629). Any other shell there, listed or not (`/bin/csh`,
+`/usr/bin/elvish`, `/usr/bin/git`), denies (foreignShell) on every line (CC-1631). `gosu`, `su-exec`,
 `chpst`, `setuidgid` and `s6-setuidgid` are not covered.
 
 Behind any of these wrappers, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or
@@ -407,8 +407,9 @@ a line that may reach git or gh. That covers an unquoted `$F`, which may split, 
 `script` without
 `-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, which the guard
 derives as it derives git's config env: from the command's assignments (`env` included), earlier
-exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named
-on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
+exports, and the hook env. A `SHELL` outside the guard's shell list denies (foreignShell) on every
+line, as a foreign shell does (CC-1631). One it cannot tell (named on the line in a way it cannot
+follow, or after `source`) denies (jobShell) on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
 macOS `script [file [command ...]]`, which runs its trailing words, is not covered. `sudo -s` and `--shell` run `$SHELL` too and get the same rule; `sudo -i` runs the passwd-entry shell, so a `SHELL` on the line does not change it.
 
 `prlimit`, GNU `time` (a bare `time` is read both ways and denies if either reading does: as GNU
@@ -435,12 +436,23 @@ read text unlike sh: csh rewrites `!` history, leaves a `"` open after `\`, and 
 `@ x = { CMD }` and `exit { CMD }`; ksh93 runs a script operand no file has as `name "$@"`; mksh
 predefines aliases. So a shell in `FOREIGN_SHELLS` (`csh`, `bsd-csh`, `tcsh`, `ksh`, `ksh93`, `rksh`,
 `rksh93`, `mksh`, `rmksh`, `lksh`, `rlksh`, `oksh`, `pdksh`, `posh`, `yash`, `fish`, `hush`, `rc`,
-`es`) denies (foreignShell) on a line that may reach git or gh, and the guard reads none of its
-`-c` text, stdin or operands (CC-1631). The shell is the base name of the program word after
-wrappers, so `/usr/bin/tcsh`, `env`, `sudo`, `xargs`, `find -exec` and `exec -a sh /bin/csh` all
-count as the real binary. The cost: `ksh -c 'git status'` and `git status && csh -c 'echo hi'`
-deny; run such text with one of the shells above. A foreign shell on a line with no git or gh is
-allowed.
+`es`) denies (foreignShell) on every line, and the guard reads none of its `-c` text, stdin or
+operands (CC-1631). It does not ask whether the line may reach git or gh either, since that scan
+reads the line as sh: fish's `(printf gi)t`, rc's `gi^t`, csh's `"$<"` and `!#:1:s/x/g/`, and tcsh's
+`$shell:t:s/tcsh/gi/` each build `git` where it sees none. A shell named by value (`su -s`,
+`capsh --shell=`, `$SHELL`, above) that is not in `SHELLS` denies the same way. The shell is the
+base name of the program word after wrappers, so `/usr/bin/tcsh`, `env`, `sudo`, `xargs`,
+`find -exec` and `exec -a sh /bin/csh` all count as the real binary. The cost: `csh -c 'echo hi'`
+and `ksh --version` deny; run such text with one of the shells above.
+
+Review boundary: pretool identifies a shell by its resolved base name only. It does not identify
+a program outside both lists that runs text (an unlisted shell such as `mksh-static`, `osh` or
+`rbash`, `python3 -c`, `perl -e`, `node -e`, awk's `system()`, sed's `e`), a renamed copy of a
+shell (`ln -s "$(command -v tcsh)" ./sh`), or a case variant (`KSH`, `BASH`). For those, the
+push-time git shim below is the backstop: it refuses a push with a `--no-veri` argument however
+the command was built (`no-verify`). Its limits: text that runs git by its absolute path
+(`/usr/bin/git`) skips the shim, and the owner's own sessions do not run it. Shim rows that prove
+these classes refused are follow-up CC-1641.
 
 | Denied                                                                                                                                                                                                                                                                                                                                    | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -1709,6 +1721,8 @@ Not covered, by design or by cost:
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on a literal `PATH` (an unread one denies, CC-1236), `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
+- a program outside both shell lists that runs text, a renamed copy of a shell, or a case variant
+  of its name (the review boundary above); the push-time shim is the backstop (CC-1641);
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
   Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ash`; `SHELLS` in
