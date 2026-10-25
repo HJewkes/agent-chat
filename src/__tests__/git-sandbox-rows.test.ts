@@ -39,21 +39,49 @@ interface Row {
 }
 
 const ROWS: Row[] = [
-  { id: 'D1 X=csh, nice +5', line: `X=csh; $X -c 'nice +5 /usr/bin/git push --no-verify origin HEAD:main'`, shells: ['bash'] },
+  {
+    id: 'D1 X=csh, nice +5',
+    line: `X=csh; $X -c 'nice +5 /usr/bin/git push --no-verify origin HEAD:main'`,
+    shells: ['bash'],
+  },
   { id: 'D2 sh -c from unread text', line: `sh -c "$(cat s)"`, shells: ['bash'] },
-  { id: 'D2b sh -c literal', line: `sh -c '/usr/bin/git push --no-verify origin HEAD:main'`, shells: ['bash'] },
+  {
+    id: 'D2b sh -c literal',
+    line: `sh -c '/usr/bin/git push --no-verify origin HEAD:main'`,
+    shells: ['bash'],
+  },
   { id: 'D3 env -i', line: `env -i /usr/bin/git push --no-verify origin HEAD:main`, shells: ['bash'] },
-  { id: 'D4 PATH reset', line: `PATH=/usr/bin:/bin git push --no-verify origin HEAD:main`, shells: ['bash', 'zsh'] },
+  {
+    id: 'D4 PATH reset',
+    line: `PATH=/usr/bin:/bin git push --no-verify origin HEAD:main`,
+    shells: ['bash', 'zsh'],
+  },
   { id: 'D5 command -p', line: `command -p git push --no-verify origin HEAD:main`, shells: ['bash', 'zsh'] },
   {
     id: 'D6 sudo csh (emulated env)',
     line: `env -i PATH="$SECURE_PATH" HOME="$ROOTHOME" "$ST/csh" -c 'hup git push --no-verify origin HEAD:main'`,
     shells: ['bash'],
   },
-  { id: 'D7 TP-4245 eval, $G $P1 $P2', line: `eval "$(cat f)"; $G $P1 $P2 origin HEAD:refs/heads/x`, shells: ['bash', 'zsh'] },
-  { id: 'D8 git-core dashed', line: `/usr/lib/git-core/git-push --no-verify origin HEAD:main`, shells: ['bash'] },
-  { id: 'D9 git-core git', line: `/usr/lib/git-core/git push --no-verify origin HEAD:main`, shells: ['bash'] },
-  { id: 'D10 copy of /usr/bin/git', line: `cp /usr/bin/git ./g2 && ./g2 push --no-verify origin HEAD:main`, shells: ['bash'] },
+  {
+    id: 'D7 TP-4245 eval, $G $P1 $P2',
+    line: `eval "$(cat f)"; $G $P1 $P2 origin HEAD:refs/heads/x`,
+    shells: ['bash', 'zsh'],
+  },
+  {
+    id: 'D8 git-core dashed',
+    line: `/usr/lib/git-core/git-push --no-verify origin HEAD:main`,
+    shells: ['bash'],
+  },
+  {
+    id: 'D9 git-core git',
+    line: `/usr/lib/git-core/git push --no-verify origin HEAD:main`,
+    shells: ['bash'],
+  },
+  {
+    id: 'D10 copy of /usr/bin/git',
+    line: `cp /usr/bin/git ./g2 && ./g2 push --no-verify origin HEAD:main`,
+    shells: ['bash'],
+  },
   {
     id: 'D11 python, git by path',
     line: `python3 -c "import subprocess; subprocess.run(['/usr/bin/git','push','--no-verify','origin','HEAD:main'])"`,
@@ -71,7 +99,11 @@ const ROWS: Row[] = [
     shells: ['bash'],
     needs: 'gh',
   },
-  { id: 'T3 TP-4238 allowlisted alias !$X', line: `printf '[alias]\\n\\tp = !$X\\n' >> .git/config; X='${AP}' git p`, shells: ['bash'] },
+  {
+    id: 'T3 TP-4238 allowlisted alias !$X',
+    line: `printf '[alias]\\n\\tp = !$X\\n' >> .git/config; X='${AP}' git p`,
+    shells: ['bash'],
+  },
   {
     id: 'T4a TP-4246 diff.external',
     line: `printf '[diff]\\n\\texternal = "%s"\\n' 'f() { ${AP}; }; f' >> .git/config; echo y >> R; git add -N R; git diff`,
@@ -134,10 +166,15 @@ beforeAll(() => {
   standins = path.join(scratch, 'standins')
   writeExecutable(path.join(guard, 'pre-push'), `echo 'guard pre-push ran' >&2; exit 1`)
   writeStandins()
-  const built = writeSandboxGit(path.join(scratch, 'state'), guard, REAL_PATH, ['p'], { HOME: path.join(scratch, 'home') })
+  const built = writeSandboxGit(path.join(scratch, 'state'), guard, REAL_PATH, ['p'], {
+    HOME: path.join(scratch, 'home'),
+  })
   if (built === undefined) throw new Error('sandbox git not written')
   sandbox = built
-  bwrapArgv = [probe.bwrap, ...sandboxArgv({ shim: sandbox.shim, targets: gitOverlayTargets(REAL_PATH, sandbox) })]
+  bwrapArgv = [
+    probe.bwrap,
+    ...sandboxArgv({ shim: sandbox.shim, targets: gitOverlayTargets(REAL_PATH, sandbox) }),
+  ]
 })
 afterAll(() => {
   if (scratch !== '') fs.rmSync(scratch, { recursive: true, force: true })
@@ -197,7 +234,8 @@ const agentEnv = (): NodeJS.ProcessEnv => ({
 
 function runSandboxed(line: string, shell: Shell): { landed: boolean; stderr: string } {
   const fx = fixture()
-  const shellArgv = shell === 'zsh' ? ['/usr/bin/zsh', '-f', '-c', line] : ['/bin/bash', '--noprofile', '--norc', '-c', line]
+  const shellArgv =
+    shell === 'zsh' ? ['/usr/bin/zsh', '-f', '-c', line] : ['/bin/bash', '--noprofile', '--norc', '-c', line]
   const [bin, ...args] = [...bwrapArgv, ...shellArgv] as [string, ...string[]]
   const out = spawnSync(bin, args, { cwd: fx.work, env: agentEnv(), encoding: 'utf8', timeout: 60_000 })
   const refs = git(path.join(fx.root, 'origin.git'), 'for-each-ref', '--format=%(objectname)')
@@ -210,19 +248,22 @@ const unmet = (c: (typeof cases)[number]): string => {
   return (c.shell === 'zsh' || c.needs === 'zsh') && !hasZsh ? 'no /usr/bin/zsh' : ''
 }
 
-describe.skipIf(skipReason !== '')(`rows inside the git sandbox (CC-1645 S2)${skipReason === '' ? '' : `: skipped, ${skipReason}`}`, () => {
-  it.for(cases)('$name is refused by the shim and lands nothing', (c, ctx) => {
-    if (unmet(c) !== '') ctx.skip(unmet(c))
+describe.skipIf(skipReason !== '')(
+  `rows inside the git sandbox (CC-1645 S2)${skipReason === '' ? '' : `: skipped, ${skipReason}`}`,
+  () => {
+    it.for(cases)('$name is refused by the shim and lands nothing', (c, ctx) => {
+      if (unmet(c) !== '') ctx.skip(unmet(c))
 
-    const result = runSandboxed(c.line, c.shell)
+      const result = runSandboxed(c.line, c.shell)
 
-    expect(result.stderr).toContain(REFUSED)
-    expect(result.landed).toBe(false)
-  })
+      expect(result.stderr).toContain(REFUSED)
+      expect(result.landed).toBe(false)
+    })
 
-  it('R1 residual: the sandbox shim’s own real-git copy run by path still lands', () => {
-    const result = runSandboxed(R1, 'bash')
+    it('R1 residual: the sandbox shim’s own real-git copy run by path still lands', () => {
+      const result = runSandboxed(R1, 'bash')
 
-    expect(result.landed).toBe(true)
-  })
-})
+      expect(result.landed).toBe(true)
+    })
+  },
+)

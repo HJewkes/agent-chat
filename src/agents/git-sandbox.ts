@@ -4,7 +4,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { gitMirrorDirFor, probeGit } from '../leak-guard/git-mirror.js'
-import { findRealGit, isExecutableFile, realpathOr, writeGitShim, type SpawnConfigHome } from '../leak-guard/git-shim.js'
+import {
+  findRealGit,
+  isExecutableFile,
+  realpathOr,
+  writeGitShim,
+  type SpawnConfigHome,
+} from '../leak-guard/git-shim.js'
 
 /**
  * CC-1645: a mount namespace in which every git binary is the push shim. A git named by path, a
@@ -62,7 +68,9 @@ function shimmedCoreEntries({ shim, mirror, core }: SandboxGit): string[] {
  */
 export function gitOverlayTargets(pathValue: string, git: SandboxGit): string[] {
   const own = new Set([git.shim, git.realCopy].map(realpathOr))
-  const found = [...onPath(pathValue, 'git'), ...shimmedCoreEntries(git)].filter(isExecutableFile).map(realpathOr)
+  const found = [...onPath(pathValue, 'git'), ...shimmedCoreEntries(git)]
+    .filter(isExecutableFile)
+    .map(realpathOr)
   return [...new Set(found.filter(target => !own.has(target)))]
 }
 
@@ -132,7 +140,10 @@ export function writeSandboxGit(
 const firstLine = (text: string | undefined): string => `${text ?? ''}`.trim().split('\n')[0] ?? ''
 
 /** bwrap on PATH and able to bind a file over another in a new mount namespace. */
-export function probeSandbox(pathValue: string = process.env.PATH ?? '', run: RunSync = spawnSync): SandboxProbe {
+export function probeSandbox(
+  pathValue: string = process.env.PATH ?? '',
+  run: RunSync = spawnSync,
+): SandboxProbe {
   const bwrap = onPath(pathValue, 'bwrap').find(isExecutableFile)
   if (bwrap === undefined) return { ok: false, reason: 'bwrap not found on PATH' }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-bwrap-probe-'))

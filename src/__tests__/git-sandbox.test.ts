@@ -20,12 +20,20 @@ function fakeInstall(): { git: SandboxGit; pathValue: string; root: string } {
   const shim = at('shim', 'git')
   const realCopy = at('git-real', 'k', 'git')
   for (const file of [at('usr-bin', 'git'), at('local-bin', 'git'), shim, realCopy]) writeExecutable(file)
-  for (const name of ['git', 'git-push', 'git-send-pack', 'git-remote-https']) writeExecutable(path.join(core, name))
+  for (const name of ['git', 'git-push', 'git-send-pack', 'git-remote-https'])
+    writeExecutable(path.join(core, name))
   const mirror = at('shim', 'core')
   fs.mkdirSync(mirror)
-  for (const name of ['git', 'git-push', 'git-send-pack', 'git-stash']) fs.symlinkSync(shim, path.join(mirror, name))
+  for (const name of ['git', 'git-push', 'git-send-pack', 'git-stash'])
+    fs.symlinkSync(shim, path.join(mirror, name))
   fs.symlinkSync(path.join(core, 'git-remote-https'), path.join(mirror, 'git-remote-https'))
-  const pathValue = [path.dirname(realCopy), at('usr-bin'), at('local-bin'), at('no-such-dir'), 'relative'].join(':')
+  const pathValue = [
+    path.dirname(realCopy),
+    at('usr-bin'),
+    at('local-bin'),
+    at('no-such-dir'),
+    'relative',
+  ].join(':')
   return { git: { shim, mirror, core, realCopy }, pathValue, root }
 }
 
@@ -139,7 +147,10 @@ describe('probeSandbox (CC-1645 S2)', () => {
   it("carries bwrap's own refusal as the reason", () => {
     const result = probeSandbox(bwrapDir(), runReturning(1, 'bwrap: setting up uid map: Permission denied\n'))
 
-    expect(result).toEqual({ ok: false, reason: 'bwrap refused: bwrap: setting up uid map: Permission denied' })
+    expect(result).toEqual({
+      ok: false,
+      reason: 'bwrap refused: bwrap: setting up uid map: Permission denied',
+    })
   })
 
   it('reports a spawn failure', () => {
