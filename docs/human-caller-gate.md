@@ -2,9 +2,11 @@
 
 Decision record for CC-1083 (slice b), 2026-10-12. Follow-up implementation:
 **CC-1138** (claude-channels initiative, tags `kind:security`, `repo:agent-chat`),
-filed and open. Its frame-class table, the `hello` frame (slice C) and the Class 1 and
-Class 3 gate (slice D) have landed; the Class 2 mapping (slice E) has not, so a declared
-connection's Class 2 frames still act as the human's. **CC-1151** has landed (#785, #818): the
+filed and open. Its frame-class table, the `hello` frame (slice C), the Class 1 and
+Class 3 gate (slice D), the retire ownership check (slice F) and the Class 2 mapping
+(slice E, `src/broker/class2-requester.ts`) have landed. A declared known id gets the
+`launch` binding only when it passes `BrokerCore.claimable`, the test a launch
+registration with the same id passes. **CC-1151** has landed (#785, #818): the
 tick and seat opt-out sites no longer run in an agent's process, and the root rule below
 is superseded (see "The boundary that closes the class").
 
