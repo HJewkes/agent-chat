@@ -800,6 +800,20 @@ describe('a hidden variable name on a line with no git denies unless every comma
     expect(hookReason(command)).toBe(REASONS.programEnv)
   })
 
+  // An exported hidden name may be BASH_ENV, ENV or ZDOTDIR, so a new shell runs a file.
+  it.each([
+    `export $A=/x.sh; bash -c 'echo hi'`,
+    `export $A=/x.sh; sh -c 'echo hi'`,
+    `declare -x $A=/x.sh; sh -c 'echo hi'`,
+    `printf -v "$A" /x.sh; export "$A"; sh -c 'echo hi'`,
+    `set -a; read $A <<< /x.sh; sh -c 'echo hi'`,
+    `export $A=/x.sh; nice sh -c 'echo hi'`,
+    `export $A=/x.sh; eval "sh -c 'echo hi'"`,
+    `eval 'export $A=/x.sh'; sh -c 'echo hi'`,
+  ])('denies a shell started after a hidden name may be exported: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
   it.each([
     'export $A=ext; echo hi',
     'printf -v "$A" ext; cat f',

@@ -3375,18 +3375,40 @@ function runsText(
   return undefined
 }
 
-/** `cmd` runs only allowlisted commands, its substitutions and any eval, trap or `sh -c` text included. */
-function provenInert(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
-  if (cmd.defines !== undefined) return false
-  if (!cmd.substitutions.every(sub => sub.commands.every(c => provenInert(c, ctx, scope)))) return false
+// Commands that may export a name, or make later assignments exported (`set -a`); any use counts.
+const EXPORTING: ReadonlySet<string> = new Set([...ENV_DECL, 'env', 'set'])
+
+/** The words that run after the guard's own unwrap, or undefined where it cannot read a wrapper. */
+function runWords(cmd: SimpleCommand): readonly string[] | undefined {
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits)
-  if ('reason' in unwrapped) return false
-  const [first] = unwrapped.words
+  return 'reason' in unwrapped ? undefined : unwrapped.words
+}
+
+/** `cmd` and every command it runs: those of its substitutions and of any eval, trap or `sh -c` text. */
+function ranCommands(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): SimpleCommand[] {
+  const words = runWords(cmd)
+  const text = words === undefined ? undefined : runsText(words, cmd, ctx, scope)
+  const inner = [
+    ...cmd.substitutions.flatMap(sub => sub.commands),
+    ...(text === undefined ? [] : parseShell(text)),
+  ]
+  return [cmd, ...inner.flatMap(c => ranCommands(c, ctx, scope))]
+}
+
+/**
+ * One command, read alone, runs nothing but itself: its head is allowlisted, or it runs eval, trap or
+ * `sh -c` text, whose commands `ranCommands` lists. Once a hidden name may be exported it may be
+ * BASH_ENV, ENV or ZDOTDIR, so a new shell runs a file and is never inert.
+ */
+function provenInert(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, exported: boolean): boolean {
+  if (cmd.defines !== undefined) return false
+  const words = runWords(cmd)
+  if (words === undefined) return false
+  const [first] = words
   if (first === undefined) return true
-  const text = runsText(unwrapped.words, cmd, ctx, scope)
-  if (text !== undefined) return parseShell(text).every(c => provenInert(c, ctx, scope))
-  const head = testHead(unwrapped.words) ?? resolveWord(first, cmd, ctx, scope)
-  return head !== undefined && INERT_COMMANDS.has(head)
+  const head = testHead(words) ?? resolveWord(first, cmd, ctx, scope)
+  if (head === undefined || (exported && SHELLS.has(head))) return false
+  return INERT_COMMANDS.has(head) || runsText(words, cmd, ctx, scope) !== undefined
 }
 
 /**
@@ -3401,7 +3423,9 @@ function hiddenUnlessInert(
 ): DeferredEnv | undefined {
   if (!events.includes(NAME_HIDDEN)) return undefined
   const blind: Scope = { ...scope, env: undefined }
-  return (scope.call ?? []).every(cmd => provenInert(cmd, ctx, blind)) ? undefined : NAME_HIDDEN
+  const ran = (scope.call ?? []).flatMap(cmd => ranCommands(cmd, ctx, blind))
+  const exported = ran.some(cmd => functionBody(cmd.marked).some(word => EXPORTING.has(word)))
+  return ran.every(cmd => provenInert(cmd, ctx, blind, exported)) ? undefined : NAME_HIDDEN
 }
 
 /** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */

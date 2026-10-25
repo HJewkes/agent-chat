@@ -1066,7 +1066,12 @@ allowlist of commands that never run a word or their stdin as a program or shell
 declaration and name-operand builtins, `echo`, `printf`, `test`, `[`, `cd`, `ls`, `cat`, `grep`,
 `tee`, `cp` and a few more. Literal `eval`, `trap` and plain `sh -c` text is inert when every
 command parsed from it is, checked recursively, and so are the commands of each substitution.
-A function definition is never inert. The rule asks which commands are known safe, not where a
+A function definition is never inert. Once the call may export the hidden name (any use of
+`export`, `declare`, `typeset`, `local`, `readonly`, `env` or `set`, nested text included), no
+shell it starts is inert, even behind a wrapper or with literal `sh -c` text: the name may be
+`BASH_ENV`, `ENV` or `ZDOTDIR`, and the shell then runs a file. So
+`export $A=/x.sh; sh -c 'echo hi'` denies while `read $A <<< ext; sh -c 'echo hi'` stays allowed.
+The rule asks which commands are known safe, not where a
 command may start, so a command missing from the allowlist over-denies and never lets a line
 through. So `read $A <<< ext; $G fetch o`, `watch $G fetch o`, `parallel ::: $G`,
 `trap '$G fetch o' EXIT`, `sort --compress-program=$G f` and `declare -n R=$A; R=ext; $G fetch o`
