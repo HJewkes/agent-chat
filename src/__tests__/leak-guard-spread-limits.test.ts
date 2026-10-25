@@ -15,6 +15,8 @@ const ctx = (): GuardContext => ({
 // The quote split hides `git` from the raw-line prefilter, so only the parsed path can deny.
 const HIDDEN_PUSH = "; g''it push --no-verify origin x"
 const BIG = 1e6
+// Past V8's call-argument limit (about 125k) yet well under the 1M of the other cases (the stack-dependent limit sits near 450K here).
+const SUBSTITUTED = 6e5
 
 const decide = (command: string): string =>
   pretoolDecision(JSON.stringify({ tool_name: 'Bash', tool_input: { command } }), ctx)
@@ -35,8 +37,8 @@ describe('leak-guard call-argument spreads over attacker-sized input', () => {
     expect(out).toContain(REASONS.noVerify)
   })
 
-  it('denies a hidden push after a substitution with 1M commands', () => {
-    const out = decide(`echo $(${'true;'.repeat(BIG)})${HIDDEN_PUSH}`)
+  it('denies a hidden push after a substitution with 600K commands', () => {
+    const out = decide(`echo $(${'true;'.repeat(SUBSTITUTED)})${HIDDEN_PUSH}`)
     expect(out).toContain(REASONS.noVerify)
   })
 })
