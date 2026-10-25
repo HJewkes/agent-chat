@@ -477,6 +477,28 @@ as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case p
 operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
 a syntax error for most of these lines and runs nothing.
 
+A case pattern's `)` must not end a `$( )`, `<( )`, backticks or a subshell early (CC-1324), or a
+command after the case reads as part of a string. Inside such a span the splitter reads only the
+case grammar bash and zsh share: `case WORD in` as one command, patterns with `|` and an optional
+`(`, the terminators `;;`, `;&` and `;;&`, and `esac`. Any other case form there makes the line
+unreadable, so it is denied, whatever it runs:
+
+- T1: zsh's `;|` terminator, in a case or not.
+- T2: a reserved `case` whose subject is not followed by an unquoted `in` in the same command, as in
+  zsh's `case w {`, `case w;in` and `case w;{`, and a newline before the `in`, which bash takes too.
+- T3: any unquoted `{` or `}` while a case opened in the span is open, at any place in a word, so a
+  `{ }` group or brace expansion in a case body. zsh reserves a `}` that ends a word (`echo a}`)
+  and closes a case at it, so only `esac` closes one.
+- T4: a `case` the splitter reads as an argument, as after zsh's `repeat 1` or in `() {`, whose
+  subject is followed by `in` or a word starting with `{`, past comments, joined lines and separators.
+- T5: a `(` in a pattern other than its optional leading one, as in zsh's glob groups `(x|(y)))` and
+  `x|(y))`. After a pattern that began with `(`, zsh reads on past its `)` in forms such as `(x)y)`,
+  `(x) |y)` and `(x) )`, so that `)` must be followed, with line joins removed, by a newline, `;` or
+  the end, or by blanks and then one of those, a comment or a command word. Anything else, a
+  redirection included, is unreadable (CC-1609).
+
+A case at the top level, outside any such span, is read as before: there a pattern's `)` ends nothing.
+
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
 `git fetch --upload-pac{k..k}=<cmd>` or `git init --templat{e..e}=<dir>`: a comma list or a
