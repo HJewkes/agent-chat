@@ -398,6 +398,115 @@ describe("the pin under a submodule's own protocol config (CC-1336)", () => {
   })
 })
 
+/** Commits `sub` as a submodule, adds a linked worktree at ../wt and checks the submodule out there; returns its work tree. */
+function withWorktreeSubmodule(fx: Fixture): string {
+  withSubmodule(fx)
+  git(fx.work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'sub')
+  const wt = path.join(fx.work, '..', 'wt')
+  git(fx.work, 'worktree', 'add', '-q', wt)
+  git(wt, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init')
+  const sub = path.join(wt, 'sub')
+  git(sub, 'config', 'remote.origin.url', 'ssh://x.invalid/sub')
+  return sub
+}
+
+// CC-1336 review 2: git keeps submodule git dirs per worktree, under <common>/worktrees/<id>/modules.
+describe('the pin under a submodule in a linked worktree (CC-1336)', () => {
+  // Kills: reading <common-dir>/modules, the main checkout's, instead of git's per-worktree modules path.
+  it('keeps ssh denied in a worktree submodule setting protocol.ssh.allow=never', () => {
+    const fx = harness.fixture()
+    const sub = withWorktreeSubmodule(fx)
+    git(sub, 'config', 'protocol.ssh.allow', 'never')
+    const marker = path.join(fx.work, '..', 'ssh-ran')
+
+    runScript(fx, `cd ../wt && ${recursingFetch(marker)}`)
+
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  it('lets the worktree submodule fetch run ssh when its config is silent', () => {
+    const fx = harness.fixture()
+    withWorktreeSubmodule(fx)
+    const marker = path.join(fx.work, '..', 'ssh-ran')
+
+    runScript(fx, `cd ../wt && ${recursingFetch(marker)}`)
+
+    expect(fs.existsSync(marker)).toBe(true)
+  })
+})
+
+const includeIf = (condition: string, target: string): string =>
+  `[includeIf "${condition}"]\n\tpath = ${target}\n`
+
+/** Writes the fixture's global config and, beside it, deny.inc holding `deny`. */
+function globalWithInclude(fx: Fixture, body: string, deny = DENY_ALL): void {
+  fs.writeFileSync(homeConfig(fx), body)
+  fs.writeFileSync(path.join(fx.work, '..', 'home', 'deny.inc'), deny)
+}
+
+// CC-1336 review 2: a read made outside the repo git will use cannot tell an includeIf condition that matches inside it.
+describe('the pin under a conditional include (CC-1336)', () => {
+  // Kills: reading global config without a repo and following only the includes whose condition holds there.
+  it.each([
+    ['a global includeIf gitdir: matching the new repo', includeIf('gitdir:**/cloned/', 'deny.inc')],
+    [
+      'a global includeIf hasconfig:remote.*.url:',
+      includeIf('hasconfig:remote.*.url:ssh://x.invalid/**', 'deny.inc'),
+    ],
+    ['an absolute ~/ target', includeIf('gitdir:**/cloned/', '~/deny.inc')],
+    // Kills: following one level, so an includeIf the included file names is missed.
+    ['an includeIf inside an includeIf target', includeIf('gitdir:**/cloned/', 'mid.inc')],
+    // Kills: keeping the list when a target cannot be placed in sh, as git expands %(prefix) itself.
+    ['an includeIf to %(prefix)', includeIf('gitdir:**/cloned/', '%(prefix)/cc1336-absent.inc')],
+  ])('keeps ssh denied for a clone under %s', (label, body) => {
+    const fx = harness.fixture()
+    globalWithInclude(fx, body)
+    if (label.includes('inside'))
+      fs.writeFileSync(
+        path.join(fx.work, '..', 'home', 'mid.inc'),
+        includeIf('gitdir:**/cloned/', 'deny.inc'),
+      )
+    const probe = cloneProbe(fx, '', '', '')
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: reading a template's config without its conditional includes.
+  it('keeps ssh denied for a clone whose template config holds an includeIf gitdir:**', () => {
+    const fx = harness.fixture()
+    const dir = templateDir(fx, includeIf('gitdir:**', 'deny.inc'))
+    fs.writeFileSync(path.join(dir, 'deny.inc'), DENY_SSH)
+    const probe = cloneProbe(fx, '', '', `--template='${dir}'`)
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).toContain("transport 'ssh' not allowed")
+    expect(fs.existsSync(probe.marker)).toBe(false)
+  })
+
+  // Kills: the include walk failing closed on an include that leaves protocols alone, or one git ignores as missing.
+  it.each([
+    [
+      'an includeIf target that allows ssh',
+      includeIf('gitdir:**/cloned/', 'deny.inc'),
+      DENY_SSH.replace('never', 'always'),
+    ],
+    ['a missing includeIf target', includeIf('gitdir:**/cloned/', 'absent.inc'), DENY_ALL],
+  ])('lets a clone run ssh under %s', (_label, body, deny) => {
+    const fx = harness.fixture()
+    globalWithInclude(fx, body, deny)
+    const probe = cloneProbe(fx, '', '', '')
+
+    const run = runScript(fx, probe.command)
+
+    expect(run.stderr).not.toContain('not allowed')
+    expect(fs.existsSync(probe.marker)).toBe(true)
+  })
+})
+
 const hasMake = spawnSync('make', ['--version']).status === 0
 
 /** Writes a script that fetches the ext remote, and a one-rule Makefile that runs it. */

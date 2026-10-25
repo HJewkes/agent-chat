@@ -200,30 +200,78 @@ EOF
     case $policy in unset | [Aa][Ll][Ww][Aa][Yy][Ss]) narrowed=\${narrowed:+$narrowed:}$protocol ;; esac
   done
   GIT_ALLOW_PROTOCOL=$narrowed
-}
+}`
 
-narrow_by() {
-  dump=$({ eval "$1 -z --get-regexp '^(protocol[.]|init[.]templatedir\\$)'" 2>/dev/null; printf '\\0%s' "$?"; } | LC_ALL=C tr '\\n\\0' "$soh$nl")
+// Reads one source, run by the command in $2; a free read ($1), made outside the repo git will use, queues every includeIf target.
+// The dump alternates origin lines and "key SOH value" lines; an origin never equals a protocol key, so keep_allowed takes it whole.
+const NARROW_BY_FN = `narrow_by() {
+  dump=$({ eval "$2 --show-origin -z --get-regexp '^(protocol[.]|init[.]templatedir\\$|includeif[.].*[.]path\\$)'" 2>/dev/null; printf '\\0%s' "$?"; } | LC_ALL=C tr '\\n\\0' "$soh$nl")
   case \${dump##*"$nl"} in 0 | 1) ;; *) GIT_ALLOW_PROTOCOL=; return ;; esac
   keep_allowed "\${dump%"$nl"*}"
+  origin=
   while IFS= read -r line; do
-    case $line in "init.templatedir$soh"*) add_template "\${line#*"$soh"}" ;; esac
+    if [ -z "$origin" ]; then origin=$line; continue; fi
+    case \${line%%"$soh"*} in
+    init.templatedir) add_template "\${line#*"$soh"}" ;;
+    includeif.*.path) [ "$1" = repo ] || add_include "$origin" "\${line#*"$soh"}" ;;
+    esac
+    origin=
   done <<EOF
-$dump
+\${dump%"$nl"*}
 EOF
 }`
 
-// Adds a template dir, whose config git copies into each repo it creates, to templates; one it cannot place empties the list.
-// git expands ~/ and ~ itself; ~user, %(prefix) and :(optional) are not worth resolving in sh.
-const ADD_TEMPLATE_FN = `add_template() {
+// A free read, then every includeIf target it names with the condition ignored, to git's include depth of 10.
+// Outside the repo git will use, a gitdir, onbranch or hasconfig condition cannot be told, so the union narrows more and never less.
+const NARROW_FREE_FN = `narrow_free() {
+  includes= include_depth=0
+  narrow_by free "$1"
+  while [ -n "$includes" ]; do
+    include_depth=$((include_depth + 1))
+    [ "$include_depth" -le 10 ] || { GIT_ALLOW_PROTOCOL=; return; }
+    batch=$includes includes=
+    eval "set -- $batch"
+    for file; do
+      quote "$file"
+      narrow_by free "GIT_DIR=/dev/null \\"\\$real\\"$cdglobals config --includes --file $q"
+    done
+  done
+}`
+
+// Sets q to a config path quoted, with ~/ and ~ expanded as git does; ~user, %(prefix), :(optional) or a newline fail.
+const CONFIG_PATH_FN = `config_path() {
   case $1 in
-  '') return ;;
-  *"$soh"* | '~'[!/]* | '%('* | ':('*) GIT_ALLOW_PROTOCOL=; return ;;
+  *"$soh"* | '~'[!/]* | '%('* | ':('*) return 1 ;;
   '~') quote "$HOME" ;;
   '~/'*) quote "$HOME/\${1#'~/'}" ;;
   *) quote "$1" ;;
   esac
+}`
+
+// Adds a template dir, whose config git copies into each repo it creates, to templates; one it cannot place empties the list.
+const ADD_TEMPLATE_FN = `add_template() {
+  [ -n "$1" ] || return 0
+  config_path "$1" || { GIT_ALLOW_PROTOCOL=; return; }
   templates="$templates $q"
+}`
+
+// Adds an includeIf target to includes; a relative one resolves beside the file that names it, as git's does.
+// A template's relative target lands beside the copy in the new repo, so a .. in it, or one from no file, empties the list.
+const ADD_INCLUDE_FN = `add_include() {
+  target=$2
+  case $target in
+  '') return 0 ;;
+  '~'* | /* | '%('* | ':('*) ;;
+  .. | ../* | */.. | */../*) GIT_ALLOW_PROTOCOL=; return ;;
+  *)
+    case $1 in
+    file:*/*) target=\${1#file:} target=\${target%/*}/$2 ;;
+    file:*) ;;
+    *) GIT_ALLOW_PROTOCOL=; return ;;
+    esac ;;
+  esac
+  config_path "$target" || { GIT_ALLOW_PROTOCOL=; return; }
+  includes="$includes $q"
 }`
 
 // Sets clone_cfg to clone's own -c and --config values, which clone writes into the new repo before it fetches, and adds its --template dirs.
@@ -262,37 +310,42 @@ const NARROW_TEMPLATES_FN = `narrow_templates() {
   eval "set -- $templates"
   for dir; do
     quote "$dir/config"
-    narrow_by "GIT_DIR=/dev/null \\"\\$real\\"$cdglobals config --includes --file $q"
+    narrow_free "GIT_DIR=/dev/null \\"\\$real\\"$cdglobals config --includes --file $q"
   done
 }`
 
+// Sets found to where git keeps $1 for the repo the caller's options name, so a linked worktree's own dirs are the ones read.
+const GIT_PATH_FN = `git_path() {
+  found=$(eval "\\"\\$real\\"$globals rev-parse --path-format=absolute --git-path \\"\\$1\\"" 2>/dev/null) || return 1
+  found=\${found%%"$nl"*}
+  [ -n "$found" ]
+}`
+
 // A recursing command's children run real git in each submodule with the exported list, which outranks the submodule's own config.
-// Reads every git dir under the superproject's modules/; a submodule whose git dir sits in its own work tree is not read.
+// Reads every git dir under git's modules path, per worktree; a submodule whose git dir sits in its own work tree is not read.
 const NARROW_SUBMODULES_FN = `narrow_submodules() {
-  super=$(eval "\\"\\$real\\"$globals rev-parse --path-format=absolute --git-common-dir" 2>/dev/null)
-  super=\${super%%"$nl"*}
-  [ -n "$super" ] && [ -d "$super/modules" ] || return 0
-  gitdirs=$(find "$super/modules" -type d -name objects -prune -print 2>/dev/null) || { GIT_ALLOW_PROTOCOL=; return; }
+  git_path modules && [ -d "$found" ] || return 0
+  modules=$found
+  gitdirs=$(find "$modules" -type d -name objects -prune -print 2>/dev/null) || { GIT_ALLOW_PROTOCOL=; return; }
   while IFS= read -r objects; do
-    case $objects in '') continue ;; "$super/modules/"*/objects) ;; *) GIT_ALLOW_PROTOCOL=; return ;; esac
+    case $objects in '') continue ;; "$modules/"*/objects) ;; *) GIT_ALLOW_PROTOCOL=; return ;; esac
     quote "\${objects%/objects}"
-    narrow_by "\\"\\$real\\" --git-dir=$q config"
+    narrow_by repo "\\"\\$real\\" --git-dir=$q config"
   done <<EOF
 $gitdirs
 EOF
 }`
 
 // git reads GIT_ALLOW_PROTOCOL over protocol.*.allow, so the pin keeps only protocols every config git may consult allows outright (CC-1336).
-// A list cannot say "only from the user", so a user policy drops. clone reads no cwd repo but adds its own -c values.
+// A list cannot say "only from the user", so a user policy drops. Every place a command may read config from is listed here once:
+// the caller's repo; the caller's config without a repo, which a clone, a submodule clone or any repo a child creates starts from;
+// clone's own -c values; each submodule git dir outside a clone; and each template.
 const NARROW_FN = `narrow_protocols() {
-  narrow_by "\\"\\$real\\"$globals config"
-  if [ -n "$cloning" ]; then
-    narrow_by "GIT_DIR=/dev/null \\"\\$real\\"$cfgglobals config"
-    [ -z "$clone_cfg" ] ||
-      narrow_by "GIT_DIR=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0 GIT_CONFIG_PARAMETERS= \\"\\$real\\"$clone_cfg config"
-  else
-    narrow_submodules
-  fi
+  narrow_by repo "\\"\\$real\\"$globals config"
+  narrow_free "GIT_DIR=/dev/null \\"\\$real\\"$cfgglobals config"
+  [ -z "$clone_cfg" ] ||
+    narrow_free "GIT_DIR=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0 GIT_CONFIG_PARAMETERS= \\"\\$real\\"$clone_cfg config"
+  [ -n "$cloning" ] || narrow_submodules
   narrow_templates
   export GIT_ALLOW_PROTOCOL
 }`
@@ -611,9 +664,14 @@ ${PUSH_REPOS_FN}
 ${SUBMODULES_OFF_FN}
 ${LOCAL_ONLY_FN}
 ${POLICY_FN}
+${NARROW_BY_FN}
+${NARROW_FREE_FN}
+${CONFIG_PATH_FN}
 ${ADD_TEMPLATE_FN}
+${ADD_INCLUDE_FN}
 ${CLONE_CONFIGS_FN}
 ${NARROW_TEMPLATES_FN}
+${GIT_PATH_FN}
 ${NARROW_SUBMODULES_FN}
 ${NARROW_FN}
 templates=
