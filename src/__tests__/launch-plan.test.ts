@@ -98,6 +98,8 @@ describe('the argv every surface shares', () => {
         "plugin:agent-chat@agent-chat-local",
         "--allowed-tools",
         "Read,Grep,mcp__plugin_agent-chat_agent-chat__*",
+        "--tools",
+        "Read,Grep,ToolSearch,Monitor",
         "-p",
         "--output-format",
         "stream-json",
@@ -1206,6 +1208,61 @@ describe('the shared prompt-cache prefix a headless worker launches with (CC-159
       )
 
     expect(prompt('ag000001', 'scout', '/repo/a')).toBe(prompt('ag000002', 'ranger', '/repo/b'))
+  })
+})
+
+describe('the built-in toolset a worker launches with (CC-1593)', () => {
+  const shipped = (name: string): AgentProfile => {
+    const parsed = loadProfile(name, path.join(__dirname, '../../profiles'))
+    if ('error' in parsed) throw new Error(parsed.error)
+    return parsed
+  }
+  const toolsFor = (over: Partial<AgentProfile>): string | undefined =>
+    flag(buildLaunchPlan(input({ profile: profile(over) })).args, '--tools')
+
+  // Mutation caught: dropping ToolSearch, which leaves every mcp__ tool, agent-chat's included, unreachable.
+  it('pins the burndown profiles to their granted built-ins plus ToolSearch', () => {
+    const tools = Object.fromEntries(
+      ['bd-implementer', 'bd-reviewer', 'bd-planner'].map(name => [
+        name,
+        flag(buildLaunchPlan(input({ profile: shipped(name) })).args, '--tools'),
+      ]),
+    )
+
+    expect(tools).toMatchInlineSnapshot(`
+      {
+        "bd-implementer": "Read,Write,Edit,Bash,Grep,Glob,Monitor,ToolSearch",
+        "bd-planner": "Read,Grep,Glob,Write,Bash,ToolSearch,Monitor",
+        "bd-reviewer": "Read,Bash,Grep,Glob,ToolSearch",
+      }
+    `)
+  })
+
+  it('names the tool a scoped Bash grant is for, once', () => {
+    expect(toolsFor({ allowedTools: ['Read', 'Bash(git log:*)', 'Bash(gh pr view:*)'] })).toBe(
+      'Read,Bash,ToolSearch,Monitor',
+    )
+  })
+
+  it('keeps out a built-in the profile denies outright, but not one it only scopes', () => {
+    const tools = toolsFor({
+      allowedTools: ['Bash', 'Read'],
+      disallowedTools: ['Monitor', 'Bash(git stash:*)'],
+    })
+
+    expect(tools).toBe('Bash,Read,ToolSearch')
+  })
+
+  it('leaves a coordinator and an inherited posture on the full toolset', () => {
+    expect(toolsFor({ role: 'coordinator' })).toBeUndefined()
+    expect(toolsFor({ allowedTools: [] })).toBeUndefined()
+  })
+
+  it('puts the variadic --tools before the brief separator on an interactive surface', () => {
+    const args = buildLaunchPlan(input({ profile: profile({ surface: 'iterm-pane' }) })).args
+
+    expect(args.indexOf('--tools')).toBeLessThan(args.indexOf('--'))
+    expect(args.at(-1)).toBe(input().brief)
   })
 })
 
