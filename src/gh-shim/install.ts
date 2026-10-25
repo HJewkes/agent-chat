@@ -12,6 +12,25 @@ export const GH_SHIM_OFF_ENV = 'AGENT_CHAT_GH_SHIM_OFF'
 
 const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
+/**
+ * CC-664: entries are compared by physical path, so a symlink to the shim dir or a trailing-slash
+ * spelling of it is dropped too; an exact-string match left those, and `exec gh` re-ran this script forever.
+ */
+const dropOwnDirFromPath = (dir: string): string[] => [
+  'unset CDPATH',
+  `self=$(cd -P -- ${quote(dir)} 2>/dev/null && pwd -P) || self=${quote(dir)}`,
+  'kept=',
+  'set -f',
+  'IFS=:',
+  'for entry in $PATH; do',
+  '  real=$(cd -P -- "$entry" 2>/dev/null && pwd -P) || real=$entry',
+  '  [ "$real" = "$self" ] || kept=${kept:+$kept:}$entry',
+  'done',
+  'unset IFS',
+  'set +f',
+  'PATH=$kept',
+]
+
 /** Falls back to the real gh when the node or the build it was written against has gone. */
 export const ghShimScript = (dir: string, node: string, main: string, shell = posixShell()): string =>
   [
@@ -20,7 +39,7 @@ export const ghShimScript = (dir: string, node: string, main: string, shell = po
     `if [ -x ${quote(node)} ] && [ -f ${quote(main)} ]; then`,
     `  ${GH_SHIM_DIR_ENV}=${quote(dir)} exec ${quote(node)} ${quote(main)} "$@"`,
     'fi',
-    `PATH=$(printf '%s' "$PATH" | tr ':' '\\n' | grep -vxF ${quote(dir)} | paste -sd: -)`,
+    ...dropOwnDirFromPath(dir),
     'export PATH',
     'exec gh "$@"',
     '',
