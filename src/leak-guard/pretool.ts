@@ -2328,7 +2328,9 @@ function checkEval(
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
   const fedUnread = scope.stdin === 'unknown' && lineMayReachGit(scope, ctx)
   if (args.includes(undefined) && (scope.namesGit || fedUnread)) return REASONS.hiddenScript
-  return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
+  const operands = evalOperands(args.map((arg, i) => arg ?? unmark(marked[i] as string)))
+  if (operands === undefined) return scope.namesGit ? REASONS.hiddenScript : undefined
+  return checkAt(operands.join(' '), ctx, scope, depth + 1)
 }
 
 /** The command `cmd` runs past its wrappers, or undefined where unwrap refuses it (checkSimple denies those). */
@@ -2920,12 +2922,24 @@ function expandedEvents(cmd: SimpleCommand): EnvEvent[] {
   return [...hidden, ...named]
 }
 
-/** The commands `eval` runs from its words as written, so a nameref or hidden name there counts (TP-2499). */
-function evalCommands(body: readonly string[]): SimpleCommand[] {
+/**
+ * The words `eval` joins and runs, read as the shells read them: bash skips one leading `--` and zsh
+ * `-` too. undefined when the first word left is an option or an expansion, so the guard cannot
+ * tell what eval runs (TP-2499). `checkEval` and `envUse` both read eval through this.
+ */
+function evalOperands(words: readonly string[]): readonly string[] | undefined {
+  const first = unmark(words[0] ?? '')
+  const rest = first === '--' || first === '-' ? words.slice(1) : words
+  const head = rest[0] ?? ''
+  return head.includes(LIVE) || unmark(head).startsWith('-') ? undefined : rest
+}
+
+/** The commands `eval` runs from its words as written, so a nameref or hidden name there counts; undefined when unreadable. */
+function evalCommands(body: readonly string[]): SimpleCommand[] | undefined {
   const at = commandHeadAt(body)
   if (at === undefined || unmark(body[at] as string) !== 'eval') return []
-  const text = body.slice(at + 1).map(unmark)
-  return parseShell(text.join(' '))
+  const operands = evalOperands(body.slice(at + 1))
+  return operands && parseShell(operands.map(unmark).join(' '))
 }
 
 /** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
@@ -3107,12 +3121,15 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const body = functionBody(cmd.marked)
   const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
   const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
-  const evaled = evalCommands(body).map(envUse)
+  const commands = evalCommands(body)
+  const evaled = (commands ?? []).map(envUse)
+  const evalHidden: EnvEvent[] = commands === undefined ? [NAME_HIDDEN] : []
   return {
     events: [
       ...written.events,
       ...unwrapped.events,
       ...hidden,
+      ...evalHidden,
       ...hashed,
       ...expandedEvents(cmd),
       ...evaled.flatMap(use => use.events),

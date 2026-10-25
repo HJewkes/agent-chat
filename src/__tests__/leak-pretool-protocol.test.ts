@@ -522,6 +522,14 @@ describe('assignments in redirects, heredocs and eval bodies (TP-2499 review)', 
     `eval 'declare -n R=$A'; R=ext; git fetch o`,
     `eval 'read $A <<< ext'; git fetch o`,
     `eval ': \${!A:=ext}'; git fetch o`,
+    `eval -- 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval -- 'read $A <<< ext'; git fetch o`,
+    `eval -- 'printf -v $A ext'; git fetch o`,
+    `eval -- 'export $A=ext'; git fetch o`,
+    `eval - 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval 'eval -- "declare -n R=\\$A"'; R=ext; git fetch o`,
+    '> ${GIT_PAGER:=x}; git log',
+    '< ${!A:=x}; git fetch o',
   ])('denies %j', command => {
     expect(hookReason(command)).toBe(REASONS.programEnv)
   })
@@ -533,8 +541,22 @@ describe('assignments in redirects, heredocs and eval bodies (TP-2499 review)', 
     'read -r sha <<< "$(git rev-parse HEAD)"',
     `eval 'declare -a list=(a b)'; git status`,
     `eval 'x=1'; git status`,
+    `eval -- 'x=1'; git status`,
+    '> out.txt; git status',
   ])('allows %j', command => {
     expect(hookReason(command)).toBeUndefined()
+  })
+
+  it.each([
+    `CMD='declare -n R=$A'; eval "$CMD"; R=ext; git fetch o`,
+    `X=--; eval "$X" 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval -x 'declare -n R=$A'; git fetch o`,
+  ])('denies an eval whose first word it cannot read: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.hiddenScript)
+  })
+
+  it('reads the git eval runs past its --', () => {
+    expect(hookReason(`eval -- 'git push --no-verify'`)).toBe(REASONS.noVerify)
   })
 })
 

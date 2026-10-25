@@ -335,6 +335,8 @@ class ShellLexer {
   private pending: Pending | null = null
   /** Output redirects of a command with no words, which the next command inherits. */
   private carried: string[] = []
+  /** The `expanded` text of a command with no words that is not kept; bash keeps its assignments, so the next command inherits it. */
+  private carriedExpanded: string[] = []
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
@@ -1128,12 +1130,14 @@ class ShellLexer {
     const bare = this.cur.words.length === 0
     if (bare) appendAll(this.carried, this.cur.writes)
     if (!bare || this.readsStdin(this.cur)) this.keep(this.cur, bare)
+    else appendAll(this.carriedExpanded, this.cur.expanded)
     this.cur = this.newCommand()
   }
 
   private keep(cmd: SimpleCommand, bare: boolean): void {
     if (bare) Object.assign(cmd, { words: [')'], marked: [')'], writes: [] })
     else cmd.writes = [...this.carried.splice(0), ...cmd.writes]
+    cmd.expanded = [...this.carriedExpanded.splice(0), ...cmd.expanded]
     cmd.before = this.joiner
     this.joiner = ''
     this.last = cmd
