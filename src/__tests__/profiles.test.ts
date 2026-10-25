@@ -64,3 +64,49 @@ describe('the triager profile (CC-650)', () => {
     expect((triager().disallowedTools ?? []).filter(matches)).toEqual([])
   })
 })
+
+function beatBuilderTsx(): AgentProfile {
+  const profile = loadProfile('beat-builder-tsx', REPO_PROFILES)
+  if ('error' in profile) throw new Error(profile.error)
+  return profile
+}
+
+describe('the beat-builder-tsx profile (TP-2608)', () => {
+  it('loads as a headless sonnet worker in the cwd it is given, with no warnings', () => {
+    const profile = beatBuilderTsx()
+
+    expect(profile).toMatchObject({ model: 'sonnet', surface: 'headless', isolation: 'none' })
+    expect(profile.warnings).toBeUndefined()
+  })
+
+  // Mutation caught: granting Bash or a search tool, which lets the worker build, fetch or roam.
+  it('allows Read, Write and Edit and nothing else', () => {
+    expect(beatBuilderTsx().allowedTools).toEqual(['Read', 'Write', 'Edit'])
+  })
+
+  // Mutation caught: dropping ToolSearch from the denies, which reaches every deferred MCP tool.
+  it('denies the shell, the web, MCP discovery and the human-authority verbs', () => {
+    expect(beatBuilderTsx().disallowedTools).toEqual(
+      expect.arrayContaining([
+        'Bash',
+        'WebSearch',
+        'WebFetch',
+        'ToolSearch',
+        'AskUserQuestion',
+        'Bash(agent-chat send:*)',
+        'Bash(agent-chat endorse:*)',
+        'Bash(agent-chat approve:*)',
+        'Bash(agent-chat agent:*)',
+        'mcp__plugin_agent-chat_agent-chat__chat_send',
+        'mcp__plugin_agent-chat_agent-chat__agent_spawn',
+      ]),
+    )
+  })
+
+  it('pins the gate contract in its prelude', () => {
+    const prelude = beatBuilderTsx().promptPrelude
+
+    for (const rule of ['`react`', '`@titan-design/react-ui/motion`', 'Math.random', 'DATA', 'stop.'])
+      expect(prelude).toContain(rule)
+  })
+})
