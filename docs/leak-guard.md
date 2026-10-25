@@ -473,6 +473,9 @@ unreadable, so it is denied, whatever it runs:
   and closes a case at it, so only `esac` closes one.
 - T4: a `case` the splitter reads as an argument, as after zsh's `repeat 1` or in `() {`, whose
   subject is followed by `in` or a word starting with `{`, past comments, joined lines and separators.
+- T5: a `(` in a pattern other than its optional leading one, as in zsh's glob groups `(x|(y)))` and
+  `x|(y))`, and after a pattern that began with `(`, text glued to its `)` or a `|` or `)` after
+  blanks, as in `(x)y)`, `(x) |y)` and `(x) )`, which zsh reads as more of the pattern (CC-1609).
 
 A case at the top level, outside any such span, is read as before: there a pattern's `)` ends nothing.
 

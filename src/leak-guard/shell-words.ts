@@ -341,6 +341,9 @@ class ShellLexer {
    */
   private cases: boolean[] = []
   private patternNext = false
+  /** A pattern's optional leading `(` may come next, and whether the pattern being read began with one. */
+  private patternStart = false
+  private parenPattern = false
   /** A reserved `case` in such a span awaits its subject, or the `in` after it; see `noteCaseIn`. */
   private caseOpening: 'subject' | 'in' | undefined
   /** The last word was an unreserved `case` inside a `$( )` or subshell, or `expectIn` is its subject's; see `noteStrayCase`. */
@@ -572,6 +575,7 @@ class ShellLexer {
     if (this.straySubject && !quoted && word === 'in') this.budget.expansion = 'unreadable'
     this.expectIn = undefined
     this.strayCase = this.straySubject = false
+    this.patternStart = false
     this.noteCaseIn(word, quoted)
     if (!quoted && this.reservedWord(word, header)) return this.takeReserved(word, header)
     const named = !quoted && this.wordStartNames && !word.includes('=')
@@ -668,6 +672,7 @@ class ShellLexer {
     else if (word === 'in' && header === 'case') this.cases.push(this.closable())
     else if (word === 'esac') this.cases.pop()
     if (word === 'in' || word === 'esac') this.patternNext = word === 'in' && header === 'case'
+    this.patternStart = this.patternNext
     this.atStart = RESERVED.get(word) ?? false
     this.accept(word)
   }
@@ -694,6 +699,7 @@ class ShellLexer {
     // zsh's `;|` ends a pattern's commands; bash reads `;` and `|`, so the two shells disagree.
     if (op === ';|' && this.closable()) this.budget.expansion = 'unreadable'
     if (CASE_ENDS.has(op) && this.cases.length > 0) this.patternNext = true
+    this.patternStart = CASE_ENDS.has(op) && this.patternNext
     this.endCommand()
     this.expectIn = undefined
     this.atStart = !this.testOpen
@@ -711,6 +717,7 @@ class ShellLexer {
 
   /** `name(`, `name ()` and `<(`: a glob qualifier, a function and a process substitution, none modelled. */
   private paren(c: string): void {
+    if (this.patternNext && c === '(') this.notePatternParen()
     if (this.patternNext && this.word === null && c === '(') return this.skip(() => this.accept('('))
     if (this.patternNext && c === ')') this.endWord()
     if (this.patternNext && c === ')') return this.endPattern()
@@ -768,7 +775,35 @@ class ShellLexer {
     return !this.quoted && this.wordStartNames && !word.includes('=')
   }
 
+  /**
+   * zsh reads a `( )` glob group anywhere in a case pattern, and bash only the optional leading `(`.
+   * Where a `)` can end the span, any other `(` in a pattern makes the line unreadable (CC-1609).
+   */
+  private notePatternParen(): void {
+    const leading = this.patternStart && this.word === null
+    this.patternStart = false
+    this.parenPattern = leading
+    if (!leading && this.cases.at(-1) === true) this.budget.expansion = 'unreadable'
+  }
+
+  /**
+   * After a pattern that began with `(`, zsh reads on past its `)` when text is glued to it, as in
+   * `(x)y)`, or when a `|` or `)` follows blanks, as in `(x) |y)` and `(x) )`. Where a `)` can end the
+   * span those lines are unreadable.
+   */
+  private notePatternTail(): void {
+    const leading = this.parenPattern
+    this.parenPattern = false
+    if (!leading || this.cases.at(-1) !== true) return
+    let at = this.pos + 1
+    const glued = this.src[at]
+    if (glued !== undefined && !' \t\n;'.includes(glued)) this.budget.expansion = 'unreadable'
+    while (this.src[at] === ' ' || this.src[at] === '\t') at++
+    if (this.src[at] === '|' || this.src[at] === ')') this.budget.expansion = 'unreadable'
+  }
+
   private endPattern(): void {
+    this.notePatternTail()
     this.endCommand()
     this.atStart = true
     this.accept(')')

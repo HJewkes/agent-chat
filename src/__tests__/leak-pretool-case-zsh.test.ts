@@ -63,6 +63,12 @@ const BYPASSES: Row[] = [
   zshOnly('10', inSub('() { case x { x) echo "a";; } }')),
   zshOnly('11', inSub('case x { (x) echo "a";; }')),
   zshOnly('11', `echo $(case x in x) :;| y) echo "a";; esac; ${PUSH})`),
+  ...['(x))', '(x|(y)))', 'x|(y))', '((x)))', '(x)|y)', '(x)y)', '(x) |y)', '(x) )', '( x))'].map(pattern =>
+    zshOnly('12', inSub(`case x in ${pattern} :;; z) echo "a";; esac`)),
+  ),
+  zshOnly('12', inSub('case x in x) :;; (z)) echo "a";; esac')),
+  zshOnly('12', `echo $(case x in (x)) :;; z) echo "a";; esac; ${PUSH})`),
+  zshOnly('12', `echo "\`case x in (x)) :;; z) echo a;; esac; ${PUSH}\`"`),
 ]
 
 /** Case lines in the shared grammar, or outside any span a `)` can end, which stay readable. */
@@ -75,6 +81,9 @@ const ALLOWED = [
   'x="$(case "$a" in foo) echo 1;& bar) echo 2;;& *) echo 3;; esac)"',
   'echo "$(case $a in x) echo "${b}";; esac)"',
   'case x in x) { echo a; } ;; esac',
+  'x="$(case "$a" in (foo|bar) echo 1;; (*) ;; esac)"',
+  'x="$(case "$a" in (foo) echo 1 ;; (*)\n echo 2;; esac)"',
+  'case x in (x|(y))) echo a;; esac',
   'echo "$(echo case)"',
   'echo "$(grep -c case f)"',
 ]
