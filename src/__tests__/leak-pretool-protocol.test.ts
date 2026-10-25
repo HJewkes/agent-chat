@@ -549,3 +549,18 @@ describe('GIT_ALLOW_PROTOCOL on a line with no git (CC-1137 d)', () => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })
 })
+
+describe('a hidden variable name on a line whose command word is only an expansion (TP-4231)', () => {
+  it.each([
+    'read $A <<< ext; $G fetch o',
+    'export $A=ext; $G fetch o',
+    'export $A=ext; $G push o',
+    'printf -v $A ext; "$G" fetch o',
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each(['read $A <<< ext; echo hi', '$G status'])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})

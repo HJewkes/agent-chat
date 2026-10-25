@@ -3085,13 +3085,26 @@ interface EnvUse {
   scan: string[]
 }
 
+/**
+ * Whether the command word past assignments and wrappers is only an expansion, such as `$G` or `"${G}"`.
+ * It may run git though no git is written, which the git scan cannot see in the bare reference (TP-4231).
+ */
+function headOnlyExpansion(marked: readonly string[]): boolean {
+  const body = functionBody(marked)
+  const at = commandHeadAt(body)
+  if (at === undefined) return false
+  const head = body[at] as string
+  return head.includes(LIVE) && unmark(head).replace(REFERENCE, '').replace(QUOTING, '') === ''
+}
+
 /** Events from the command as written; only a word the shell reads as an assignment once has its value blanked for the scan. */
 function writtenEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse {
+  const scan = cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word)))
   return {
     events: cmd.marked
       .map((word, i) => envEvent(word, roles[i] as WordRole))
       .filter((event): event is EnvEvent => event !== undefined),
-    scan: cmd.marked.map((word, i) => (roles[i] === 'assign' ? scanWord(word) : unmark(word))),
+    scan: headOnlyExpansion(cmd.marked) ? [...scan, 'git'] : scan,
   }
 }
 
