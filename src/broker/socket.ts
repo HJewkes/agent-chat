@@ -26,6 +26,8 @@ import { dedupeKey, nonceRefusal, RequestDedupe } from './request-dedupe.js'
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
+import { integrityFrameRefusal } from './integrity-frame.js'
+import { IntegrityLedger } from './integrity-ledger.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
@@ -449,6 +451,8 @@ export class SocketServer {
   private readonly dedupe = new RequestDedupe<KeyedJoiner, KeyedReply>()
   /** CC-1151: runs a kicked job in the broker's env; unset until the daemon attaches it. */
   private jobKick: JobKick | undefined
+  /** TP-4256: launch nonces and their shell-file baselines. Memory only, so a restart leaves every nonce unknown. */
+  readonly integrity = new IntegrityLedger()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -1853,6 +1857,54 @@ export class SocketServer {
     reply(conn, { t: 'service_ask_result', ...fileServiceAsk(this.core, msg, held) })
   }
 
+  /**
+   * TP-4256, Class 4: the launch nonce is the guard, so any connection may send it. A malformed
+   * frame denies without touching the ledger; a changed file denies and, on the check that
+   * quarantines the nonce, files one owner notice.
+   */
+  private handleIntegrityCheck(conn: Conn, msg: Extract<ClientMessage, { t: 'integrity_check' }>): void {
+    const refusal = integrityFrameRefusal(msg as unknown as Record<string, unknown>)
+    if (refusal !== undefined) return reply(conn, { t: 'integrity_result', ok: false, reason: refusal })
+    const result = this.integrity.check(msg.nonce, msg.session, msg.records)
+    if (result.ok) return reply(conn, { t: 'integrity_result', ok: true })
+    if (result.reason === 'no baseline')
+      return reply(conn, { t: 'integrity_result', ok: false, reason: result.reason })
+    if (result.latched) this.noticeQuarantine(msg.nonce, result)
+    reply(conn, {
+      t: 'integrity_result',
+      ok: false,
+      reason: result.reason,
+      file: result.file,
+      field: result.field,
+    })
+  }
+
+  /**
+   * Appended as the broker, like `noteBuildMismatch`: `enqueueForHuman` needs a registered sender and
+   * answers with `send_result`, and the hook is neither.
+   */
+  private noticeQuarantine(nonce: string, mismatch: { file: string; field: string }): void {
+    const agentId = this.integrity.agentOf(nonce) ?? '?'
+    const agent = this.core.agents.get(agentId)?.name ?? agentId
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body:
+        `${agent}: ${mismatch.file} changed (${mismatch.field}) between two tool calls. A later shell ` +
+        'sources it, so every later Bash, Edit and Write call of this launch is denied. Nothing was ' +
+        'restored. Inspect the file, then `agent-chat agent resume` re-baselines.',
+      meta: {
+        event: 'integrity_quarantine',
+        agent,
+        agent_id: agentId,
+        file: mismatch.file,
+        field: mismatch.field,
+      },
+    })
+    logEvent('integrity_quarantine', { agent, agentId, file: mismatch.file, field: mismatch.field })
+  }
+
   /** CC-169: a pure read like `activity`; an unknown `after` is an error, never a replay from row 0. */
   private answersSince(msg: Extract<ClientMessage, { t: 'answers_since' }>): ServerMessage {
     const events = this.core.events
@@ -2207,6 +2259,8 @@ export class SocketServer {
         return this.handlePermissionSelfGranted(conn, msg)
       case 'service_ask':
         return this.handleServiceAsk(conn, msg)
+      case 'integrity_check':
+        return this.handleIntegrityCheck(conn, msg)
       case 'answers_since':
         return reply(conn, this.answersSince(msg))
       case 'spawn':
