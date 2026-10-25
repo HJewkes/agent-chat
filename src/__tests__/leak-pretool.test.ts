@@ -67,6 +67,8 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'echo `git push --no-verify`',
     "sh -c 'git push --no-verify'",
     'bash -lc "git push --no-verify origin x"',
+    "bash -c -- 'git push --no-verify'",
+    "bash -Ec 'git push --no-verify'",
     "eval 'git push --no-verify'",
     "env -S 'git push --no-verify'",
     'bash <<EOF\ngit push --no-verify\nEOF',

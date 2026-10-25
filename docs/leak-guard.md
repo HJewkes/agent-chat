@@ -655,9 +655,11 @@ subcommand comes from stdin, so the guard reads it as a word it cannot resolve (
 
 The guard reads every expanded command word as a shell (CC-1411, CC-1428): its `-c` string and
 the text it is fed are checked as a script, and a feed it cannot read denies on a line that may
-reach git or gh. So `b=bash; $b -c '<push>'`, `X=bash; nice $X -c '<push>'`, `${SHELL:-bash} -c
-'<push>'` and `echo '<push>' | $(echo bash)` deny, while `X=bash; $X -c 'echo hi'` and `x=git; $x
-status` stay allowed. The words xargs or find fill, and the name of a `name()` definition, are
+reach git or gh. The word may be any shell, so its options are read as an unknown shell's and
+every word may be its script: zsh, for one, takes `-O` as a plain flag where bash takes an
+operand. So `b=bash; $b -c '<push>'`, `X=bash; nice $X -c -- '<push>'`, `b=zsh; $b -c -O '<push>'
+x`, `${SHELL:-bash} -c '<push>'` and `echo '<push>' | $(echo bash)` deny, and so does `$X '<push>'`,
+since `$X` may be `eval`. `X=bash; $X -c 'echo hi'` and `x=git; $x status` stay allowed. The words xargs or find fill, and the name of a `name()` definition, are
 left to their own checks. One false deny is accepted: `git diff | $PAGER` denies, since `$PAGER`
 may be a shell fed by the pipe, and quoting it does not help. Write the pager out instead.
 

@@ -38,6 +38,16 @@ const BYPASSES: [string, string, string[]][] = [
   [`X=/bin/sh; $X -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
   // Join a case's patterns at a | as a pipe or not at all: a pipe in a pattern body still feeds the shell.
   [`b=bash; case q in (q|r) echo '${PUSH}' | $b;; esac`, REASONS.noVerify, BOTH],
+  [`b=bash; $b -c -- '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`b=bash; $b -c -e '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`b=bash; $b -Ec '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`X=bash; nice $X -c -- '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
+  // The word may be any shell, so read its options by no one grammar: these mutants read them as bash's.
+  // zsh takes -O as a flag and -o's name from the rest of the word, so the string after it is the script.
+  [`b=zsh; $b -c -O '${PUSH}' x`, REASONS.noVerify, BOTH],
+  [`b=zsh; $b -oerrexit -c '${PUSH}' x`, REASONS.noVerify, BOTH],
+  [`b='bash -c'; $b '${PUSH}'`, REASONS.noVerify, ['bash']],
+  [`E=eval; $E '${PUSH}'`, REASONS.noVerify, BOTH],
 ]
 
 // Each row's mutation: read a definition's name, xargs' words or a clean -c string as a push.

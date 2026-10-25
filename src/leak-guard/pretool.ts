@@ -98,7 +98,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { observedShell, readShellCall } from './shell-invocation.js'
+import { observedShell, readShellCall, UNOBSERVED_SHELL } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -2371,8 +2371,17 @@ function checkHidden(
       scope,
       depth,
     ) ??
-    // The word may be a shell, which runs its `-c` string or the text it is fed (CC-1411).
-    (mayBeShell(head) ? checkShell({ name: 'bash', marked, assigns }, cmd, ctx, scope, depth) : undefined)
+    // The word may be any shell, which runs its `-c` string or the text it is fed (CC-1411), so its
+    // options are read as an unobserved shell's and every word may be its script.
+    (mayBeShell(head)
+      ? checkShell(
+          { name: UNOBSERVED_SHELL, marked, assigns },
+          cmd,
+          ctx,
+          { ...scope, deferrable: false },
+          depth,
+        )
+      : undefined)
   return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
 }
 
