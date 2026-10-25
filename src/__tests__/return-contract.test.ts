@@ -923,7 +923,9 @@ describe('the Concerns and Notes lines (CC-399)', () => {
     ['default', RETURN_CONTRACT_BLOCKS.implementer],
     ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
   ])('in the %s block caps the report at ~10 lines with detail in the PR body', (_which, block) => {
-    expect(flat(block)).toContain('Keep the report to ~10 lines; detail goes in the PR body or the task note.')
+    expect(flat(block)).toContain(
+      'Keep the report to ~10 lines; detail goes in the PR body or the task note.',
+    )
   })
 
   it('leaves the reviewer block without either line', () => {
