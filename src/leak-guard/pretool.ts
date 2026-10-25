@@ -1067,6 +1067,8 @@ interface GitRun {
   literal: boolean
   /** The command word is git, or an expansion the line ties to git. */
   tied: boolean
+  /** The expanded command word, marked, when it is not literal git. */
+  head?: string
 }
 
 function gitRun(
@@ -1128,16 +1130,21 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
  * An expanded git whose subcommand the guard cannot read, beside a word that skips the hook: `$X $Y
  * --no-verify` may be a push, `$X $Y core.hooksPath /dev/null` a config write or a `-c` (CC-1322).
  * Literal git is left to the alias lookup, which already denies a subcommand it cannot read.
+ * A `--` ends nothing here: the unread word may be an option that takes it as its value.
  */
 function checkHiddenSubcommand(run: GitRun, scope: Scope): string | undefined {
   if (run.literal) return undefined
-  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
-  if (at >= 0 && run.resolved[at] !== undefined) return undefined
-  const rest = run.args.slice(Math.max(at, 0) + 1)
-  const opts = rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest
-  return opts.some(word => NO_VERIFY.test(word) || overridesGuard(word))
+  return wordsBesideHiddenSub(run, scope).some(word => NO_VERIFY.test(word) || overridesGuard(word))
     ? REASONS.hiddenSubcommand
     : undefined
+}
+
+/** The words after where git's subcommand may hide; a command word that may split may hold it (`${=X}`). */
+function wordsBesideHiddenSub(run: GitRun, scope: Scope): readonly string[] {
+  if (run.head !== undefined && expandsToWords(run.head, run.cmd.splits)) return run.args
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (at >= 0 && run.resolved[at] !== undefined) return []
+  return run.args.slice(Math.max(at, 0) + 1)
 }
 
 /** A push, or a git whose subcommand the guard cannot read, under a privilege wrapper (CC-1218). */
@@ -2300,7 +2307,7 @@ function checkHidden(
       checkSimple(suffixCommand(cmd, marked.slice(i)), ctx, unseen, depth, false),
     ) ??
     checkGitRun(
-      gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)),
+      { ...gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)), head },
       ctx,
       scope,
       depth,

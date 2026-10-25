@@ -5,8 +5,9 @@ import { fakeGitShells } from './helpers/fake-git-shells.js'
 /**
  * An expanded command word may be git, and the word after it its subcommand, so `$X $Y --no-verify`
  * may be `git push --no-verify` and `$X $Y core.hooksPath /dev/null` a `git config` that drops the
- * hook (CC-1322). Real bash and zsh with a fake `git` first on PATH confirm each row runs the push
- * or the config write once the two words are filled in.
+ * hook (CC-1322). A command word that splits may hold the subcommand itself, and an unread word may
+ * be an option that takes a `--` as its value. Real bash and zsh with a fake `git` first on PATH
+ * confirm each row runs the push or the config write once its words are filled in.
  */
 
 const ctx = (): GuardContext => ({
@@ -19,26 +20,49 @@ const ctx = (): GuardContext => ({
   readIncludedHooksPath: () => false,
 })
 
-// Each row: the line, and what fills $Y so that the line skips the hook.
-const BYPASSES: [string, string][] = [
-  ['$X $Y --no-verify', 'push'],
-  ['git status; $X $Y --no-verify', 'push'],
-  ['$X $Y origin HEAD --no-verify', 'push'],
-  ['$X $Y core.hooksPath=/dev/null push', '-c'],
-  ['git status; $X $Y core.hooksPath=/dev/null push', '-c'],
-  ['$X $Y core.hooksPath /dev/null', 'config'],
-  ['git status; $X $Y core.hooksPath /dev/null', 'config'],
+const H = REASONS.hiddenSubcommand
+const BOTH = ['bash', 'zsh']
+
+// Each row: the line, the reason the guard gives, what the shell sets first, and the shells that skip the hook.
+const BYPASSES: [string, string, string, string[]][] = [
+  ['$X $Y --no-verify', H, 'X=git; Y=push', BOTH],
+  ['git status; $X $Y --no-verify', H, 'X=git; Y=push', BOTH],
+  ['$X $Y origin HEAD --no-verify', H, 'X=git; Y=push', BOTH],
+  ['$X $Y core.hooksPath=/dev/null push', H, 'X=git; Y=-c', BOTH],
+  ['git status; $X $Y core.hooksPath=/dev/null push', H, 'X=git; Y=-c', BOTH],
+  ['$X $Y core.hooksPath /dev/null', H, 'X=git; Y=config', BOTH],
+  ['git status; $X $Y core.hooksPath /dev/null', H, 'X=git; Y=config', BOTH],
+  // The unread word is an option that takes the `--` as its value.
+  ['$X $Y -- push --no-verify', REASONS.noVerify, 'X=git; Y=--namespace', BOTH],
+  ['$X $Y -- -c core.hooksPath=/dev/null push', REASONS.gitConfig, 'X=git; Y=--namespace', BOTH],
+  ['$X $Y -- $Z core.hooksPath /dev/null', H, 'X=git; Y=--namespace; Z=config', BOTH],
+  // The command word splits into git and its subcommand.
+  ['X="git push"; ${=X} origin --no-verify', H, '', ['zsh']],
+  ['X="git config"; ${=X} core.hooksPath /dev/null', H, '', ['zsh']],
+  ['X="git -c"; ${=X} core.hooksPath=/dev/null push', H, '', ['zsh']],
+  ['X="git push"; $X --no-verify', H, '', ['bash']],
+  ['source /dev/null; ${=X} --no-verify', H, 'X="git push"', ['zsh']],
 ]
 
-const ALLOWED = ['$EDITOR $FILE', '"$CMD" "$@"', '$E $F gh pr view 1', '$X $Y status', '$X $Y -- --no-verify']
+const ALLOWED = [
+  '$EDITOR $FILE',
+  '"$CMD" "$@"',
+  '$E $F gh pr view 1',
+  '$X $Y status',
+  '"$X" status --no-verify',
+]
 
 describe('checkCommand on a hidden git subcommand beside a word that skips the hook', () => {
-  it.each(BYPASSES)('denies %j', src => {
-    expect(checkCommand(src, ctx()) ?? 'allowed').toBe(REASONS.hiddenSubcommand)
+  it.each(BYPASSES)('denies %j', (src, reason) => {
+    expect(checkCommand(src, ctx()) ?? 'allowed').toBe(reason)
   })
 
   it.each(ALLOWED)('allows %j', src => {
     expect(checkCommand(src, ctx())).toBeUndefined()
+  })
+
+  it('denies a lone --no-verify after a hidden subcommand and a --, which git rejects', () => {
+    expect(checkCommand('$X $Y -- --no-verify', ctx())).toBe(H)
   })
 
   // `p` is a push --no-verify alias where the hook runs.
@@ -52,8 +76,8 @@ describe('checkCommand on a hidden git subcommand beside a word that skips the h
     ['$X $Y p', REASONS.noVerify],
     ['env -C /x $X $Y p', REASONS.noVerify],
     ['sudo $X $Y p', REASONS.noVerify],
-    ['$X $Y p --no-verify', REASONS.noVerify],
-    ['env -C /x $X $Y p --no-verify', REASONS.noVerify],
+    ['$X $Y p --no-verify', H],
+    ['env -C /x $X $Y p --no-verify', H],
     ['sudo $X $Y p --no-verify', REASONS.privilegedHidden],
   ])('keeps denying a hidden subcommand filled by an alias: %j', (src, reason) => {
     expect(checkCommand(src, aliased())).toBe(reason)
@@ -61,14 +85,15 @@ describe('checkCommand on a hidden git subcommand beside a word that skips the h
 })
 
 const real = fakeGitShells('agent-chat-pretool-hidden-sub-', 'git push --no-verify')
+const SKIPS_HOOK =
+  /^(?:--namespace -- )?(?:push .*--no-verify|-c core\.hooksPath=\/dev\/null push|config core\.hooksPath \/dev\/null)$/m
 
 afterAll(real.cleanup)
 
 describe.skipIf(real.shells.length === 0)('real shells run the hidden subcommand the guard denies', () => {
-  it.each(BYPASSES)('every shell skips the hook for %j', (src, sub) => {
-    for (const [shell, args] of real.shells)
-      expect(real.gitCalls(shell, args, `X=git; Y=${sub}; ${src}`)).toMatch(
-        /^(?:push .*--no-verify|-c core\.hooksPath=\/dev\/null push|config core\.hooksPath \/dev\/null)$/m,
-      )
+  it.each(BYPASSES)('each named shell skips the hook for %j', (src, _, setup, names) => {
+    const shells = real.shells.filter(([shell]) => names.some(name => shell.endsWith(`/${name}`)))
+    for (const [shell, args] of shells)
+      expect(real.gitCalls(shell, args, setup === '' ? src : `${setup}; ${src}`)).toMatch(SKIPS_HOOK)
   })
 })
