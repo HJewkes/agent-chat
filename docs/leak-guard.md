@@ -912,7 +912,11 @@ name, or an expanded operand before its format; and a name in the `declare`, `ty
 `local` and `readonly` family. `declare`, `typeset` and `local` pass only the attribute letters
 `aAfFgilprtux`, so any `-n` (alone or in a cluster such as `-gn`) or other option fails closed,
 since a nameref may point at any variable; so does any `${!X=}` or `${!X:=}`, which assigns the
-variable `X` names (TP-2499). Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
+variable `X` names (TP-2499). These rules also read a command's redirect targets, here-strings
+and unquoted heredoc bodies, including those of a redirect-only command, whose assignments bash
+keeps, where a program var's `${NAME:=x}` denies too. They also read the text `eval` runs, past
+its `--` (zsh's `-` too), through the same reading the eval check uses; an option or expansion
+first denies as unreadable. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
 line that may reach git it denies as `programEnv`, after the line's other checks so a more
 specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
 that `find -exec` adds are not read here.
