@@ -58,6 +58,13 @@ import { fetchRelated, relatedSection, type RelatedQuery } from './related.js'
  * excerpt, before Related loses a line. The daemon logs every hit it returns as
  * served, so the ranking call carries no trigger and a second call records only
  * the prefix that rendered.
+ *
+ * ## Implementers get the lean block (CC-1596)
+ *
+ * A worker on the implementer contract is handed one task and reports on it; the
+ * initiative brief, open-task list and session excerpt are coordinator context it
+ * paid for on every turn and rarely read. Its block keeps the header, which names
+ * the directory to read if the assignment needs more, and the ranked Related list.
  */
 
 /** Total budget for an injected briefing. Beyond this it stops being orientation. */
@@ -69,9 +76,13 @@ const MAX_TASKS = 25
 /** `auto` means "work it out from who asked and where they pointed". */
 export const AUTO_BRIEFING = 'auto'
 
+/** `implementer` drops the brief, open tasks and session sections; `full` is everyone else. */
+export type BriefingScope = 'full' | 'implementer'
+
 export interface BriefingRequest {
   /** A slug, or `auto`. */
   briefing: string
+  scope?: BriefingScope
   /** The requesting session's own cwd, when it has a registry entry. */
   requesterCwd?: string
   /** Where the spawned agent will run. */
@@ -400,24 +411,35 @@ const orientationHeader = (slug: string, dir: string): string =>
   `the initiative's own record, read from ${dir}. Treat the assignment below it as the actual task, ` +
   'and this as the context you would otherwise have had to be told.'
 
+const IMPLEMENTER_NOTE =
+  'You are on the implementer contract, so the initiative brief (brief.md), open tasks (tasks/) and ' +
+  'session log (sessions/) are left out. Read them there only if the assignment needs them.'
+
+const fullText = (slug: string, dir: string, raw: string, related: string): string => {
+  const brief = truncated(withoutFrontmatter(raw).trim(), BRIEF_MAX)
+  const fixed = [orientationHeader(slug, dir), brief === '' ? '' : `## Brief (brief.md)\n\n${brief}`]
+  return fitted(fixed, openTasks(path.join(dir, 'tasks')), latestSession(path.join(dir, 'sessions')), related)
+}
+
 /**
  * The whole orientation block for one initiative, or a reason there is none.
  * `related` is the already-rendered ranked section; tasks and session shrink before it does.
  */
-export function briefingFor(slug: string, root = activeWorkRoot(), related = ''): BriefingResult {
+export function briefingFor(
+  slug: string,
+  root = activeWorkRoot(),
+  related = '',
+  scope: BriefingScope = 'full',
+): BriefingResult {
   const dir = path.join(root, slug)
   if (!isInitiative(root, slug)) return missingInitiative(slug, root)
 
   const raw = readOr(path.join(dir, 'brief.md'), '')
   const profile = frontmatterField(raw, 'profile')
-  const brief = truncated(withoutFrontmatter(raw).trim(), BRIEF_MAX)
-  const fixed = [orientationHeader(slug, dir), brief === '' ? '' : `## Brief (brief.md)\n\n${brief}`]
-  const text = fitted(
-    fixed,
-    openTasks(path.join(dir, 'tasks')),
-    latestSession(path.join(dir, 'sessions')),
-    related,
-  )
+  const text =
+    scope === 'implementer'
+      ? joined([orientationHeader(slug, dir), IMPLEMENTER_NOTE, related])
+      : fullText(slug, dir, raw, related)
 
   return {
     text: truncated(text, BRIEFING_MAX),
@@ -447,7 +469,7 @@ const resolveSlug = (req: BriefingRequest, root: string): { slug: string } | { w
 export function resolveBriefing(req: BriefingRequest): BriefingResult {
   const root = req.root ?? activeWorkRoot()
   const resolved = resolveSlug(req, root)
-  return 'warning' in resolved ? resolved : briefingFor(resolved.slug, root)
+  return 'warning' in resolved ? resolved : briefingFor(resolved.slug, root, '', req.scope)
 }
 
 export interface SpawnBriefingRequest extends BriefingRequest {
@@ -475,7 +497,7 @@ export async function resolveSpawnBriefing(req: SpawnBriefingRequest): Promise<B
   const related = await fetchRelated(query)
   const section =
     'hits' in related ? relatedSection(related.hits, resolved.slug, root) : { text: '', lines: [] }
-  const result = briefingFor(resolved.slug, root, section.text)
+  const result = briefingFor(resolved.slug, root, section.text, req.scope)
   if ('text' in result) logServed(query, countRendered(section.lines, result.text))
   return 'warning' in related && 'text' in result ? { ...result, warning: related.warning } : result
 }
