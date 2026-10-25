@@ -820,7 +820,14 @@ A git alias that expands to one of these is checked the same way. The command ru
 directory, and for `submodule foreach` in each submodule with variables git sets. Any `$`
 expansion or backquote in the command is a deny, `$sha1` and the other variables foreach sets
 included: their values come from `.gitmodules`, commit data or the script itself, which the guard
-cannot see. git passes its `-c` and `--config-env`
+cannot see. git puts its exec-path first on PATH for that shell, so a git it runs is the real git,
+not the push shim (observed: `command -v git` inside `submodule foreach` prints git's exec-path
+copy). So the shell's own script files are denied too (TP-4236): `.` or `source` with any operand,
+and a shell given a script file (`sh ./f`, `bash -e ./f`) or options the guard cannot read. At top
+level the same file is left to the push shim, which is on that shell's PATH. An `alias` that defines
+anything denies as well (TP-4237), since `alias p=git` turns a later `p push --no-verify` into a push
+the guard never reads; a bare `alias` or `alias l`, which only prints, is allowed. A script file run
+by its path (`./f`) and programs such as `npm test` or `make` are not read. git passes its `-c` and `--config-env`
 options on to every git the command runs, and the command may write an include file before git
 reads it. So an `include.path` or `includeIf.<cond>.path` on the outer git is a deny, whatever the
 file holds, and so is a `-c` or `--config-env` word the guard cannot read. A command word the guard
@@ -989,7 +996,8 @@ its value checked as a top-level Bash line, but only where the shell reads the w
 exactly once: a prefix assignment, an assignment right after a literal `env`, or an argument of
 `export`, `declare`, `typeset`, `local` or `readonly` written as the command word itself. git runs
 that value through a shell, so by the TP-634 rule any `$` expansion or backquote in it denies:
-`X=--no-verify GIT_PAGER='git push $X' git log`. Accepted false denies follow from this rule:
+`X=--no-verify GIT_PAGER='git push $X' git log`, and so do a script file it sources or runs and an
+alias it defines (`GIT_PAGER='. ./f' git log`, TP-4236). Accepted false denies follow from this rule:
 `GIT_PAGER='less -R $L' git log`, like `git rebase -x 'npm test -- $T' main` and
 `git submodule foreach 'git checkout $sha1'`. Letting the outer shell expand the value does not
 help, since the guard cannot read that value either; write it out literally

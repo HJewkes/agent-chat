@@ -20,6 +20,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
+import { aliasDefinitions } from './deferred-scripts.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import {
   configPrograms,
@@ -181,6 +182,8 @@ interface Scope {
   fedChecks: { left: number }
   /** A privilege wrapper runs this command, so its env reset drops the hooks path and the PATH shims (CC-1218). */
   privileged: boolean
+  /** git hands this text to a shell, with its exec-path first on PATH, so the push shim misses that shell's git (TP-4236). */
+  gitShell?: true
 }
 
 const UNSURE = Symbol('unsure')
@@ -247,6 +250,7 @@ export const REASONS = {
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   shellExpansion: `leak-guard: git hands this text to a shell, and it expands a variable, $(...) or backquote whose value the guard cannot see, so it may run a program or add --no-verify. Write the value out literally. ${DOCS}`,
   gitShellFile: `leak-guard: git hands this text to a shell, and that shell sources or runs a script file the guard cannot read. git puts its own directory first on that shell's PATH, so the push shim never sees a git the file runs. Run the file as its own Bash call, outside git. ${DOCS}`,
+  gitShellAlias: `leak-guard: git hands this text to a shell, and it defines an alias, which turns a later command word into words the guard does not read. git puts its own directory first on that shell's PATH, so the push shim never sees a git the alias runs. Write the command out in full. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
@@ -1334,7 +1338,22 @@ function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth:
 
 /** Text git runs through a shell: the guard cannot see that shell's variables, so any expansion denies (TP-2496). */
 function checkShellText(script: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
-  return expandsShell(script) ? REASONS.shellExpansion : checkAt(script, ctx, scope, depth + 1)
+  if (expandsShell(script)) return REASONS.shellExpansion
+  return checkAt(script, ctx, { ...scope, gitShell: true }, depth + 1)
+}
+
+/**
+ * In a shell git starts, a sourced or shell-run script file runs text the guard never reads, and an
+ * alias turns a later command word into words it does not see (`alias p=git` then `p push`). git's
+ * exec-path leaves the push shim off PATH there, so nothing catches either at run time (TP-4236, TP-4237).
+ */
+function checkGitShellCommand({ name, marked, assigns }: ShellRun): string | undefined {
+  if (name === 'source' || name === '.') return marked.length > 0 ? REASONS.gitShellFile : undefined
+  if (SHELLS.has(name)) {
+    const { from } = readShellCall(name, marked, assigns).script
+    return from === 'file' || from === 'hidden' ? REASONS.gitShellFile : undefined
+  }
+  return name === 'alias' && aliasDefinitions(['alias', ...marked]).length > 0 ? REASONS.gitShellAlias : undefined
 }
 
 /** A git config file path, or `git config` on an alias or include key, anywhere on the line (TP-607). */
@@ -2654,6 +2673,8 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
+  const nested = at.gitShell && checkGitShellCommand({ name, marked, assigns: unwrapped.assigns })
+  if (nested) return nested
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
