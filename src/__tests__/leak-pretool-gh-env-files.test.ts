@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { writesEnvFile } from '../leak-guard/env-files.js'
 import { checkCommand, checkToolCall, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
 // Synthetic only.
@@ -75,6 +76,10 @@ describe('a file a later shell sources is owner-only (TP-4232)', () => {
       denies(command)
     },
   )
+
+  it('denies a line naming a sourced file that parses to no command, since that proves no read (row 13)', () => {
+    expect(writesEnvFile('< /tmp/rc >> ~/.zshenv', [], ENV)).toBe(true)
+  })
 
   it.each(['echo hi; < /tmp/rc >> ~/.zshenv', 'echo hi && >> ~/.zshenv < /tmp/rc'])(
     'denies %s, a bare redirection after a plain command (row 14)',
