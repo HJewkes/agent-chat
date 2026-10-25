@@ -3337,7 +3337,8 @@ function envUse(cmd: SimpleCommand): EnvUse {
  * is used anywhere on a line that may reach git, by the same test the hidden-command budget uses
  * (CC-478), so a command word such as `${G}t` counts, a plain literal assignment's value is checked
  * as text git runs through a shell, where any expansion denies (TP-2496), and any other use denies. Both the uses and the git test read the unwrapped
- * command too, so a wrapper or an `env -S` split hides neither.
+ * command too, so a wrapper or an `env -S` split hides neither. A name the shell builds denies on
+ * any line, since no command after it is proven safe (TP-4231).
  */
 function checkProgramEnvLine(
   command: string,
@@ -3355,7 +3356,7 @@ function checkProgramEnvLine(
   const scan = uses.flatMap(use => use.scan).join(' ')
   // A nested script cannot show the git its outer line runs, so it is judged by that line (TP-2499).
   const reaches = mayReachGit(scan, ctx.env) || (depth > 0 && lineMayReachGit(scope, ctx))
-  if (!reaches) return undefined
+  if (!reaches) return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv

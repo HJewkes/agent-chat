@@ -1096,6 +1096,31 @@ name uses and the git scan also read the command the guard's own unwrap says run
 assignments and words, including those `env -S` splits out of one word, behind any wrapper. So
 `env -S "GIT_PAGER=less git log"` and `nice env -S "GIT_EDITOR=x git commit"` deny.
 
+A variable whose name the shell builds (`read $A`, `export $A=`, `printf -v "$A"`, `declare -n R=$A`
+then `R=`, `${!A:=…}`, `unset $A`, `mapfile "$A"`, `getopts … "$A"`) denies as `programEnv` wherever
+the guard parses it: the outer line, and eval, trap, `mapfile -C`, `sh -c` and fed-script text. It
+denies whether or not the line shows git, because the name may be any variable (a git program env, BASH_ENV,
+LD_PRELOAD) and its own operand may run code through an array subscript. No command is proven inert
+after it (TP-4231).
+
+Unchanged, and not findings against this rule:
+
+- eval or source of text the guard cannot read, with no visible hidden name (`eval "$A=ext"; $G …`,
+  `eval "$(cat f)"`, `. /dev/stdin <<< "$S"`). This is redesign-1 follow-up 1.
+- SEARCH_UNREAD (`PATH=$X make`, `hash -p "$X" make`).
+- Arithmetic or a subscript reading an env value with no hidden name on the line (`test -v "$C"`,
+  `echo $((x))`). This is CC-1249's `arithSubscriptNames`.
+- Files and programs run by path.
+- Lines that show git, where main's rules are unchanged.
+
+Accepted over-denies. Each needs a name the shell builds, on the same call:
+
+- `export $A=ext; echo hi` and any other command after one
+- the #1187 pins `declare -n R=$A; R=x; ls` and `trap 'declare -n R=$A; R=x' DEBUG; ls`
+- `env -C /x $X q` and `status`
+- `bash -c 'read $A'; $G x`
+- a lone `read $A <<< ext`
+
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of
 their own: the existing `GIT_CONFIG*` row already denies any assignment, `export`, `unset` or
