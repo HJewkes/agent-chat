@@ -2424,14 +2424,16 @@ function mapfileScript(args: readonly (string | undefined)[]): ShellScript {
       break
     }
   }
-  return callback === undefined ? NO_SCRIPT : { kind: 'script', text: callback, unread: false }
+  // bash runs `<callback> <index> '<line>'`, so the script ends in two words the guard cannot read.
+  return callback === undefined ? NO_SCRIPT : { kind: 'script', text: `${callback} "$1" "$2"`, unread: false }
 }
 
 const CURRENT_SHELL_SCRIPTS = new Set(['eval', 'trap', 'mapfile', 'readarray'])
 
 /**
- * The script a builtin of CURRENT_SHELL_SCRIPTS hands the current shell to run (TP-2499): eval's
- * operands, trap's action and mapfile's `-C` callback.
+ * The script a builtin of CURRENT_SHELL_SCRIPTS hands the current shell to run (TP-2499): the whole
+ * text the shell evaluates, words it adds included. eval's operands, trap's action, and mapfile's
+ * `-C` callback followed by the index and line bash adds.
  */
 function currentShellScript(
   name: string,

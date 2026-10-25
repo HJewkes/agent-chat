@@ -968,14 +968,15 @@ other checks so a more specific reason wins. Two rules carry this into the scrip
    `sh -c` string, parallel's script, git's `-x` and alias scripts. A child shell cannot pass a
    variable back, so `bash -c 'declare -n R=$A; R=x'; git fetch o` is a deny the guard accepts.
 2. The scripts a builtin hands the current shell are read as the shells read them, and checked
-   as nested scripts. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
+   as nested scripts. Each is the whole text the shell evaluates, with the words the shell adds
+   read as unread words, so no caller sees a callback without them. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
    that names git or gh, for `trap` and `mapfile` on a line that may reach git or gh.
 
-| builtin                | script                                                 | not a script                                         | unreadable                               |
-| ---------------------- | ------------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------- |
-| `eval`                 | its operands joined, past one `--` (zsh's `-` too)     |                                                      | an option or expansion as the first word |
-| `trap`                 | its action, the first operand past one `--`            | `-p`, `-l`, zsh's `-P`; an action `-`; a lone signal | an expanded action or another option     |
-| `mapfile`, `readarray` | the `-C` callback, which bash runs every quantum lines | no `-C`                                              | an expanded `-C` value                   |
+| builtin                | script                                                                                                             | not a script                                         | unreadable                               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------- |
+| `eval`                 | its operands joined, past one `--` (zsh's `-` too)                                                                 |                                                      | an option or expansion as the first word |
+| `trap`                 | its action, the first operand past one `--`                                                                        | `-p`, `-l`, zsh's `-P`; an action `-`; a lone signal | an expanded action or another option     |
+| `mapfile`, `readarray` | the `-C` callback followed by the index and line bash adds, read as unread words; bash runs it every quantum lines | no `-C`                                              | an expanded `-C` value                   |
 
 Not read by these rules, each a follow-up: assignments in arithmetic, `let`, `(( ))` and
 `declare -i` (TP-2507); zsh `print -v`, `set -A` and `vared` (TP-4224); `PS4` and `${x@P}`

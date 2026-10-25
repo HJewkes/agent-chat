@@ -485,8 +485,16 @@ describe('a nameref or an indirect default assignment, on a line that runs git (
     ': ${!A:=ext}; git fetch o',
     ': ${!A=ext}; git fetch o',
     'echo "${!A:=ext}"; git fetch o',
+    'mapfile -C export -c 1 a < f; git fetch o',
+    `mapfile -C 'declare -gx' -c 1 a < f; git fetch o`,
+    `readarray -C 'typeset -x' -c 1 a < f; git fetch o`,
+    `mapfile -C 'local -x' -c 1 a < f; git fetch o`,
   ])('denies %s', command => {
     expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('denies a mapfile callback of eval, which runs the line bash hands it', () => {
+    expect(hookReason('mapfile -C eval -c 1 a < f; git fetch o')).toBe(REASONS.hiddenScript)
   })
 
   it.each([
@@ -504,6 +512,8 @@ describe('a nameref or an indirect default assignment, on a line that runs git (
     'echo "${!A}"; git status',
     'echo "${!A#=x}"; git status',
     `echo '\${!A:=x}'; git status`,
+    `mapfile -C 'rm -f x' -c 1 a < f; git status`,
+    'mapfile -t a < f; git status',
   ])('allows %s', command => {
     expect(hookReason(command)).toBeUndefined()
   })
