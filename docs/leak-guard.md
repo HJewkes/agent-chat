@@ -1674,21 +1674,49 @@ Because that list outranks config, the shim must not widen what the caller's con
 second line) with the caller's global options, and keeps only each listed protocol whose
 `protocol.<name>.allow` (or, failing that, `protocol.allow`) is unset or `always`. A `user`
 policy drops too: git checks it per transport, and children such as submodule clones run with
-`GIT_PROTOCOL_FROM_USER=0` and inherit the list, which cannot say "only from the user". For
-`clone`, which never reads the cwd repo but writes its own `-c`/`--config` values into the new
-one, the shim also reads without a repo and reads those values alone, and keeps a protocol only
-if every read allows it. So `git -c protocol.allow=never ls-remote ssh://…` and `git clone -c
-protocol.allow=never ssh://…` are refused. git also copies a template's `config` into every repo
-it creates, a submodule clone under any command included, so the shim narrows by the `config` in
-each template git might pick: clone's `--template`, `GIT_TEMPLATE_DIR` and `init.templateDir`
-(resolved under `-C`, `~/` expanded; a `~user`, `%(prefix)` or `:(optional)` value empties the list).
-A recursing command such as `git fetch --recurse-submodules` runs real git in each submodule with the
-exported list, so outside a clone the shim also narrows by the config of every git dir under the
-superproject's `.git/modules/`. A submodule whose git dir sits in its own work tree is not read; `git
-submodule absorbgitdirs` moves it under `.git/modules/`. Config that leaves a protocol alone keeps
-it, so with no `protocol.*` set the pinned list is unchanged. A config read that errors out empties
-the list. The narrowing is the shim's: the env pins below do not read protocol config, so real git
-run outside the shim with such an env can still be widened.
+`GIT_PROTOCOL_FROM_USER=0` and inherit the list, which cannot say "only from the user". A
+protocol is kept only if every read allows it, and `narrow_protocols` lists every place the shim
+reads, once:
+
+- the caller's repo, with the caller's global options;
+- the caller's config without a repo, which is where a clone, a submodule clone, or any repo a
+  child git creates starts from, so a global deny that the cwd repo's own config overrides still
+  counts;
+- clone's own `-c`/`--config` values, which clone writes into the new repo before it fetches;
+- outside a clone, the config of every git dir under the path git itself reports for `modules`
+  (`rev-parse --git-path modules`). That path is per worktree, so in a linked worktree it is
+  `<common>/worktrees/<id>/modules`. A recursing command such as `git fetch
+--recurse-submodules` runs real git in each of them with the exported list;
+- the `config` of each template git might copy into a new repo: clone's `--template`,
+  `GIT_TEMPLATE_DIR` and `init.templateDir`, resolved under `-C` with `~/` expanded.
+
+A read made outside the repo git will use (every one above except the caller's repo and the
+submodule git dirs) cannot evaluate a `gitdir:`, `onbranch:` or `hasconfig:` condition that only
+matches in the new repo. So for those reads, the shim also reads every `includeIf.*.path` target
+with its condition ignored, and follows the targets' own includes up to git's depth of 10. A
+relative target resolves beside the file that names it. The list empties when a target has a `..`,
+comes from the command line with a relative path, or uses `~user`, `%(prefix)` or `:(optional)`,
+and also when a template value does. A missing target is skipped, as git skips it. So `git -c
+protocol.allow=never ls-remote ssh://…`, `git clone -c protocol.allow=never ssh://…`, and a
+clone under a global `[includeIf "gitdir:**/cloned/"]` that denies ssh are all refused. Config
+that leaves a protocol alone keeps it, so with no `protocol.*` set the pinned list is unchanged.
+A config read that errors out empties the list.
+
+Known limits:
+
+- A submodule whose git dir sits in its own work tree is not read. In the main checkout, `git
+submodule absorbgitdirs` moves it under `.git/modules/`; in a linked worktree it moves it under
+  `<common>/worktrees/<id>/modules/`. The shim reads both.
+- The compiled-in default template dir, used when no template is configured, is not read.
+- Real git that a shim-run command starts in a second repo inherits the list narrowed for the
+  first. Hooks, `rebase -x`, `bisect run` and `submodule foreach` can all do this, so that second
+  repo's own `protocol.*.allow` can be widened.
+- The env pins below do not read protocol config, so real git run outside the shim with such an
+  env can still be widened.
+
+The reads cost time. On Linux with git 2.53, 200 calls of `git rev-parse HEAD` in a repo with no
+submodules took 1.3 ms a call through real git and 3.7 ms through the shim before CC-1336. With the
+narrowing it takes 13.2 ms.
 The same pin (`pinGitProtocols` in `src/git.ts`) is applied to every env agent-chat builds:
 `agentEnv` and the launch plan's env for a spawned agent, `gitChildEnv` for its own git, the
 burndown tick's subprocesses and worktree setup. The shim also refuses `git remote-ext`, and an
