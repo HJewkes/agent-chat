@@ -139,6 +139,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_PROFILE: input.profile.name,
   // The leak guard keys its agent-chat config guard on this (CC-1094); AGENT_CHAT_ keeps a profile from setting it.
   AGENT_CHAT_ROLE: roleOf(input.profile),
+  // The leak guard's pretool hook reads its push policy from its own env, which an agent's export never reaches (CC-1633).
+  ...(input.profile.pushPolicy === undefined ? {} : { AGENT_CHAT_PUSH_POLICY: input.profile.pushPolicy }),
   // The child's park advisor stays off on a headless surface, which has no human to wait on (CC-135).
   AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
   // A print-mode host's MCP server spools pushes here for the inbox hook to show (CC-1455).

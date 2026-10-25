@@ -8,7 +8,7 @@ import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
 import { surfaceFor } from '../agents/launcher.js'
 import { loadProfile, profileNameRefusal } from '../agents/profiles.js'
 import { lexicalCwdRefusal } from '../agents/spawn-cwd.js'
-import { isCacheTtl, type AgentProfile, type LaunchPlan } from '../agents/types.js'
+import { isCacheTtl, isPushPolicy, type AgentProfile, type LaunchPlan } from '../agents/types.js'
 import { isCarriedPermissionMode, isChannelToken } from '../broker/host-channels.js'
 import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { SURFACE_NAMES, type RemoteLaunch, type SurfaceName } from '../protocol.js'
@@ -84,6 +84,7 @@ const profileOf = (p: RemoteLaunch['profile']): AgentProfile => ({
   ...(p.effort === undefined ? {} : { effort: p.effort }),
   // Unlike env, a TTL from the broker is one of two fixed values, so it may name the variable's value.
   ...(isCacheTtl(p.cacheTtl) ? { cacheTtl: p.cacheTtl } : {}),
+  ...(isPushPolicy(p.pushPolicy) ? { pushPolicy: p.pushPolicy } : {}),
   promptPrelude: p.promptPrelude,
   ...(p.strictMcpConfig === undefined ? {} : { strictMcpConfig: p.strictMcpConfig }),
   ...(p.settingSources === undefined ? {} : { settingSources: [...p.settingSources] }),

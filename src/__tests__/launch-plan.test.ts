@@ -1435,6 +1435,36 @@ describe('per-profile env (CC-259)', () => {
     expect(resumed.env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('5m')
   })
 
+  // Mutation caught: dropping the AGENT_CHAT_PUSH_POLICY line from envFor.
+  it('exports the profile push policy for the leak guard, over a raw env value (CC-1633)', () => {
+    const parsed = parseProfile('p', {
+      ...base,
+      pushPolicy: 'no-rewrite',
+      env: { AGENT_CHAT_PUSH_POLICY: 'off' },
+    })
+
+    expect(parsed).toMatchObject({ pushPolicy: 'no-rewrite' })
+    expect(buildLaunchPlan(input({ profile: parsed as AgentProfile })).env.AGENT_CHAT_PUSH_POLICY).toBe(
+      'no-rewrite',
+    )
+  })
+
+  it('launches without a push policy when the profile names none, even if its env does', () => {
+    const parsed = parseProfile('p', {
+      ...base,
+      env: { AGENT_CHAT_PUSH_POLICY: 'no-rewrite' },
+    }) as AgentProfile
+
+    expect(buildLaunchPlan(input({ profile: parsed })).env).not.toHaveProperty('AGENT_CHAT_PUSH_POLICY')
+  })
+
+  it('makes a profile with an unknown push policy unreadable, naming the choices', () => {
+    for (const pushPolicy of ['off', 'No-Rewrite', '', true, null]) {
+      const result = parseProfile('p', { ...base, pushPolicy })
+      expect((result as { error: string }).error).toMatch(/"pushPolicy" must be one of no-rewrite/)
+    }
+  })
+
   it('rejects a non-string env value, naming the profile', () => {
     const parsed = parseProfile('cachey', { ...base, env: { TTL: 5 } })
 
