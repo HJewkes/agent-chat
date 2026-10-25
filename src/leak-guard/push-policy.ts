@@ -47,9 +47,9 @@ const longTakesNext = (word: string): boolean =>
 /** The branch a destination names, read the way git matches `main`, `heads/main` and `refs/heads/main`. */
 const branchOf = (ref: string): string => ref.replace(/^refs\//, '').replace(/^heads\//, '')
 
-/** A refspec that force-updates (`+`), deletes (`:x`), or lands on main or master. */
+/** A refspec that force-updates (`+`), deletes (`:x`), is a pattern git may expand to main, or lands on main or master. */
 function rewritingRefspec(word: string): boolean {
-  if (word.startsWith('+') || word.startsWith(':')) return true
+  if (word.startsWith('+') || word.startsWith(':') || word.includes('*')) return true
   const colon = word.indexOf(':')
   const destination = colon < 0 ? word : word.slice(colon + 1)
   return PROTECTED_BRANCHES.has(branchOf(destination))
@@ -84,6 +84,37 @@ export function breaksNoRewrite(words: readonly (string | undefined)[]): boolean
     if (option.takesNext) i++
   }
   return false
+}
+
+/**
+ * Config keys that turn a plain push into a mirror, a delete, a force or a push to main: a remote's
+ * `push` refspecs and `mirror` flag, and the whole `push` section (`push.default=matching`). Section
+ * and key names are case-insensitive; a bare section name is what `--rename-section` and
+ * `--remove-section` take.
+ */
+const PUSH_CONFIG_KEY = /^(?:remote\..*\.(?:push|mirror)|push\..*|remote\.[^.]*|push)$/is
+
+const configKey = (param: string): string => param.replace(/^--config-env=/, '').split('=')[0] as string
+
+/** `-c` and `--config-env` options, as gitOptions collects them, that set a push config key. */
+export function rewritingParams(params: readonly string[]): boolean {
+  return params.some(param => param !== '-c' && PUSH_CONFIG_KEY.test(configKey(param)))
+}
+
+/**
+ * A git command other than push that writes what a later push reads: `git config` naming a push
+ * config key, `git remote` or `git clone` with `--mirror`. A word the guard cannot read fails closed.
+ */
+export function writesPushConfig(sub: string, words: readonly (string | undefined)[]): boolean {
+  if (sub === 'config') return words.some(word => word === undefined || PUSH_CONFIG_KEY.test(word))
+  if (sub === 'remote' || sub === 'clone') return words.some(word => word === undefined || mirrorOption(word))
+  return false
+}
+
+// git accepts `--mi` and longer as `--mirror`; `--m` is ambiguous with `git remote add --master`.
+const mirrorOption = (word: string): boolean => {
+  const name = word.split('=')[0] as string
+  return name.length >= 4 && '--mirror'.startsWith(name)
 }
 
 /** Whether the hook's environment opts this agent into the policy. */

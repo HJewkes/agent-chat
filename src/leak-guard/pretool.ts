@@ -84,7 +84,7 @@ import {
   hasUnreadableOption,
 } from './git-unresolved.js'
 import { pushFlagMayForm } from './push-words.js'
-import { breaksNoRewrite, noRewriteOn } from './push-policy.js'
+import { breaksNoRewrite, noRewriteOn, rewritingParams, writesPushConfig } from './push-policy.js'
 import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import {
@@ -201,7 +201,7 @@ const MAX_FED_CHECKS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
-  pushRewrite: `leak-guard: this agent's push policy (no-rewrite) refuses a git push that deletes (--delete, -d, :ref), forces (--force, -f, --force-with-lease, +ref), mirrors, prunes, pushes --all or lands on main or master, or that holds a word the guard cannot read. Push your own branch by name, as in git push -u origin HEAD:<branch>. ${DOCS}`,
+  pushRewrite: `leak-guard: this agent's push policy (no-rewrite) refuses a git push that deletes (--delete, -d, :ref), forces (--force, -f, --force-with-lease, +ref), mirrors, prunes, pushes --all, a * pattern or to main or master, or runs with -c on remote.*.push, remote.*.mirror or push.*, or that holds a word the guard cannot read; and git config, remote --mirror or clone --mirror writes of what a later push reads. Push your own branch by name, as in git push -u origin HEAD:<branch>. ${DOCS}`,
   gitConfig: `leak-guard: git -c or --config-env on core.hooksPath or an alias would bypass the pre-push leak scan. ${DOCS}`,
   configWrite: `leak-guard: writing core.hooksPath, or an alias that skips hooks, is not allowed for agents. ${DOCS}`,
   assignmentSubscript: `leak-guard: a word that opens an assignment subscript, NAME[...], but is not a complete NAME[idx]=value, so the guard cannot tell where the command starts. Keep the subscript free of blanks, or run the command without a prefix assignment. ${DOCS}`,
@@ -1183,12 +1183,25 @@ function checkPushExpansion(run: GitRun, scope: Scope): string | undefined {
     : undefined
 }
 
-/** A push that deletes, forces, mirrors, prunes or lands on main, or holds a word the guard cannot read, under the hook's own policy (CC-1633). */
+/**
+ * Under the hook's own push policy (CC-1633): a push that deletes, forces, mirrors, prunes or lands
+ * on main, by its words or by the `-c` config it runs with, and a config write a later push reads.
+ */
 function checkPushPolicy(run: GitRun, ctx: GuardContext, scope: Scope): string | undefined {
   if (!noRewriteOn(ctx.env)) return undefined
   const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
-  if (at < 0 || run.resolved[at] !== 'push') return undefined
-  return breaksNoRewrite(run.resolved.slice(at + 1)) ? REASONS.pushRewrite : undefined
+  const sub = at < 0 ? undefined : run.resolved[at]
+  if (sub === undefined) return undefined
+  const words = run.resolved.slice(at + 1)
+  const breaks = sub === 'push' ? pushBreaks(run, words, scope) : writesPushConfig(sub, words)
+  return breaks ? REASONS.pushRewrite : undefined
+}
+
+/** git's own options are read as resolved, so a `-c` pair the guard cannot read fails closed. */
+function pushBreaks(run: GitRun, words: readonly (string | undefined)[], scope: Scope): boolean {
+  const options = gitOptions(run.resolved, scope.cwd, scope.gitParams)
+  if (options === UNSURE_CALL || !options.sure) return true
+  return rewritingParams(options.params) || breaksNoRewrite(words)
 }
 
 /** git push options that take no value, so a `--` after them ends the options. */

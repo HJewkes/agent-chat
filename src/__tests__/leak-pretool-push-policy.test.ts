@@ -81,6 +81,33 @@ const FORMS = [
   'git push origin "$(git branch --show-current)"',
   'git push origin {a,:x}',
   'B=main; git push origin "$B"',
+  "git push origin 'refs/heads/*:refs/heads/*'",
+  "git push origin 'refs/heads/ma*'",
+  "git push origin 'feat/*:refs/heads/ma*'",
+]
+
+// Config on the command line that turns a plain push into a mirror, delete, force or push to main.
+const CONFIG_PUSHES = [
+  'git -c remote.origin.mirror=true push origin',
+  'git -c remote.origin.push=:x push origin',
+  'git -c remote.origin.push=+HEAD:main push origin',
+  'git -c remote.origin.push=:refs/heads/victim push origin',
+  'git -c push.default=matching push origin',
+  'git -c Remote.origin.Mirror=true push origin',
+  'git --config-env=remote.origin.mirror=V push origin',
+  'git -c "$C" push origin',
+].flatMap(line => [line, line.replace('git ', 'git -C . ')])
+
+// Writes of the config a later push reads.
+const CONFIG_WRITES = [
+  'git config remote.origin.push +HEAD:refs/heads/main',
+  'git config --add remote.origin.mirror true',
+  'git config push.default matching',
+  'git config --rename-section x remote.origin',
+  'git config remote.origin.push "$(cat f)"',
+  'git remote add --mirror=push m https://example.invalid/r.git',
+  'git remote add --mirr m https://example.invalid/r.git',
+  'git clone --mirror https://example.invalid/r.git',
 ]
 
 // The line tries to switch the policy off before the push; the hook's env is not the line's.
@@ -104,6 +131,12 @@ const ALLOWED = [
   'git push --tags origin',
   'git push --no-force-with-lease origin feat/x',
   'git log origin/main..HEAD',
+  'git -c user.name=x push origin feat/x',
+  'git -c remote.origin.pushurl=https://example.invalid/r.git push origin feat/x',
+  'git config user.email bot@example.invalid',
+  'git config --get remote.origin.url',
+  'git remote add -m main up https://example.invalid/r.git',
+  'git clone https://example.invalid/r.git',
 ]
 
 describe('leak-guard push policy no-rewrite (CC-1633)', () => {
@@ -114,6 +147,21 @@ describe('leak-guard push policy no-rewrite (CC-1633)', () => {
   it.each(FORMS)('denies %j', line => {
     expect(checkCommand(line, ctx())).toBe(REASONS.pushRewrite)
   })
+
+  it.each(CONFIG_PUSHES)('denies a push the -c config rewrites: %j', line => {
+    expect(checkCommand(line, ctx())).toBe(REASONS.pushRewrite)
+  })
+
+  it.each(CONFIG_WRITES)('denies a config write a later push reads: %j', line => {
+    expect(checkCommand(line, ctx())).toBe(REASONS.pushRewrite)
+  })
+
+  it.each([...CONFIG_PUSHES.slice(0, 2), CONFIG_WRITES[0] as string])(
+    'leaves %j to the other rules without the policy',
+    line => {
+      expect(checkCommand(line, ctx({ PWD: scratch }))).not.toBe(REASONS.pushRewrite)
+    },
+  )
 
   it.each(TAMPERS)('keeps the hook policy when the line changes the variable: %j', line => {
     expect(checkCommand(line, ctx())).toBe(REASONS.pushRewrite)
