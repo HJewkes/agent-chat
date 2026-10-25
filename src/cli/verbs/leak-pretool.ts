@@ -36,8 +36,25 @@ export async function decidePretool(
   return out
 }
 
-/** `agent-chat leak-guard pretool`: the PreToolUse hook every spawned agent runs (CC-270). */
-export async function leakPretool(): Promise<void> {
-  const out = await decidePretool(await readStdin(), leakGuardLogPath())
-  if (out !== '') process.stdout.write(`${out}\n`)
+export interface PretoolIo {
+  readInput: () => Promise<string>
+  write: (text: string, done: () => void) => void
+  exit: (code: number) => void
+}
+
+const processIo: PretoolIo = {
+  readInput: readStdin,
+  write: (text, done) => void process.stdout.write(text, done),
+  exit: code => process.exit(code),
+}
+
+/**
+ * `agent-chat leak-guard pretool`: the PreToolUse hook every spawned agent runs (CC-270). It exits
+ * from the write callback: worker.terminate() cannot interrupt a native sync call, so a worker
+ * stuck in one would otherwise keep the process alive past the harness deadline (CC-1409).
+ */
+export async function leakPretool(io: PretoolIo = processIo): Promise<void> {
+  const out = await decidePretool(await io.readInput(), leakGuardLogPath())
+  if (out === '') io.exit(0)
+  else io.write(`${out}\n`, () => io.exit(0))
 }
