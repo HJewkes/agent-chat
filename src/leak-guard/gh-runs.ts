@@ -407,6 +407,21 @@ export function ghCloneArgs(rest: readonly (string | undefined)[]): GhClone {
   return { git, hidden }
 }
 
+/**
+ * The `gh auth` subcommands that may write `credential.helper = !'<gh path>' auth git-credential`
+ * into git config: `setup-git` always, `login` and `refresh` when they set up git for https. gh
+ * 2.102 takes the path from `GH_PATH` and only wraps it in single quotes, so a value holding `'`
+ * persists any shell snippet (probed), and any other value names any program.
+ */
+const WRITES_CREDENTIAL_HELPER = new Set(['setup-git', 'login', 'refresh'])
+
+/** The variable gh writes into git's credential helper (`gh help environment`). */
+export const GH_PATH = 'GH_PATH'
+
+/** Whether a gh command may persist `GH_PATH` as git's credential helper; an unresolved `auth` subcommand may. */
+export const ghWritesCredentialHelper = (verb: string | undefined, sub: string | undefined, unsure: boolean): boolean =>
+  verb === 'auth' && (unsure || (sub !== undefined && WRITES_CREDENTIAL_HELPER.has(sub)))
+
 /** `gh help <word>` runs extension `<word>` with the other words when it is no gh command (probed on gh 2.102). */
 export const ghHelpRunsExtension = (topic: string | undefined): boolean =>
   topic === undefined || !GH_BUILTINS.has(topic)

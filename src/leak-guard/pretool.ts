@@ -68,6 +68,8 @@ import {
   ghHelpRunsExtension,
   ghPlainAlias,
   ghShellAlias,
+  GH_PATH,
+  ghWritesCredentialHelper,
   HIDDEN,
   type GhAlias,
   type GhAliasSet,
@@ -250,6 +252,7 @@ export const REASONS = {
   ghAliasUnread: `leak-guard: gh alias import, and gh alias set with - as the expansion, read aliases the guard does not check. Set each alias with gh alias set <name> '<expansion>' written out. ${DOCS}`,
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
+  ghCredentialHelper: `leak-guard: gh auth setup-git, login or refresh writes $GH_PATH into git config as the credential helper, a program git runs on every later fetch and push, and this line sets GH_PATH or runs where the guard cannot tell. Run gh auth setup-git without GH_PATH. ${DOCS}`,
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
   xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
@@ -2021,6 +2024,21 @@ function changesGhHome(assigns: readonly string[], ctx: GuardContext, scope: Sco
   )
 }
 
+const assignsGhPath = (assigns: readonly string[]): boolean =>
+  assigns.some(word => ASSIGNMENT.exec(word)?.[1] === GH_PATH)
+
+/**
+ * Whether `GH_PATH` may differ from the hook's own when gh runs (TP-2946), judged as
+ * `changesGhHome` judges gh's home: a lost environment, a prefix assignment, an earlier export or
+ * unset that differs, or a use of the name the guard does not model.
+ */
+function setsGhPath(assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean {
+  if (scope.env === undefined || assignsGhPath(assigns)) return true
+  return scope.exports.has(GH_PATH)
+    ? scope.exports.get(GH_PATH) !== ctx.env[GH_PATH]
+    : mentions(scope.said, GH_PATH)
+}
+
 /**
  * gh's alias machinery (TP-2371): a body is checked when `gh alias set` stores it and again when
  * `gh <alias>` runs it. The command words are found past gh's flags the way cobra finds them.
@@ -2112,6 +2130,8 @@ function checkGhAliasRun(
   const { aliases, words } = found
   if (aliases.length === 0) return found.extension ? REASONS.ghExtension : undefined
   if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
+  // A prefix assignment reaches the alias's commands but not the scope its body is checked in.
+  if (assignsGhPath(assigns)) return REASONS.ghCredentialHelper
   const rest = args.filter((_, i) => !words.includes(i))
   if (!rest.every(arg => arg !== undefined)) return REASONS.ghAliasHidden
   const inner = { ...scope, aliases: scope.aliases + 1 }
@@ -2139,6 +2159,8 @@ function checkGhRuns(
   const at = ghCommandWords(args, 2)
   const [verb, sub] = at.map(i => ghCommand(args[i]))
   const unsure = at[1] === HIDDEN
+  if (ghWritesCredentialHelper(verb, sub, unsure) && setsGhPath(assigns, ctx, scope))
+    return REASONS.ghCredentialHelper
   if (verb === 'extension' && (sub === 'exec' || unsure)) return REASONS.ghExtension
   if (verb === 'help' && at.length > 1 && ghHelpRunsExtension(sub)) return REASONS.ghExtension
   const clones = verb === undefined ? undefined : GH_CLONES.get(verb)
