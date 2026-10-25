@@ -24,6 +24,8 @@ const bdImplementer = {
     'Bash(agent-chat send:*)',
     'Bash(agent-chat teleport:*)',
     'Bash(agent-chat debug send:*)',
+    'Bash(agent-chat burndown:*)',
+    'Bash(agent-chat seats:*)',
   ],
   isolation: 'worktree',
   surface: 'headless',

@@ -66,6 +66,7 @@ import { HostDirectory, type LauncherHello } from './host-directory.js'
 import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
 import { noticeWakeCapped } from './codex-wake-cap.js'
+import { DeclaredCallers, declaredIdOf, resolveDeclared, type Caller } from './declared-callers.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -428,6 +429,8 @@ export class SocketServer {
   private readonly hosts = new HostDirectory<Conn>()
   /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
   private readonly remoteSpawners = new Map<string, Conn>()
+  /** CC-1138: the agent id each connection's `hello` declared; recorded only, nothing gates on it yet. */
+  private readonly declared = new DeclaredCallers<Conn>()
   /** CC-1454: keyed sends and resumes by requester and nonce. Memory only: a restart forgets them. */
   private readonly dedupe = new RequestDedupe<KeyedJoiner, KeyedReply>()
   /** CC-1151: runs a kicked job in the broker's env; unset until the daemon attaches it. */
@@ -872,6 +875,26 @@ export class SocketServer {
     this.core.append({ kind: 'verdict_refused', actor: name, body: `a session tried to ${action}` })
   }
 
+  /** CC-1138: a registered connection is its session; otherwise the `hello`, if any, decides. */
+  callerOf(conn: Conn): Caller {
+    if (this.core.registry.nameOf(conn) !== undefined) return { kind: 'session' }
+    const agentId = this.declared.idOf(conn)
+    if (agentId === undefined) return { kind: 'human' }
+    return { kind: 'declared', ...resolveDeclared(agentId, id => this.core.agents.get(id)) }
+  }
+
+  /** CC-1138: recorded and logged only; the caller gate that reads it is a later slice. */
+  private handleHello(conn: Conn, rawId: unknown): void {
+    const agentId = declaredIdOf(rawId)
+    if (agentId === undefined || !this.declared.declare(conn, agentId)) return
+    const declared = resolveDeclared(agentId, id => this.core.agents.get(id))
+    logEvent('caller_declared', {
+      agentId,
+      ...('name' in declared ? { name: declared.name } : { unknown: true }),
+      registered: this.core.registry.nameOf(conn) ?? null,
+    })
+  }
+
   /**
    * The countdown's abort, and the one place a check stands in for a structural
    * defence — deliberately, because a human at the CLI and an agent reach the
@@ -1120,6 +1143,15 @@ export class SocketServer {
       ...requesterBindingOf(requester),
     })
     replySwitch(conn, outcome)
+  }
+
+  /** CC-1138: a registered requester's id and binding, for the retire ownership rule. */
+  private ownershipOf(conn: Conn): { requesterAgentId?: string; requesterBinding?: IdentityBinding } {
+    const requester = this.core.registry.entryFor(conn)
+    return {
+      ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
+    }
   }
 
   /** CC-1505: a switch that throws answers the caller; left unhandled, the rejection ended the broker. */
@@ -2114,6 +2146,8 @@ export class SocketServer {
         return reply(conn, { t: 'hosts_result', hosts: this.hosts.list() })
       case 'job_kick':
         return this.handleJobKick(conn, msg)
+      case 'hello':
+        return this.handleHello(conn, msg.agentId)
       case 'surface':
         return this.answerSwitch(conn, this.handleSurface(conn, msg.name))
       case 'background':
@@ -2139,10 +2173,16 @@ export class SocketServer {
         return
       }
       case 'retire_finished': {
-        const { t: _kind, ...req } = msg
+        // CC-1138: the requester fields come from the connection only, never from the frame.
+        const {
+          t: _kind,
+          requesterAgentId: _id,
+          requesterBinding: _binding,
+          ...req
+        } = msg as typeof msg & Record<'requesterAgentId' | 'requesterBinding', unknown>
         const caller = this.core.registry.nameOf(conn)
         void this.supervisor
-          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }) })
+          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }), ...this.ownershipOf(conn) })
           .then(outcome => reply(conn, { t: 'retire_finished_result', ...outcome }))
           .catch((err: Error) =>
             reply(conn, {
@@ -2158,10 +2198,11 @@ export class SocketServer {
       case 'retire': {
         const actor = this.core.registry.nameOf(conn) ?? (msg.caller || undefined)
         const agentId = msg.agentId
+        const claim = { ...(actor === undefined ? {} : { requestedBy: actor }), ...this.ownershipOf(conn) }
         void (
           agentId === undefined
-            ? this.supervisor.retire(msg.name, msg.force === true, actor)
-            : this.supervisor.retireStale(agentId, msg.name, actor)
+            ? this.supervisor.retire(msg.name, msg.force === true, actor, claim)
+            : this.supervisor.retireStale(agentId, msg.name, actor, claim)
         ).then(result =>
           reply(conn, {
             t: 'spawn_result',
@@ -2289,6 +2330,7 @@ export class SocketServer {
     conn.on('data', read)
 
     const drop = (): void => {
+      this.declared.drop(conn)
       this.dropHooks(conn)
       this.hosts.drop(conn)
       this.dropRemoteSpawners(conn)

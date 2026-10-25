@@ -1362,6 +1362,12 @@ export type ClientMessage =
    * for a heartbeat check, the seat; it carries no path, flag or env, and the broker reads nothing else.
    */
   | { t: 'job_kick'; job: JobKickName; seat?: string }
+  /**
+   * CC-1138: the first frame on every connection from a process that carries `AGENT_CHAT_AGENT_ID`,
+   * so the broker can tell an agent's shell from the human's. Self-declared, and never answered:
+   * a broker that predates it ignores it, so no client waits on it.
+   */
+  | { t: 'hello'; agentId: string }
 
 /** Broker -> session. */
 /** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */

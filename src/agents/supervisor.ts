@@ -162,6 +162,7 @@ import {
 import {
   retireFinished,
   type FinishedRetireOutcome,
+  type FinishedRetirePort,
   type NamePresence,
   type RetireScope,
 } from './isolation/retire-finished.js'
@@ -3541,10 +3542,15 @@ export class Supervisor implements TeleportHost {
    * CC-78 closed the other half of the same gap: what `live` held is now also on
    * disk, so a restart no longer costs the worktree and the pane either.
    */
-  async retire(name: string, force = false, actor?: string): Promise<{ ok: boolean; reason?: string }> {
+  async retire(
+    name: string,
+    force = false,
+    actor?: string,
+    claim: OwnershipClaim = {},
+  ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    return this.retireIdentity(identity, { force }, actor)
+    return this.retireIdentity(identity, { force }, actor, claim)
   }
 
   /** CC-408: the bulk form retires the row it planned, never whichever row now holds the name. */
@@ -3552,12 +3558,13 @@ export class Supervisor implements TeleportHost {
     agentId: string,
     actor?: string,
     release: ReleaseOptions = {},
+    claim: OwnershipClaim = {},
   ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
     // CC-1453: a hand-started seat's teleport successor leases the name, so the seat watchdog retires it by id.
     if (identity === undefined || !launchedByBroker(identity) || identity.state === 'retired')
       return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
-    return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
+    return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor, claim)
   }
 
   /** CC-959: a stale seat row by id; never whichever row holds the name now, and never a live one. */
@@ -3565,6 +3572,7 @@ export class Supervisor implements TeleportHost {
     agentId: string,
     name: string,
     actor?: string,
+    claim: OwnershipClaim = {},
   ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
     if (identity !== undefined && identity.name !== name)
@@ -3572,14 +3580,18 @@ export class Supervisor implements TeleportHost {
     const live = identity?.state === 'live' || identity?.state === 'spawning'
     if (identity !== undefined && (live || this.namePresence(identity) === 'self'))
       return { ok: false, reason: `agent ${agentId} (${name}) is still live; not retired` }
-    return this.retireById(agentId, actor)
+    return this.retireById(agentId, actor, {}, claim)
   }
 
+  /** CC-1138: every retire path ends here, so the worker ownership rule is checked before anything is released. */
   private async retireIdentity(
     identity: AgentIdentity,
     release: ReleaseOptions,
     actor?: string,
+    claim: OwnershipClaim = {},
   ): Promise<{ ok: boolean; reason?: string }> {
+    const refused = this.checkOwnership(identity, claim, 'retire')
+    if (refused) return { ok: false, reason: refused }
     const force = release.force === true
     const name = identity.name
     const held = this.live.get(identity.agentId)
@@ -3706,22 +3718,32 @@ export class Supervisor implements TeleportHost {
     }
   }
 
-  /** CC-323: retire every finished agent in scope that holds no work, each through `retire` so its refusals apply. */
+  /**
+   * CC-323: retire every finished agent in scope that holds no work, each through `retire` so its refusals apply.
+   * CC-1138: the caller is each row's actor, and a worker caller plans only the agents it spawned.
+   */
   async retireFinished(
-    req: RetireScope & { dryRun?: boolean; caller?: string },
+    req: RetireScope & { dryRun?: boolean; caller?: string } & Omit<OwnershipClaim, 'requestedBy'>,
   ): Promise<FinishedRetireOutcome> {
-    const port = {
+    const { requesterAgentId, requesterBinding, ...scope } = req
+    const claim: OwnershipClaim = {
+      ...(req.caller === undefined ? {} : { requestedBy: req.caller }),
+      ...(requesterAgentId === undefined ? {} : { requesterAgentId }),
+      ...(requesterBinding === undefined ? {} : { requesterBinding }),
+    }
+    const port: FinishedRetirePort = {
       roster: () => this.core.agents.roster(),
       events: () => this.core.events.agentEvents(),
       tracked: (agentId: string) => this.live.has(agentId),
       parking: (agentId: string) => this.parking.has(agentId),
       current: (agentId: string) => this.core.agents.get(agentId),
       presence: (agent: AgentIdentity) => this.namePresence(agent),
-      retire: (agentId: string) => this.retireById(agentId),
+      ownership: (agent: AgentIdentity) => this.checkOwnership(agent, claim, 'retire'),
+      retire: (agentId: string) => this.retireById(agentId, req.caller, {}, claim),
       now: () => Date.now(),
       ...(this.shepherdSkip === undefined ? {} : { skip: this.shepherdSkip }),
     }
-    return retireFinished(port, req)
+    return retireFinished(port, scope)
   }
 
   /** CC-921: park and retire an opted-in spawner's agent that exited on a final report; logs why when it keeps one. */
@@ -4369,7 +4391,7 @@ export class Supervisor implements TeleportHost {
   private checkOwnership(
     identity: AgentIdentity,
     { requesterAgentId, requestedBy, requesterBinding }: OwnershipClaim,
-    verb: 'resume' | 'surface' | 'park',
+    verb: 'resume' | 'surface' | 'park' | 'retire',
   ): string | undefined {
     const requester = this.requesterOf(requesterAgentId, { binding: requesterBinding, name: requestedBy })
     if (requester.role !== 'worker') return undefined

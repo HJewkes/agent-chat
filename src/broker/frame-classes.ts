@@ -64,6 +64,7 @@ export const FRAME_CLASSES: Readonly<Record<ClientMessage['t'], FrameClass>> = {
   spawn_launched: 4,
   spawn_placed: 4,
   job_kick: 4,
+  hello: 4,
   inbox: 4,
   list: 4,
   queue: 4,

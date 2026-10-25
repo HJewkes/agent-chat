@@ -20,6 +20,7 @@
     "Bash(agent-chat mirror:*)",
     "Bash(agent-chat lifecycle:*)",
     "Bash(agent-chat burndown:*)",
+    "Bash(agent-chat seats:*)",
     "Bash(gh pr merge:*)",
     "Bash(gh pr review:*)",
     "Bash(gh api:*)",

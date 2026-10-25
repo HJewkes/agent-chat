@@ -84,6 +84,7 @@ import {
   hasUnreadableOption,
 } from './git-unresolved.js'
 import { pushFlagMayForm } from './push-words.js'
+import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import {
   indirectFeed,
@@ -238,6 +239,7 @@ export const REASONS = {
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
   aliasQuotedArgs: `leak-guard: this git ! alias takes an argument the guard cannot read (an expansion, or words xargs feeds it), or reads one with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
+  hiddenSubcommand: `leak-guard: this command may be git with a subcommand the guard cannot read, beside --no-verify or core.hooksPath, so it may be a push that skips the hook or a config write that drops it. Write git and its subcommand out literally. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
   ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
@@ -1041,10 +1043,7 @@ function checkEnvEdit(args: readonly string[]): string | undefined {
   return names.some(isGitConfigVar) ? REASONS.gitConfigEnv : undefined
 }
 
-function overridesGuard(kv: string | undefined): boolean {
-  const key = (kv ?? '').split('=')[0]?.toLowerCase() ?? ''
-  return key === 'core.hookspath' || key.startsWith('alias.')
-}
+const overridesGuard = (kv: string | undefined): boolean => GUARD_KEY.test((kv ?? '').split('=')[0] ?? '')
 
 function configValue(args: readonly string[], i: number): { kv: string | undefined; next: number } {
   const a = args[i] as string
@@ -1083,6 +1082,8 @@ interface GitRun {
   literal: boolean
   /** The command word is git, or an expansion the line ties to git. */
   tied: boolean
+  /** The expanded command word, marked, when it is not literal git. */
+  head?: string
 }
 
 function gitRun(
@@ -1135,8 +1136,29 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkTrustWrites(run, scope) ??
     checkFedPush(run, scope) ??
     checkPrivilegedPush(run, scope) ??
+    checkHiddenSubcommand(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/**
+ * An expanded git whose subcommand the guard cannot read, beside a word that skips the hook: `$X $Y
+ * --no-verify` may be a push, `$X $Y core.hooksPath /dev/null` a config write or a `-c` (CC-1322).
+ * Literal git is left to the alias lookup, which already denies a subcommand it cannot read.
+ * A `--` ends nothing here: the unread word may be an option that takes it as its value. Each
+ * word is read as marked, so a key the shell finishes, as `core.hooks$K`, counts too.
+ */
+function checkHiddenSubcommand(run: GitRun, scope: Scope): string | undefined {
+  if (run.literal) return undefined
+  return wordsBesideHiddenSub(run, scope).some(mayDropHook) ? REASONS.hiddenSubcommand : undefined
+}
+
+/** The marked words after where git's subcommand may hide; a command word that may split may hold it (`${=X}`). */
+function wordsBesideHiddenSub(run: GitRun, scope: Scope): readonly string[] {
+  if (run.head !== undefined && expandsToWords(run.head, run.cmd.splits)) return run.marked
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (at >= 0 && run.resolved[at] !== undefined) return []
+  return run.marked.slice(Math.max(at, 0) + 1)
 }
 
 /** A push, or a git whose subcommand the guard cannot read, under a privilege wrapper (CC-1218). */
@@ -2323,7 +2345,7 @@ function checkHidden(
       checkSimple(suffixCommand(cmd, marked.slice(i)), ctx, unseen, depth, false),
     ) ??
     checkGitRun(
-      gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)),
+      { ...gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)), head },
       ctx,
       scope,
       depth,
