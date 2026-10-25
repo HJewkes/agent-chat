@@ -10,7 +10,9 @@ import { checkCommand, REASONS, type GuardContext } from '../leak-guard/pretool.
 // `p` and `b` are aliases only in /work, so a lookup made anywhere else finds nothing.
 const WORK_ALIASES: Record<string, string> = { p: 'push --no-verify', b: '!git push --no-verify origin HEAD' }
 const readAlias: ReadAlias = (word, dir) =>
-  dir === '/work' && WORK_ALIASES[word] !== undefined ? { value: WORK_ALIASES[word], runsIn: '/work' } : undefined
+  dir === '/work' && WORK_ALIASES[word] !== undefined
+    ? { value: WORK_ALIASES[word], runsIn: '/work' }
+    : undefined
 
 const ctx: GuardContext = {
   terms: { kind: 'ok', rules: parseTerms('zq7privateseat\n') },
@@ -60,9 +62,12 @@ describe('an untied hidden command word whose directory or env is unknown (CC-13
     deny('env -C /x $X b', REASONS.noVerify)
   })
 
-  it.each(['git p', '$X p', 'cd /work && $X p'])('still reads the alias in the known directory: %s', command => {
-    deny(command, REASONS.noVerify)
-  })
+  it.each(['git p', '$X p', 'cd /work && $X p'])(
+    'still reads the alias in the known directory: %s',
+    command => {
+      deny(command, REASONS.noVerify)
+    },
+  )
 
   it('looks in a known directory, not the hook one, when the command cds there', () => {
     expect(checkCommand('cd /y && $X p', ctx)).toBeUndefined()
@@ -106,9 +111,12 @@ describe('the hook-directory lookup through git config (CC-1315)', () => {
   execFileSync('git', ['init', '-q', plain], { env: GIT_ENV })
   const at = (cwd: string): GuardContext => ({ ...ctx, cwd, readAlias: aliasReader(READ_ENV) })
 
-  it.each(['env -C /tmp $X pnv', 'sudo $X pnv'])('denies a repo alias read in the hook directory: %s', command => {
-    deny(command, REASONS.noVerify, at(aliased))
-  })
+  it.each(['env -C /tmp $X pnv', 'sudo $X pnv'])(
+    'denies a repo alias read in the hook directory: %s',
+    command => {
+      deny(command, REASONS.noVerify, at(aliased))
+    },
+  )
 
   it('allows the same command where the hook directory has no such alias', () => {
     expect(checkCommand('env -C /tmp $X pnv', at(plain))).toBeUndefined()
