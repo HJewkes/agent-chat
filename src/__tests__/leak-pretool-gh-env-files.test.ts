@@ -76,10 +76,26 @@ describe('a gh helper or config variable written into a file a later shell sourc
   })
 
   it.each([
-    `echo 'export FOO=1' >> "$CLAUDE_ENV_FILE"`,
+    `echo 'source /tmp/rc' >> "$CLAUDE_ENV_FILE"`,
+    `echo '. /tmp/rc' >> ~/.bashrc`,
+    `echo 'alias gh=/tmp/x/gh' >> "$CLAUDE_ENV_FILE"`,
     `echo 'alias ll="ls -l"' >> ~/.bashrc`,
+    `echo 'eval "$(/tmp/x/gh completion)"' >> ~/.zshenv`,
+    `echo 'export FOO=1; source /tmp/rc' >> ~/.zshenv`,
+    `echo 'f() { gh auth setup-git; }' >> ~/.bashrc`,
+    `cat >> ~/.zshenv <<'EOF'\nsource /tmp/rc\nEOF`,
+    `cd ~/.claude/session-env && echo 'source /tmp/rc' >> abc/sessionstart-hook-9.sh`,
+  ])('denies %s, since the file sourced runs it and the text is no plain assignment', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghHelperEnvFile)
+  })
+
+  it.each([
+    `echo 'export FOO=1' >> "$CLAUDE_ENV_FILE"`,
+    `echo 'FOO=1' >> ~/.bashrc`,
+    `echo 'export MYPATH=/opt/bin' >> ~/.zshrc`,
+    `echo '# a comment' >> ~/.bashrc`,
     `printf 'export FOO=1\\n' >> ~/.zshenv`,
-    `cat >> ~/.zshenv <<'EOF'\nexport FOO=1\nEOF`,
+    `cat >> ~/.zshenv <<'EOF'\nexport FOO=1\nexport BAR=2\nEOF`,
     'cat ~/.bashrc',
     'grep -n alias ~/.zshrc > /tmp/aliases.txt',
     'echo "$CLAUDE_ENV_FILE"',
