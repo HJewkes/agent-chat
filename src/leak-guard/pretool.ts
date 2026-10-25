@@ -30,7 +30,7 @@ import {
   PROGRAM_ENV,
   PROTOCOL_ENV,
 } from './git-programs.js'
-import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { expandsShell, gitScripts, type ScriptSpan } from './git-scripts.js'
 import {
   findClauses,
   parallelCall,
@@ -242,6 +242,7 @@ export const REASONS = {
   ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
   ghConfigHome: `leak-guard: a gh call that sets GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME may read a gh config that sends its requests through a socket of the config's choosing (http_unix_socket). Drop the setting. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
+  shellExpansion: `leak-guard: git hands this text to a shell, and it expands a variable, $(...) or backquote whose value the guard cannot see, so it may run a program or add --no-verify. Write the value out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
@@ -1203,21 +1204,26 @@ function checkFedPush(run: GitRun, scope: Scope): string | undefined {
 
 /**
  * Each value git runs as a program (TP-636), checked as a command line of its own: a `-c` config
- * value and an `ext::` transport payload. git passes its `-c` options on to each, so an include on
- * this git is a deny whatever the value holds. Program env vars are closed by `checkProgramEnvLine`.
+ * value and an `ext::` transport payload. git runs a config value through a shell, so any expansion
+ * in it denies (TP-2496). git passes its `-c` options on to each, so an include on this git is a
+ * deny whatever the value holds. Program env vars are closed by `checkProgramEnvLine`.
  */
 function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
   const options = gitOptions(run.args, scope.cwd, scope.gitParams)
   const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, subcommandAt(run, options))
   if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
-  const scripts = [...config, ...ext.scripts]
   const extOn = ext.enabled && run.tied ? REASONS.configProgram : undefined
-  if (scripts.length === 0) return extOn
+  if (config.length === 0 && ext.scripts.length === 0) return extOn
   const params = options === UNSURE_CALL ? scope.gitParams : options.params
   if (includesConfig(params)) return REASONS.includePath
   const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: params }
-  for (const script of scripts) {
+  for (const script of config) {
+    const reason = checkShellText(script, ctx, inner, depth)
+    if (reason !== undefined) return reason
+  }
+  // An `ext::` payload is argv git-remote-ext splits itself, with no shell, so a `$` there is literal.
+  for (const script of ext.scripts) {
     const reason = checkAt(script, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
@@ -1315,10 +1321,15 @@ function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth:
         ? run.tied
           ? REASONS.nestedScript
           : undefined
-        : checkAt(script, ctx, inner, depth + 1)
+        : checkShellText(script, ctx, inner, depth)
     if (reason !== undefined) return reason
   }
   return undefined
+}
+
+/** Text git runs through a shell: the guard cannot see that shell's variables, so any expansion denies (TP-2496). */
+function checkShellText(script: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  return expandsShell(script) ? REASONS.shellExpansion : checkAt(script, ctx, scope, depth + 1)
 }
 
 /** A git config file path, or `git config` on an alias or include key, anywhere on the line (TP-607). */
@@ -3137,7 +3148,7 @@ function envUse(cmd: SimpleCommand): EnvUse {
  * Program env vars git runs (TP-636), closed as one conservative line rule. If a program env name
  * is used anywhere on a line that may reach git, by the same test the hidden-command budget uses
  * (CC-478), so a command word such as `${G}t` counts, a plain literal assignment's value is checked
- * as a nested script and any other use denies. Both the uses and the git test read the unwrapped
+ * as text git runs through a shell, where any expansion denies (TP-2496), and any other use denies. Both the uses and the git test read the unwrapped
  * command too, so a wrapper or an `env -S` split hides neither.
  */
 function checkProgramEnvLine(
@@ -3161,7 +3172,7 @@ function checkProgramEnvLine(
     if (event === EXT_ON || event === EXT_LISTED) return REASONS.extProtocol
     if (event === NAME_HIDDEN || event === SEARCH_UNREAD) continue
     if (typeof event === 'object') return TRUST_REASONS[event.trust]
-    const reason = checkAt(event, ctx, inner, depth + 1)
+    const reason = checkShellText(event, ctx, inner, depth)
     if (reason !== undefined) return reason
   }
   return events.find((event): event is DeferredEnv => event === NAME_HIDDEN || event === SEARCH_UNREAD)
