@@ -616,7 +616,9 @@ subcommand comes from stdin, so the guard reads it as a word it cannot resolve (
 A command word the shell may split into several is itself a whole command the guard never sees
 (CC-1411). An unquoted `$l`, `${l}`, `${a[@]}`, `"${a[@]}"`, zsh's `${=l}` or a `$(...)` is denied
 when what it reads is a value the guard cannot read: a variable the line names anywhere other
-than in a plain `NAME=word` of characters no shell splits (so `read`, `mapfile`, `readarray`,
+than in a plain `NAME=word` of characters no shell splits, on a line that neither names `IFS`
+nor uses a declaration builtin (`declare`, `typeset`, `local`, `export` and kin, which may set a
+nameref such as `declare -n r=l` or another attribute) (so `read`, `mapfile`, `readarray`,
 `for` and `x=$(...)` all count, wherever they sit, since a loop may run a later `read` first),
 `$1`, `$@`, `$REPLY` and the other unnamed ones, a word that names git, and a `$(...)` on a line
 that names git or gh, the same gate as `eval` of text the guard cannot read. So `read -r l <<<
