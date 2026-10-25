@@ -410,15 +410,25 @@ export function ghCloneArgs(rest: readonly (string | undefined)[]): GhClone {
 /**
  * The `gh auth` subcommands that may write `credential.helper = !'<gh path>' auth git-credential`
  * into git config: `setup-git` always, `login` and `refresh` when they set up git for https. gh
- * 2.102 takes the path from `GH_PATH` and only wraps it in single quotes, so a value holding `'`
- * persists any shell snippet (probed), and any other value names any program.
+ * 2.102 takes the path from `GH_PATH`, else from the `PATH` entry whose `gh` links to itself, else
+ * its own executable, and only wraps it in single quotes, so a path holding `'` persists any shell
+ * snippet (probed for both variables), and any other `GH_PATH` names any program.
  */
 const WRITES_CREDENTIAL_HELPER = new Set(['setup-git', 'login', 'refresh'])
 
-/** The variable gh writes into git's credential helper (`gh help environment`). */
-export const GH_PATH = 'GH_PATH'
+/** The variables that choose the gh path written into git's credential helper. */
+export const GH_HELPER_VARS = ['GH_PATH', 'PATH'] as const
 
-/** Whether a gh command may persist `GH_PATH` as git's credential helper; an unresolved `auth` subcommand may. */
+/**
+ * Whether the hook's own environment may already make gh write a helper path the guard cannot
+ * trust: a `'` in `GH_PATH` or `PATH`, or a relative `PATH` entry, which resolves against a cwd
+ * the agent picks.
+ */
+export const unsafeHelperEnv = (env: Env): boolean =>
+  GH_HELPER_VARS.some(name => env[name]?.includes("'") === true) ||
+  (env.PATH?.split(':').some(entry => !entry.startsWith('/')) ?? false)
+
+/** Whether a gh command may persist its own path as git's credential helper; an unresolved `auth` subcommand may. */
 export const ghWritesCredentialHelper = (
   verb: string | undefined,
   sub: string | undefined,
