@@ -2285,7 +2285,10 @@ function splitsUnreadHead(head: string, cmd: SimpleCommand, scope: Scope): boole
   if (NAMES_GIT.test(raw.replace(QUOTING, '')) || UNNAMED_SET.test(raw) || HIDDEN_NAME.test(raw)) return true
   // Like eval of text it cannot read, a substitution counts only on a line that names git or gh.
   if (scope.namesGit && cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
-  return [...raw.matchAll(VARIABLE)].some(match => setUnreadably(match[1] as string, scope.line))
+  const names = [...raw.matchAll(VARIABLE)].map(match => match[1] as string)
+  // `${IFS}` adds a split, and a line that sets IFS splits even a plain value.
+  if (names.length > 0 && (names.includes('IFS') || mentions(unreferenced(scope.line), 'IFS'))) return true
+  return names.some(name => setUnreadably(name, scope.line))
 }
 
 /**

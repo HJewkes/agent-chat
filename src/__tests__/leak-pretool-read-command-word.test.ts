@@ -38,6 +38,11 @@ const BYPASSES: [string, string, string[]][] = [
   [`for l in "$(cat push.sh)"; do $l; done`, REASONS.splitCommand, ['bash']],
   [`$(cat push.sh); git status`, REASONS.splitCommand, BOTH],
   [`$(cat push.sh) gh pr create -t x -b y`, REASONS.splitCommand, BOTH],
+  // Read a plain value as one word whatever IFS is: ${IFS} or a line that sets IFS splits it.
+  [`l=git; \${l}\${IFS}push --no-verify`, REASONS.splitCommand, ['bash']],
+  [`x=git_push; IFS=_; $x --no-verify`, REASONS.splitCommand, ['bash']],
+  [`export IFS=_; x=git_push; $x --no-verify`, REASONS.splitCommand, ['bash']],
+  [`l=git,push,--no-verify; IFS=,; $l`, REASONS.splitCommand, ['bash']],
   // Drop the shell check of an expanded word: a shell behind it runs its -c string or its feed.
   [`while read -r l; do $l; done < push.sh`, REASONS.pipedScript, ['bash']],
   [`while read -r l; do $l; done <<'E'\n${PUSH}\nE`, REASONS.noVerify, ['bash']],
