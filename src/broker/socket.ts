@@ -2149,8 +2149,12 @@ export class SocketServer {
       }
       case 'retire_finished': {
         // CC-1138: the requester fields come from the connection only, never from the frame.
-        const { t: _kind, requesterAgentId: _id, requesterBinding: _binding, ...req } = msg as typeof msg &
-          Record<'requesterAgentId' | 'requesterBinding', unknown>
+        const {
+          t: _kind,
+          requesterAgentId: _id,
+          requesterBinding: _binding,
+          ...req
+        } = msg as typeof msg & Record<'requesterAgentId' | 'requesterBinding', unknown>
         const caller = this.core.registry.nameOf(conn)
         void this.supervisor
           .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }), ...this.ownershipOf(conn) })
