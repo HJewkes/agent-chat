@@ -2122,13 +2122,13 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   })
 
   it.each([
-    "git submodule foreach 'alias p=\"git push --no-verify\"\np'",
-    "git submodule foreach 'alias p=\"git push --no-verify\"; p'",
-    "git submodule foreach 'alias -- p=\"git push --no-verify\"\np'",
+    'git submodule foreach \'alias p="git push --no-verify"\np\'',
+    'git submodule foreach \'alias p="git push --no-verify"; p\'',
+    'git submodule foreach \'alias -- p="git push --no-verify"\np\'',
     'git submodule foreach \'sh -c "alias p=\\"git push --no-verify\\"\np"\'',
     "git submodule foreach 'alias p=git\np push --no-verify'",
     "git submodule foreach 'alias p=env\np git push --no-verify'",
-    "git submodule foreach 'alias l=\"ls -l\"\nl'",
+    'git submodule foreach \'alias l="ls -l"\nl\'',
     "git submodule foreach 'command alias p=git\np push'",
     "git -c core.pager='alias p=git\np push; less' log",
   ])('denies an alias a shell git starts defines for a later line (TP-4237): %s', command => {
@@ -2136,21 +2136,24 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   })
 
   it.each([
-    "git submodule foreach 'sh -c \"npm test\"'",
-    "git submodule foreach 'bash -c \"git status\"'",
+    'git submodule foreach \'sh -c "npm test"\'',
+    'git submodule foreach \'bash -c "git status"\'',
     'git submodule foreach alias',
     "git submodule foreach 'alias l'",
     "alias l='ls -l'; git status",
     "git rebase -x 'npm test' main",
     'sh ./f; git status',
     '. ./f; git status',
-  ])('allows a shell git starts that reads no file, and a script file run at top level (TP-4236): %s', command => {
-    expect(checkCommand(command, ctx())).toBeUndefined()
-  })
+  ])(
+    'allows a shell git starts that reads no file, and a script file run at top level (TP-4236): %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
 
   it.each([
     ["git submodule foreach 'sh ./f'", REASONS.gitShellFile],
-    ["git submodule foreach 'alias p=\"git push --no-verify\"\np'", REASONS.gitShellAlias],
+    ['git submodule foreach \'alias p="git push --no-verify"\np\'', REASONS.gitShellAlias],
   ])('denies a nested script file or alias from the built CLI (TP-4236, TP-4237): %s', (command, reason) => {
     const out = execFileSync(process.execPath, [CLI, 'leak-guard', 'pretool'], {
       input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: SCRATCH }),

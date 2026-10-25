@@ -1353,7 +1353,9 @@ function checkGitShellCommand({ name, marked, assigns }: ShellRun): string | und
     const { from } = readShellCall(name, marked, assigns).script
     return from === 'file' || from === 'hidden' ? REASONS.gitShellFile : undefined
   }
-  return name === 'alias' && aliasDefinitions(['alias', ...marked]).length > 0 ? REASONS.gitShellAlias : undefined
+  return name === 'alias' && aliasDefinitions(['alias', ...marked]).length > 0
+    ? REASONS.gitShellAlias
+    : undefined
 }
 
 /** A git config file path, or `git config` on an alias or include key, anywhere on the line (TP-607). */
