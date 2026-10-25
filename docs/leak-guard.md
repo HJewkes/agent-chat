@@ -407,6 +407,18 @@ exports, and the hook env. A `SHELL` outside the guard's shell list, or one it c
 on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
 macOS `script [file [command ...]]`, which runs its trailing words, is not covered. `sudo -s` and `--shell` run `$SHELL` too and get the same rule; `sudo -i` runs the passwd-entry shell, so a `SHELL` on the line does not change it.
 
+`prlimit`, GNU `time` (a bare `time` is read both ways and denies if either reading does: as GNU
+time, which dash, a quote, a pipe or `command` give, and as the bash and zsh keyword, which skips
+every option word, since a word such as `-o` after it is a command that may run the rest),
+`numactl`, `nsenter`, `chroot <root>`, `setarch [<arch>]` and its `linux32`, `linux64`, `i386`,
+`x86_64` and `uname26` names, `enosys`, `uclampset`, `coresched <function>` and `busybox setsid`
+are read the same way, each from its own binary's getopt string (CC-1424). `nsenter`, `chroot`
+and `setarch` with no command run a shell, read as one reading stdin. `coresched` permutes, so its
+command is read only when it ends the line with no option among it, and a `chroot` command word
+starting with `-` denies, since uutils' chroot may read it as an option. `scriptlive`, which types a
+log file into what it runs, and `busybox` with any applet but `setsid`, deny on a line that may
+reach git or gh.
+
 | Denied                                                                                                                                                                                                                                          | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--`                                                                                                                                          | skips the pre-push hook                                     |
