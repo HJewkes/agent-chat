@@ -95,7 +95,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { readShellCall } from './shell-invocation.js'
+import { observedShell, readShellCall } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -2226,11 +2226,12 @@ function checkShell(
 
 /**
  * The texts a shell may run as its `-c` string, at the place its options leave it (`sh -c -e TEXT`,
- * `bash -oc pipefail TEXT`, CC-1342). Where the options hide the call, every word may be it.
+ * `bash -oc pipefail TEXT`, CC-1342). Where the options hide the call, or belong to a shell whose
+ * grammar was never observed (mksh's `-T` takes an operand), every word may be it.
  */
 function commandTexts({ name, marked, assigns }: ShellRun): string[] {
   const { script } = readShellCall(name, marked, assigns)
-  if (script.from === 'hidden') return marked.map(unmark)
+  if (script.from === 'hidden' || !observedShell(name)) return marked.map(unmark)
   if (script.from !== 'command') return []
   return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
 }
