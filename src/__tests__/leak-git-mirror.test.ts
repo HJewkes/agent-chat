@@ -21,9 +21,7 @@ const has = (file: string): boolean => fs.existsSync(file)
 const HAS_SHELLS = has('/bin/dash') && has('/bin/zsh') && has('/usr/bin/bash')
 const HAS_SCRIPT = has('/usr/bin/script') && process.platform === 'linux'
 
-interface Repo extends GitShimFixture {
-  sub: string
-}
+type Repo = GitShimFixture
 
 function commit(cwd: string, message: string): void {
   git(
@@ -62,7 +60,14 @@ function repo(): Repo {
   const fx = harness.fixture(['pz'])
   git(fx.work, 'config', 'alias.pz', '!sh ./p.sh')
   // A submodule child denies file:// by default, which would refuse every foreach push before the shim could.
-  git(fx.work, 'config', '--file', path.join(fx.env.HOME, '.gitconfig'), 'protocol.file.allow', 'always')
+  git(
+    fx.work,
+    'config',
+    '--file',
+    path.join(fx.env.HOME as string, '.gitconfig'),
+    'protocol.file.allow',
+    'always',
+  )
   const source = submoduleSource(path.dirname(fx.work))
   addSubmodule(fx, source, 'plain', 'sub')
   addSubmodule(fx, source, 'a[$(sh ./p.sh)]', 'arith')
@@ -75,12 +80,12 @@ function repo(): Repo {
     GIT_EXEC_PATH: gitMirrorDirFor(fx.shimDir),
     SHELL: '/bin/sh',
   }
-  return { ...fx, env, sub: path.join(fx.work, 'sub') }
+  return { ...fx, env }
 }
 
 /** The same repo with no shim and no mirror: what the row does when nothing intervenes. */
 function unguarded(fx: Repo): Repo {
-  const env = { ...fx.env, PATH: HOST_PATH }
+  const env: Record<string, string> & { PATH: string } = { ...fx.env, PATH: HOST_PATH }
   delete env.GIT_EXEC_PATH
   return { ...fx, env }
 }
