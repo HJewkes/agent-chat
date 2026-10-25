@@ -2,18 +2,19 @@
 
 Decision record for CC-1083 (slice b), 2026-10-12. Follow-up implementation:
 **CC-1138** (claude-channels initiative, tags `kind:security`, `repo:agent-chat`),
-filed and open. Only its frame-class table has landed (see "Frame inventory"); the gate
-itself has not. **CC-1151** has landed (#785, #818): the
+filed and open. Its frame-class table, the `hello` frame (slice C) and the Class 1 and
+Class 3 gate (slice D) have landed; the Class 2 mapping (slice E) has not, so a declared
+connection's Class 2 frames still act as the human's. **CC-1151** has landed (#785, #818): the
 tick and seat opt-out sites no longer run in an agent's process, and the root rule below
 is superseded (see "The boundary that closes the class").
 
 ## The problem
 
-The broker decides that a connection speaks for the human by one test:
-`isHuman(conn)` in `src/broker/socket.ts` returns true when the connection has no
+Before CC-1138, the broker decided that a connection speaks for the human by one test:
+`isHuman(conn)` in `src/broker/socket.ts` returned true when the connection had no
 registered name. Every CLI invocation opens an unregistered connection, so any local
-process that runs `agent-chat` counts as the human. That includes a spawned agent's own
-`Bash` tool.
+process that ran `agent-chat` counted as the human. That included a spawned agent's own
+`Bash` tool. Its replacement, `admits`, also reads the connection's `hello` (below).
 
 `agent-chat debug send <to> <text>` (`src/cli/debug.ts`) sends a `human_send` frame, so
 an agent that runs it delivers free text with `from="human"`. As of origin/main
@@ -43,7 +44,10 @@ frame therefore needs a row in both before the suite passes.
 
 ### Class 1: refused from a declared connection
 
-These frames are guarded by `isHuman`, and they mean "the human decided".
+These frames are guarded by `admits` in `src/broker/socket.ts`, and they mean "the human
+decided". From a declared connection each is refused with a `verdict_refused` row whose
+actor is the declared name (`?` for an unknown id, with the id in `meta.declared_agent_id`),
+and the reason tells the caller to run the verb from a plain shell, not an agent's pane.
 
 | Frame                | Handler                                                         |
 | -------------------- | --------------------------------------------------------------- |
@@ -117,11 +121,13 @@ literal spelling.
 
 ### Class 3: bound to the declared session
 
-| Frame                     | Today                                                                                                                     | With a declared id                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `permission_hook`         | `isHuman` passes, and the caller picks `msg.session`                                                                      | accepted only when `msg.session` names the declared agent                     |
-| `permission_self_granted` | `isHuman` passes; the `approval_request` and `allow` `resolution` rows take `actor = msg.session`, which the caller picks | accepted only when `msg.session` names the declared agent                     |
-| `codex_wake_capped`       | `isHuman` passes, and the caller picks `hostPid` and `host`, which name the capped session                                | accepted only when `registry.nameOnHost(hostPid, host)` is the declared agent |
+| Frame                     | Without a hello                                                                                                          | With a declared id                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `permission_hook`         | `admits` passes, and the caller picks `msg.session`                                                                      | accepted only when `msg.session` names the declared agent                     |
+| `permission_self_granted` | `admits` passes; the `approval_request` and `allow` `resolution` rows take `actor = msg.session`, which the caller picks | accepted only when `msg.session` names the declared agent                     |
+| `codex_wake_capped`       | `admits` passes, and the caller picks `hostPid` and `host`, which name the capped session                                | accepted only when `registry.nameOnHost(hostPid, host)` is the declared agent |
+
+An unknown declared id is refused for all three: it names no agent the subject could match.
 
 The first two frames come from the PermissionRequest hook (`permission_self_granted` is CC-694's
 audit row for a call the hook allowed itself). The hook runs inside an agent's process

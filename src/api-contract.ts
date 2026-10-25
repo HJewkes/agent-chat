@@ -136,7 +136,7 @@ export interface ErrorResponse {
   error: string
 }
 
-/** `POST /api/answer` and `POST /api/dismiss` both return this. */
+/** `POST /api/answer`, `POST /api/dismiss` and the owner-console verdict routes return this. */
 export interface VerdictResponse {
   ok: boolean
   reason?: string
@@ -151,6 +151,21 @@ export interface AnswerRequest {
 
 export interface DismissRequest {
   msgId: string
+}
+
+/**
+ * The header an owner-console verdict route requires, beside the ui token (TP-1989).
+ * Its value must be exactly `console`.
+ */
+export const OWNER_CHANNEL_HEADER = 'X-Owner-Channel'
+
+/**
+ * `POST /api/queue/:msgId/endorse`. `text` and `to` must equal the stored request
+ * byte for byte; the route never trims them. Returns `VerdictResponse`.
+ */
+export interface EndorseVerdictRequest {
+  text: string
+  to: string
 }
 
 /**

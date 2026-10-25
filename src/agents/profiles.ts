@@ -54,7 +54,7 @@ import {
  * `HUMAN_ONLY_CLI_DENY` below is the same idea aimed at a narrower target: the
  * `agent-chat` CLI verbs that act with the human's own authority (`endorse`,
  * `dismiss`, `send`, `answer`, `approve`, and `inbox --batch --answers`, which
- * reaches `approve` and `endorse` through one door (CC-425) — see `broker/socket.ts`'s `isHuman`).
+ * reaches `approve` and `endorse` through one door (CC-425) — see `broker/socket.ts`'s `admits`).
  * `approve` is the newest and the one with the most to lose (CC-96): it answers a
  * permission prompt, so an agent that reached it would be granting itself a tool
  * call the human never approved, which is `docs/ideas.md` R1. CC-22's
@@ -66,7 +66,7 @@ import {
  * dist/cli.js endorse`, an absolute path, `npx agent-chat endorse`) is a
  * different literal string and will not match; a raw socket write bypasses the
  * CLI, and therefore this list, entirely. Real defense in depth, not a fix —
- * `broker/socket.ts`'s `isHuman` states the same limit from the broker side.
+ * `broker/socket.ts`'s `admits` states the same limit from the broker side.
  * `ask` (CC-169) is here too: it puts a question to the human under a service
  * label, which an agent has its own `chat_ask` for and must not borrow.
  * `debug send` (CC-1083) sends `human_send`, so its text arrives `from="human"`.
