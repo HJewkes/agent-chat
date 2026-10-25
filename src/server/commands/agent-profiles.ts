@@ -39,12 +39,12 @@ export const agentProfiles = defineTool({
   description:
     "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. " +
     "It's free, and guessing a profile name risks silently granting the wrong tool set. " +
-    'List the profiles agent_spawn can use, one line each with the role, model, surface and isolation each grants. ' +
+    'List the profiles agent_spawn can use, with the role, model, surface and isolation each grants. ' +
     'Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner. ' +
-    'Pass name to read one profile in full, tools and denies included; an unknown name errors with close matches.',
+    'Pass name to read one profile with its tools and denies; an unknown name errors with close matches.',
   args: z.object({
-    name: z.string().optional().describe('Return only this profile, in full.'),
-    verbose: z.boolean().optional().describe('List every profile in full, tools and denies included.'),
+    name: z.string().optional().describe('Return only this profile.'),
+    verbose: z.boolean().optional().describe('Every profile with its tools and denies.'),
   }),
   result: z.string(),
   async run({ name: only, verbose }) {

@@ -79,8 +79,7 @@ async function rosterPage(
 export const agentList = defineTool({
   name: 'agent_list',
   description:
-    'List durable agents and whether a process is attached, one line each. Default: spawning, live, detached, newest first. ' +
-    'Pass verbose (with prefix to narrow it) for where each runs and its transcript.',
+    'List durable agents and whether a process is attached. Default: spawning, live, detached, newest first.',
   args: z.object({
     include_finished: z.boolean().describe('Also list exited agents.').optional(),
     include_retired: z
@@ -90,10 +89,7 @@ export const agentList = defineTool({
     limit: z.number().describe(`Max rows (default ${DEFAULT_LIMIT}, cap ${MAX_LIMIT}).`).optional(),
     mine: z.boolean().describe('Only agents you spawned.').optional(),
     prefix: z.string().describe('Only names starting with this.').optional(),
-    verbose: z
-      .boolean()
-      .describe("Add each row's spawner, account, host, cwd and transcript path.")
-      .optional(),
+    verbose: z.boolean().describe('Add spawner, account, cwd and transcript.').optional(),
   }),
   result: z.string(),
   async run({ include_finished, include_retired, limit: asked = DEFAULT_LIMIT, mine, prefix, verbose }, ctx) {

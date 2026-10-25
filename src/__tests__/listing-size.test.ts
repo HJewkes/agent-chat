@@ -63,7 +63,7 @@ const agent = (i: number): AgentIdentity => ({
   state: i < 5 ? 'detached' : 'exited',
   origin: 'spawned',
   spawnedBy: 'fixture-operator',
-  launchedBy: 'fixture-watchdog',
+  launchedBy: 'seat-watchdog',
   spawnedAt: i,
   brief: 'do it',
   cwd: `/tmp/cc1597/projects/fixture-repo/.worktrees/fx-worker-${1000 + i}`,
@@ -125,7 +125,7 @@ describe('agent_list over 150 mostly exited agents', () => {
     const out = await listRoster({ include_finished: true, limit: 150, verbose: true })
 
     expect(out.length).toBeGreaterThan(3 * BOUND)
-    expect(out).toContain('spawned by fixture-operator (fixture-watchdog)')
+    expect(out).toContain('spawned by fixture-operator (seat-watchdog)')
     expect(out).toContain('    /tmp/cc1597/projects/fixture-repo/.worktrees/fx-worker-1000\n    transcript: ')
   })
 
