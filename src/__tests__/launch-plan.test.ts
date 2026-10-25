@@ -104,6 +104,7 @@ describe('the argv every surface shares', () => {
         "--verbose",
         "--permission-mode",
         "default",
+        "--exclude-dynamic-system-prompt-sections",
       ]
     `)
   })
@@ -233,6 +234,7 @@ describe('the one thing surfaces are allowed to differ on', () => {
     // If this fails, someone added a second axis of divergence — which is the
     // wart the single builder exists to prevent.
     // `--strict-mcp-config` rides the same axis: only a headless worker has no pane to answer for an unnamed server.
+    // So does `--exclude-dynamic-system-prompt-sections`, which CC-1598 scopes to headless workers.
     const promptFlags = new Set([
       '-p',
       '--output-format',
@@ -240,6 +242,7 @@ describe('the one thing surfaces are allowed to differ on', () => {
       '--verbose',
       '--permission-mode',
       '--strict-mcp-config',
+      '--exclude-dynamic-system-prompt-sections',
     ])
     const stripped = SURFACE_NAMES.map(surface => {
       const args = buildLaunchPlan(input({ surface })).args
@@ -1181,6 +1184,29 @@ describe('a lean profile', () => {
       )
     },
   )
+})
+
+describe('the shared prompt-cache prefix a headless worker launches with (CC-1598)', () => {
+  const FLAG = '--exclude-dynamic-system-prompt-sections'
+  const argsFor = (over: Partial<AgentProfile>): string[] =>
+    buildLaunchPlan(input({ profile: profile(over) })).args
+
+  // Mutation caught: emitting the flag on every surface, which also moves a pane's cwd and git status out.
+  it('moves the dynamic sections out only for a headless worker', () => {
+    expect(argsFor({ surface: 'headless' })).toContain(FLAG)
+    expect(argsFor({ surface: 'iterm-pane' })).not.toContain(FLAG)
+    expect(argsFor({ surface: 'headless', role: 'coordinator' })).not.toContain(FLAG)
+  })
+
+  it('keeps the system prompt byte-stable across two spawns of one profile', () => {
+    const prompt = (agentId: string, name: string, cwd: string): string | undefined =>
+      flag(
+        buildLaunchPlan(input({ agentId, name, cwd, brief: `task for ${name}` })).args,
+        '--append-system-prompt',
+      )
+
+    expect(prompt('ag000001', 'scout', '/repo/a')).toBe(prompt('ag000002', 'ranger', '/repo/b'))
+  })
 })
 
 describe('the account a plan hands the launched process (CC-200)', () => {
