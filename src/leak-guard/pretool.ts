@@ -2270,7 +2270,9 @@ function checkShell(
  */
 function commandTexts({ name, marked, assigns }: ShellRun): string[] {
   const { script } = readShellCall(name, marked, assigns)
-  if (script.from === 'hidden' || !observedShell(name)) return marked.map(unmark)
+  // Each text is checked in the same scope, so a repeated word is checked once (CC-1411: a long run of
+  // operands to an expanded command word stays within the hook timeout).
+  if (script.from === 'hidden' || !observedShell(name)) return [...new Set(marked.map(unmark))]
   if (script.from !== 'command') return []
   return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
 }
