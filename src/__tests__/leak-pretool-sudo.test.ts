@@ -74,6 +74,30 @@ describe('the bypass guard fails closed on a sudo option it cannot read', () => 
   ])('denies %s', line => {
     expect(checkCommand(line, ctx())).toBe(REASONS.sudoOption)
   })
+
+  // CC-1291. An empty or split $U as an option value shifts the command word,
+  // so sudo -u $U echo git push runs git as the user echo.
+  it.each([
+    'sudo -u $U echo git push --no-verify',
+    'sudo-rs -u $U echo git push --no-verify',
+    'sudo -g $G git push --no-verify',
+    'sudo --user $U git push',
+    'sudo -D $D git push --no-verify',
+    'sudo -nu $U git push',
+    'sudo -u "$U" git push --no-verify',
+    'echo x | xargs -I{} sudo -u {} git push',
+    'sudo -u $U apt-get update',
+  ])('denies %s, whose option value the shell expands', line => {
+    expect(checkCommand(line, ctx())).toBe(REASONS.sudoOption)
+  })
+
+  it.each([
+    ['sudo -n $X status', undefined],
+    ['sudo -u root $CMD', undefined],
+    ['sudo -u root git push', REASONS.privilegedPush],
+  ])('reads %s past a flag or a literal value', (line, reason) => {
+    expect(checkCommand(line, ctx())).toBe(reason)
+  })
 })
 
 const SHELL_FLAGS = ['-s', '-i', '-Es', '--shell', '--login', '-u root -s']
@@ -108,6 +132,7 @@ describe('the bypass guard allows sudo lines that skip no hook', () => {
     'sudo apt-get update',
     "sudo -u postgres psql -c 'select 1'",
     'sudo git status',
+    'sudo -u root git status',
     'sudo -s git status',
     'sudo -i',
     "sudo -s <<< 'git status'",
