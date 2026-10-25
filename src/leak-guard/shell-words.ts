@@ -136,6 +136,26 @@ function unjoinAt(src: string, at: number): number {
   return at
 }
 
+/** The zsh `<n-m>` glob at `at` with line joins removed, or undefined. It reads only the range, never the rest of the line. */
+function rangeAt(src: string, at: number): string | undefined {
+  let range = ''
+  const take = (char: RegExp): boolean => {
+    const c = src[at]
+    if (c === undefined || !char.test(c)) return false
+    range += c
+    at = unjoinAt(src, at + 1)
+    return true
+  }
+  const digits = (): void => {
+    while (take(/\d/));
+  }
+  if (!take(/</)) return undefined
+  digits()
+  if (!take(/-/)) return undefined
+  digits()
+  return take(/>/) ? range : undefined
+}
+
 /** The index after the `n` characters from `at` as bash reads them. */
 function skipChars(src: string, at: number, n: number): number {
   for (let i = 0; i < n; i++) at = unjoinAt(src, unjoinAt(src, at) + 1)
@@ -806,7 +826,7 @@ class ShellLexer {
   }
 
   private redirect(): void {
-    const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos).replaceAll('\\\n', ''))?.[0]
+    const range = rangeAt(this.src, this.pos)
     if (range !== undefined) return this.globRange(range)
     // In `2&>f` the 2 is an argument, not a descriptor.
     const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
