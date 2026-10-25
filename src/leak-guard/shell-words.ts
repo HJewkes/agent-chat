@@ -172,6 +172,10 @@ function funsubBody(src: string, at: number): number | undefined {
   return c !== '' && ' \t\n'.includes(c) ? open : undefined
 }
 
+// A case opened by `in` or by zsh's `{`, or a `{ }` group inside a case.
+type CaseFrame = 'in' | 'brace' | 'group'
+const isCase = (frame: CaseFrame | undefined): boolean => frame === 'in' || frame === 'brace'
+
 // What a `(` starts: only in a subshell can `{` and `}` still be reserved words.
 type ParenKind = 'subshell' | 'function' | 'header' | 'arith' | 'text'
 
@@ -199,8 +203,9 @@ const TIMEIGN = 'TIMEIGN'
 const ARITH_CMD = 'ARITH_CMD'
 const ARITH_FOR_EXPRS = 'ARITH_FOR_EXPRS'
 // Operators the reader lexes as one token, longest first.
-const OPERATOR_TOKENS = [';;&', ';;', ';&', '&&', '||', '|&']
-const CASE_ENDS = new Set<Token>([';;', ';&', ';;&'])
+const OPERATOR_TOKENS = [';;&', ';;', ';&', ';|', '&&', '||', '|&']
+// `;|` is zsh's; bash reads it as `;` and `|`, a syntax error.
+const CASE_ENDS = new Set<Token>([';;', ';&', ';;&', ';|'])
 
 /**
  * The tokens after which bash 5.3 recognises a reserved word: reserved_word_acceptable, parse.y 5896-5947.
@@ -208,7 +213,7 @@ const CASE_ENDS = new Set<Token>([';;', ';&', ';;&'])
  */
 const RESERVED_ACCEPTABLE = new Set<Token>([
   ...['\n', ';', '(', ')', '|', '&', '{', '}', '&&', ARITH_CMD, '!', '|&', ']]', 'do', 'done'],
-  ...['elif', 'else', 'esac', 'fi', 'if', '||', ';;', ';&', ';;&', 'then', 'time', TIMEOPT],
+  ...['elif', 'else', 'esac', 'fi', 'if', '||', ';;', ';&', ';;&', ';|', 'then', 'time', TIMEOPT],
   ...[TIMEIGN, 'coproc', 'until', 'while', undefined],
 ])
 
@@ -333,8 +338,8 @@ class ShellLexer {
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
-  /** Open `case` statements, and whether a pattern, whose `)` ends no group, comes next. */
-  private caseDepth = 0
+  /** Open `case` statements and the `{ }` groups inside them, and whether a pattern, whose `)` ends no group, comes next. */
+  private cases: CaseFrame[] = []
   private patternNext = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
@@ -434,6 +439,7 @@ class ShellLexer {
   private step(): void {
     const c = this.src[this.pos] as string
     if (c === '\\' && this.src[this.pos + 1] === '\n') return void (this.pos += 2)
+    if (c === '{' && this.opensCaseBrace()) return this.skip(() => this.openCaseBrace())
     if (this.braceWord(c)) return
     if (c === ' ' || c === '\t') return this.skip(() => this.endWord())
     if (c === '\n') return this.newline()
@@ -593,7 +599,7 @@ class ShellLexer {
   private reservedWord(word: string, header: Header | undefined): boolean {
     if (this.testOpen) return word === ']]'
     if (header !== undefined && (word === 'in' || (word === 'do' && header !== 'case'))) return true
-    if (this.patternNext) return word === 'esac' && this.patternEsac()
+    if (this.patternNext) return (word === 'esac' || word === '}') && this.patternEsac()
     if (word === 'time' && !timeCommandAcceptable(this.lastToken, this.beforeLast)) return false
     return this.wordStartOk && RESERVED.has(word)
   }
@@ -604,14 +610,53 @@ class ShellLexer {
     return (this.wordStartOk || last === 'in') && last !== '|' && last !== '('
   }
 
-  /** `[[` and `]]` open and close a test; a case's `in` and `esac` open and close its patterns. */
+  /** `[[` and `]]` open and close a test; see `trackCase` for the rest. */
   private takeReserved(word: string, header: Header | undefined): void {
     if (word === '[[' || word === ']]') this.testOpen = word === '[['
-    else if (word === 'in' && header === 'case') this.caseDepth++
-    else if (word === 'esac' && this.caseDepth > 0) this.caseDepth--
-    if (word === 'in' || word === 'esac') this.patternNext = word === 'in' && header === 'case'
+    else this.trackCase(word, header)
     this.atStart = RESERVED.get(word) ?? false
     this.accept(word)
+  }
+
+  /**
+   * A case's `in`, or zsh's `{`, opens its patterns; `esac`, or zsh's sole `}`, closes them. A `{ }` group
+   * inside a case is counted so that its `}` closes no case. A trailing zsh `echo a }` close is not read,
+   * which leaves the case open: then no pattern is due, so a `)` still closes what it would.
+   */
+  private trackCase(word: string, header: Header | undefined): void {
+    const top = this.cases.at(-1)
+    if (word === '}' && this.patternNext && top === 'in' && this.braceCloseSplits()) {
+      this.budget.expansion = 'unreadable'
+    }
+    if (word === 'in' && header === 'case') this.cases.push('in')
+    else if (word === '{' && top !== undefined) this.cases.push('group')
+    else if (word === '}' || (word === 'esac' && isCase(top))) this.cases.pop()
+    if (word === 'in' || word === 'esac' || word === '}')
+      this.patternNext = word === 'in' && header === 'case'
+  }
+
+  /** zsh reads `case w {` as `case w in`, and also after a `;` or newline, or with the `{` touching the pattern. */
+  private opensCaseBrace(): boolean {
+    return this.expectIn === 'case' && this.word === null && this.pending === null
+  }
+
+  /** As `takeReserved('in', 'case')`, but bash fails on the `{`, so only zsh's reading of its `}` counts. */
+  private openCaseBrace(): void {
+    this.expectIn = undefined
+    this.cases.push('brace')
+    this.patternNext = true
+    this.atStart = false
+    this.accept('in')
+  }
+
+  /**
+   * Where a pattern is due, bash reads `})` and `}|y)` as a pattern and zsh closes the case at the `}`,
+   * so the two shells end the case, and maybe a `$( )`, in different places.
+   */
+  private braceCloseSplits(): boolean {
+    let at = this.unjoin(this.pos)
+    while (this.src[at] === ' ' || this.src[at] === '\t') at = this.unjoin(at + 1)
+    return this.src[at] === ')' || this.src[at] === '|'
   }
 
   private skip(then: () => void): void {
@@ -631,9 +676,12 @@ class ShellLexer {
   private operator(c: string): void {
     const ahead = this.ahead(3)
     const op = OPERATOR_TOKENS.find(token => ahead.startsWith(token)) ?? c
-    if (CASE_ENDS.has(op) && this.caseDepth > 0) this.patternNext = true
+    if (CASE_ENDS.has(op) && isCase(this.cases.at(-1))) this.patternNext = true
+    this.endWord()
+    // zsh takes `case w;in` and `case w;{`; bash fails on them, so reading the case open is safe.
+    const header = op === ';' && this.expectIn === 'case' ? 'case' : undefined
     this.endCommand()
-    this.expectIn = undefined
+    this.expectIn = header
     this.atStart = !this.testOpen
     this.accept(op)
     // A command joined by `|&`, `;;` or `;&` records its first character, `|` or `;`.
