@@ -90,9 +90,15 @@ const HUMAN_ONLY_CLI_DENY = [
  * resume around the CC-163 role gate. Same configuration-not-guarantee limit as
  * `HUMAN_ONLY_CLI_DENY`. Workers read the roster through `agent_list` instead.
  * CC-1194: the `port` verbs spawn, resume and retire over the same connection.
- * CC-1138: so do the `seats` verbs, and `seats watchdog` also sends `human_send`.
+ * CC-1138: so do the `seats` and `burndown` verbs; `seats watchdog` also sends
+ * `human_send`, and `burndown tick` spawns with the tick's authority.
  */
-const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)', 'Bash(agent-chat port:*)', 'Bash(agent-chat seats:*)']
+const WORKER_CLI_DENY = [
+  'Bash(agent-chat agent:*)',
+  'Bash(agent-chat port:*)',
+  'Bash(agent-chat seats:*)',
+  'Bash(agent-chat burndown:*)',
+]
 
 /**
  * CC-47: the operator's global CLAUDE.md requires every turn that ends without

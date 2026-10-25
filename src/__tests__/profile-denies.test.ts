@@ -229,10 +229,15 @@ describe('the debug send deny (CC-1083)', () => {
 describe('the burndown and seats denies (CC-1138)', () => {
   const SEND = 'Bash(agent-chat send:*)'
 
-  // Mutation caught: dropping the seats line from WORKER_CLI_DENY, which lets a worker kick the watchdog.
-  it.each(['implementer', 'reviewer', 'peer', 'planner'])('denies agent-chat seats to builtin %s', name => {
-    expect(BUILTIN_PROFILES.find(p => p.name === name)?.disallowedTools).toContain(SEATS)
-  })
+  // Mutation caught: dropping either line from WORKER_CLI_DENY, which lets a worker kick the watchdog or the tick.
+  it.each(['implementer', 'reviewer', 'peer', 'planner'])(
+    'denies agent-chat seats and burndown to builtin %s',
+    name => {
+      expect(BUILTIN_PROFILES.find(p => p.name === name)?.disallowedTools).toEqual(
+        expect.arrayContaining([SEATS, BURNDOWN]),
+      )
+    },
+  )
 
   // Mutation caught: dropping either rule from DERIVED_DENIES, which leaves installed bd-* files without it.
   it('adds both to a file that denies only send, with one warning each', () => {
