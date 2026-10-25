@@ -2923,7 +2923,8 @@ function expandedEvents(cmd: SimpleCommand): EnvEvent[] {
 function evalCommands(body: readonly string[]): SimpleCommand[] {
   const at = commandHeadAt(body)
   if (at === undefined || unmark(body[at] as string) !== 'eval') return []
-  return parseShell(body.slice(at + 1).map(unmark).join(' '))
+  const text = body.slice(at + 1).map(unmark)
+  return parseShell(text.join(' '))
 }
 
 /** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
