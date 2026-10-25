@@ -566,6 +566,14 @@ pytest && git status`, `source x; $PAGER README; git log`, and `[ -n "$T" ] && g
 names `git` elsewhere does not matter: it says nothing about what the expansion holds, and denying
 on it blocked routine lines.
 
+Such an untied word still has its subcommand looked up where the guard can look: the directory
+the line is known to be in, or else the hook's own, with the hook's env (CC-1315). An alias found
+there is checked like any other, so `env -C /x $X p`, `sudo $X p`, `cd "$D" && $X p` and
+`GIT_DIR=$G $X p` deny what `$X p` denies. A git option value the guard cannot read, as in
+`$X -C "$D" p`, `$X --git-dir=$G p` or `$X -c "$C" p`, is itself a hidden word, so the hidden-suffix
+scan checks it as a command word and these deny too. This is a best guess: an alias that only the unknown
+directory's repo config defines, or that only root's config defines under `sudo`, stays unseen.
+
 The accepted gap is a command word set where the guard cannot see, such as a variable that a
 sourced file or the Bash tool's shell set, after a `source`, `pushd` or `cd` the guard cannot
 follow: `source ./env.sh; $x pnv` runs an alias unchecked when `env.sh` sets `x=git`. Denying it
@@ -1538,8 +1546,10 @@ Not covered, by design or by cost:
 - text written to a file and then run (`printf … > f; bash f`), CC-1399; and encoded text the
   guard cannot decode, such as printf escapes, `base64 -d` or `xxd -r` piped to a shell;
 - a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`
-  command on `PATH`, or whose directory the guard cannot tell behind a command word the line does
-  not tie to git (`source ./env.sh; $x pnv`, TP-613);
+  command on `PATH`, or that only a directory the guard cannot tell defines, behind a command word
+  the line does not tie to git (`source ./env.sh; $x pnv` where the hook's directory has no `pnv`,
+  TP-613, CC-1315);
+- an untied command word whose subcommand is an expansion too, as in `env -C /x $X $Y`;
 - a `!` alias body that reads its arguments other than as `$1` to `$9`, `$@` or `$*`;
 - shell syntax the splitter misreads, such as `&>` or `case` patterns;
 - a variable whose value in the Bash tool's shell differs from the hook's although the command
