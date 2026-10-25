@@ -924,7 +924,7 @@ variable `X` names (TP-2499). These rules also read a command's redirect targets
 and unquoted heredoc bodies, including those of a redirect-only command, whose assignments bash
 keeps, where a program var's `${NAME:=x}` denies too. They also read the text `eval` runs, past
 its `--` (zsh's `-` too), through the same reading the eval check uses; an option or expansion
-first denies as unreadable. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
+first denies as an unreadable eval on a line that names git or gh. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
 line that may reach git it denies as `programEnv`, after the line's other checks so a more
 specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
 that `find -exec` adds are not read here.

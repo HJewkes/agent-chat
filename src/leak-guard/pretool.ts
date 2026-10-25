@@ -2960,12 +2960,15 @@ function evalOperands(words: readonly string[]): readonly string[] | undefined {
   return head.includes(LIVE) || unmark(head).startsWith('-') ? undefined : rest
 }
 
-/** The commands `eval` runs from its words as written, so a nameref or hidden name there counts; undefined when unreadable. */
-function evalCommands(body: readonly string[]): SimpleCommand[] | undefined {
+/**
+ * The commands `eval` runs from its words as written, so a nameref or hidden name there counts.
+ * None when evalOperands cannot read them: checkEval denies those on a line that names git or gh.
+ */
+function evalCommands(body: readonly string[]): SimpleCommand[] {
   const at = commandHeadAt(body)
   if (at === undefined || unmark(body[at] as string) !== 'eval') return []
   const operands = evalOperands(body.slice(at + 1))
-  return operands && parseShell(operands.map(unmark).join(' '))
+  return operands === undefined ? [] : parseShell(operands.map(unmark).join(' '))
 }
 
 /** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
@@ -3147,15 +3150,12 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const body = functionBody(cmd.marked)
   const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
   const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
-  const commands = evalCommands(body)
-  const evaled = (commands ?? []).map(envUse)
-  const evalHidden: EnvEvent[] = commands === undefined ? [NAME_HIDDEN] : []
+  const evaled = evalCommands(body).map(envUse)
   return {
     events: [
       ...written.events,
       ...unwrapped.events,
       ...hidden,
-      ...evalHidden,
       ...hashed,
       ...expandedEvents(cmd),
       ...evaled.flatMap(use => use.events),
