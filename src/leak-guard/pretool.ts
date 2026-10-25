@@ -220,9 +220,9 @@ export const REASONS = {
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   privilegedHidden: `leak-guard: under sudo or another privilege wrapper, the command word is an expansion the guard cannot read, on a line that may reach git or gh. Privilege drops the agent's GIT_CONFIG_* hooks path and PATH shims, so nothing would catch a push or gh call at run time. Write the command out literally, or run it without the wrapper. ${DOCS}`,
-  privilegeOption: `leak-guard: a privilege wrapper (doas, run0, systemd-run, pkexec, su, runuser, setpriv or machinectl) with an option this guard does not know, an option without its value, or an option word or value the shell expands, so it cannot tell which word is the command. Spell the option in full, or run the command without the wrapper. ${DOCS}`,
-  privilegedPush: `leak-guard: git push under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell) runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
-  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell) skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
+  privilegeOption: `leak-guard: a privilege wrapper (doas, run0, systemd-run, pkexec, su, runuser, setpriv, machinectl, sg, newgrp or capsh) with an option this guard does not know, an option without its value, or an option word or value the shell expands, so it cannot tell which word is the command. Spell the option in full, or run the command without the wrapper. ${DOCS}`,
+  privilegedPush: `leak-guard: git push under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell, sg, newgrp, capsh) runs without the agent's GIT_CONFIG_* hooks path and PATH shims, so the pre-push leak scan never runs. Push without the wrapper. ${DOCS}`,
+  privilegedGh: `leak-guard: gh or agent-chat gh-write under sudo or another privilege wrapper (doas, run0 or systemd-run, pkexec, su, runuser, setpriv, machinectl shell, sg, newgrp, capsh) skips the agent's gh shim and gh-write's scan, and reads another user's gh config. Run gh without the wrapper. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
@@ -934,6 +934,30 @@ function splitString(a: string, next: string | undefined): { value: string; widt
 // env splits the value by its own rules: a backslash escapes, and it honours more blanks than the shell does.
 const ENV_SPLIT_ESCAPES = /[\\]|[^\S \t]/
 
+const SHELL_OPERATOR = /[;&|<>()]/
+
+/**
+ * The words of an `env -S` value. env splits on blanks and quotes only, so a `;` or `|` outside
+ * quotes is part of a word, as find's `-exec … ;` needs (CC-1307). Each is quoted for parseShell,
+ * and a value it still reads as more than one command fails closed, as does an unclosed quote, which
+ * env refuses but the shell lexer would read on to the end.
+ */
+function envSplitWords(value: string): string[] | undefined {
+  let quote = ''
+  let text = ''
+  for (const c of value) {
+    if (quote === '' && SHELL_OPERATOR.test(c)) text += `'${c}'`
+    else {
+      text += c
+      if (quote === '' && (c === "'" || c === '"')) quote = c
+      else if (c === quote) quote = ''
+    }
+  }
+  if (quote !== '') return undefined
+  const commands = parseShell(text)
+  return commands.length > 1 ? undefined : [...(commands[0]?.marked ?? [])]
+}
+
 const ENV_VALUE_OPTIONS_FED = new Set(['-u', '--unset', '-C', '--chdir', '-P', '-S', '--split-string'])
 const nameOf = (word: string): string => word.split('=')[0] as string
 
@@ -968,7 +992,9 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
     if (split !== undefined) {
       if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
         return { reason: REASONS.hiddenCommand }
-      const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
+      const value = envSplitWords(split.value)
+      if (value === undefined) return { reason: REASONS.hiddenCommand }
+      const words = [...value, ...args.slice(i + split.width)]
       const inner = unwrapEnv(words, 0, fed)
       if ('reason' in inner) return inner
       return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }
@@ -3193,10 +3219,30 @@ function feeds(
   cmd: SimpleCommand,
   prev: { cmd: SimpleCommand; output: Feed } | undefined,
   scope: Scope,
+  line: LineFeeds,
 ): Pick<Scope, 'stdin' | 'fed'> {
-  if (cmd.before !== '|') return { stdin: scope.stdin, fed: ownFeed(cmd, undefined, scope.stdin) }
+  if (cmd.before !== '|')
+    return { stdin: scope.stdin, fed: ownFeed(cmd, undefined, inheritedFeed(cmd, scope, line)) }
   const pipe = pipeFeed(prev?.cmd, prev?.output ?? 'unknown', cmd)
   return { stdin: joinFeeds(scope.stdin, pipe), fed: ownFeed(cmd, pipe, scope.stdin) }
+}
+
+/** What the line holds that changes the stdin its nested commands inherit. */
+interface LineFeeds {
+  processSubstitution: boolean
+}
+
+const lineFeeds = (cmds: readonly SimpleCommand[]): LineFeeds => ({
+  processSubstitution: cmds.some(cmd => cmd.marked.some(isProcessSubstitution)),
+})
+
+/**
+ * The stdin a command with no pipe or heredoc of its own inherits. A process substitution's stdin
+ * is the output of the command that writes to it (`echo P > >(bash)`, CC-1416), and the splitter
+ * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'.
+ */
+function inheritedFeed(cmd: SimpleCommand, scope: Scope, line: LineFeeds): Feed {
+  return line.processSubstitution && cmd.nested ? 'unknown' : scope.stdin
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -3211,10 +3257,11 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const cmds = parseShell(command)
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
+  const line = lineFeeds(cmds)
   let prev: { cmd: SimpleCommand; output: Feed } | undefined
   for (const cmd of cmds) {
     at = settle(cmd, at)
-    const fed = feeds(cmd, prev, at)
+    const fed = feeds(cmd, prev, at, line)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
@@ -3338,13 +3385,14 @@ const workerConfigPaths = (env: NodeJS.ProcessEnv): string[] => {
     : fragments
 }
 
-const LAUNCHER_KEY_FILES = ['launcher.key', 'launcher-keys']
+const OWNER_ONLY_FILES = ['launcher.key', 'launcher-keys', 'seat-policy.json']
 
-// The per-host hello secrets (CC-1063) are owner-provisioned only, so every role is denied, coordinators included.
-const launcherKeyPaths = (env: NodeJS.ProcessEnv): string[] => {
-  const fragments = LAUNCHER_KEY_FILES.map(file => `.agent-chat/${file}`)
+// The per-host hello secrets (CC-1063) and the seat spawn policy (CC-1580) are owner-provisioned
+// only, so every role is denied, coordinators included.
+const ownerOnlyPaths = (env: NodeJS.ProcessEnv): string[] => {
+  const fragments = OWNER_ONLY_FILES.map(file => `.agent-chat/${file}`)
   const relocated = env.AGENT_CHAT_HOME
-  return relocated ? [...fragments, ...LAUNCHER_KEY_FILES.map(file => path.join(relocated, file))] : fragments
+  return relocated ? [...fragments, ...OWNER_ONLY_FILES.map(file => path.join(relocated, file))] : fragments
 }
 
 export function guardContext(
@@ -3366,7 +3414,7 @@ export function guardContext(
       '.agent-chat/git-hooks',
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
-      ...launcherKeyPaths(env),
+      ...ownerOnlyPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),

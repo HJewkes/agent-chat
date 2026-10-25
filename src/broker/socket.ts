@@ -27,7 +27,7 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
-import { type Escalation, type RouteResult } from './registry.js'
+import { type EntryView, type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
 import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
@@ -283,6 +283,9 @@ const replyTeleport = (conn: Conn, outcome: TeleportOutcome): void =>
 const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
 const optionalCallerHost = (callerHost: string | undefined): { callerHost?: string } =>
   callerHost === undefined ? {} : { callerHost }
+/** CC-1614: read from the requester's own entry, never from a frame. */
+const requesterBindingOf = (entry: EntryView | undefined): { requesterBinding?: IdentityBinding } =>
+  entry?.binding === undefined ? {} : { requesterBinding: entry.binding }
 /** CC-1059: a launch report's verdict, with only a string reason kept. */
 const reportOf = (msg: { ok: unknown; reason?: unknown }): { ok: boolean; reason?: string } => ({
   ok: msg.ok === true,
@@ -568,6 +571,7 @@ export class SocketServer {
       // CC-156: an observed Claude session id proves the requester is a session, whose unset var means ~/.claude.
       ...(observed?.claudeSessionId === undefined ? {} : { spawnerIsSession: true }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
       ...(anchor === undefined ? {} : { anchor }),
       ...optionalCallerHost(this.callerHostOf(conn, msg)),
       ...spawnSiteFields(msg),
@@ -1084,6 +1088,7 @@ export class SocketServer {
       requestedBy: requester?.name ?? HUMAN,
       ...(anchor === undefined ? {} : { anchor }),
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
@@ -1102,6 +1107,7 @@ export class SocketServer {
       requestedBy: requester?.name ?? HUMAN,
       ...(anchor === undefined ? {} : { anchor }),
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+      ...requesterBindingOf(requester),
     })
     replySwitch(conn, outcome)
   }
@@ -2109,6 +2115,7 @@ export class SocketServer {
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
             ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
+            ...requesterBindingOf(requester),
             ...(msg.noFixRoundCheck === true ? { noFixRoundCheck: true } : {}),
           })
           .then(result =>

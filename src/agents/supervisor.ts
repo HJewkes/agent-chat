@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
+import type { IdentityBinding } from '../broker/registry.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
@@ -124,7 +125,7 @@ import { pickAccount, rotationText, type RotationConfig, type RotationRecord } f
 import type { AccountUsage } from './account-budget.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
-import { withReturnContract } from './return-contract.js'
+import { contractOf, withReturnContract } from './return-contract.js'
 import {
   checkResumeSession,
   allocationRecord,
@@ -404,6 +405,8 @@ export interface SwitchRequest {
   host?: string
   /** CC-225: the requester's own agent id, resolved by the broker from its connection. */
   requesterAgentId?: string
+  /** CC-1614: how that id was bound to the connection. */
+  requesterBinding?: IdentityBinding
 }
 
 type AttachOutcome =
@@ -686,6 +689,8 @@ export interface SpawnRequest {
   override?: 'fix-round'
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
+  /** CC-1614: how `parentAgentId` was bound to the requester's connection. */
+  requesterBinding?: IdentityBinding
   requestedBy: string
   forceReset?: boolean
   /** CC-1158: the `origin/<branch>` a new worktree is cut from; absent, origin's default branch. */
@@ -833,7 +838,7 @@ export interface SpawnOutcome {
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
 /** CC-282: who asked, resolved by the broker from the connection, for the worker ownership rule. */
-export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'> & {
+export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId' | 'requesterBinding'> & {
   /** CC-1039: refuse a tree a process still sits in, for a tracked agent too. */
   checkProcesses?: boolean
   /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
@@ -849,6 +854,8 @@ export interface ResumeRequest {
   requestedBy?: string
   /** CC-216: the requester's own agent id, resolved by the broker from its connection. */
   requesterAgentId?: string
+  /** CC-1614: how that id was bound to the connection. */
+  requesterBinding?: IdentityBinding
   /** CC-497: the requester's pane, resolved by the broker from its connection, as for a spawn. */
   anchor?: string
   /** CC-883: `--remote-control` for a coordinator; a worker resumes without it and is told so. */
@@ -2229,13 +2236,21 @@ export class Supervisor implements TeleportHost {
    * discipline `anchor` and `parentAgentId` follow. A slug is a pointer to a
    * directory that gets read and handed to a new process, so letting the caller
    * assert where it is standing would turn `auto` into "read me any initiative".
+   *
+   * CC-1596: scoped by the profile's contract, not the spawn's `return_contract`, which
+   * only says the brief carries its own report format.
    */
-  private async briefingFor(req: SpawnRequest, targetCwd: string): Promise<BriefingResult | undefined> {
+  private async briefingFor(
+    req: SpawnRequest,
+    targetCwd: string,
+    profile: AgentProfile,
+  ): Promise<BriefingResult | undefined> {
     if (req.briefing === undefined) return undefined
     const requester = this.core.registry.list().find(session => session.name === req.requestedBy)
     return resolveSpawnBriefing({
       briefing: req.briefing,
       brief: req.brief,
+      scope: contractOf(profile) === 'implementer' ? 'implementer' : 'full',
       ...(requester ? { requesterCwd: requester.cwd } : {}),
       targetCwd,
     })
@@ -2391,7 +2406,7 @@ export class Supervisor implements TeleportHost {
     // A briefing is an improvement to the brief, never a precondition for one:
     // an unresolvable initiative warns and spawns anyway. The alternative is a
     // spawn that fails for a reason unrelated to the work.
-    const briefing = await this.briefingFor(req, cwd)
+    const briefing = await this.briefingFor(req, cwd, profile)
     if (briefing?.warning !== undefined) warnings.push(briefing.warning)
     const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
 
@@ -2473,7 +2488,7 @@ export class Supervisor implements TeleportHost {
   ): Promise<SpawnOutcome> {
     const gated = await this.remoteGates(req, profile, site)
     if ('refusal' in gated) return this.refuse(req, gated.refusal, gated.cause ?? {})
-    const briefing = await this.briefingFor(req, gated.cwd)
+    const briefing = await this.briefingFor(req, gated.cwd, profile)
     const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
     if (briefing?.warning !== undefined) gated.warnings.push(briefing.warning)
     const account = this.remoteAccount(req, profile, gated, injected)
@@ -4769,6 +4784,8 @@ export class Supervisor implements TeleportHost {
         cwd: allocation.cwd,
         session_id: sessionId,
         allowed_tools: input.profile.allowedTools.join(','),
+        // CC-1612: without it toolSetOf finds no deny list and CC-40 waves the successor through.
+        disallowed_tools: (input.profile.disallowedTools ?? []).join(','),
         perm_mode: permModeFor(input.surface),
         surface_lifetime: lifetimeOf(input.profile),
         // Carried across rather than re-resolved: a descendant spends the same
