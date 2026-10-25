@@ -347,6 +347,13 @@ push-time shim and gh-write's scan never run, and gh reads the target user's con
 reason (`--no-verify`, a `GIT_CONFIG_*` assignment) is still reported first. A command beside the
 `sudo` one on the line is not affected (CC-1218).
 
+For the same reason, behind `sudo` the guard denies what it cannot read instead of leaving it to
+those run-time checks. A command word that is an expansion (`sudo $(echo git push)`,
+``sudo `echo git` push``, `CMD='git push'; sudo $CMD`, also inside `sudo sh -c` or after
+`sudo env` or `sudo nice`) denies on a line that may reach git or gh, so `sudo $EDITOR /etc/hosts`
+stays allowed. A literal git with no subcommand word, as in `sudo git --version`, runs none and is
+allowed (CC-1218).
+
 util-linux's `setsid`, `flock <file>`, `taskset <mask>`, `chrt <priority>`, `script` and `unshare`
 are stripped too, their options read from util-linux 2.41's tables (CC-1414). An option missing
 from a table, an option word or option value the shell expands (a `flock -c` text included), or
