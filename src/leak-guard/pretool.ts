@@ -490,20 +490,20 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
   let privileged = lead?.privileged ?? false
   let named: { rest: readonly string[]; at: number; argv0: string | undefined } | undefined
   const assigns = [...(lead?.assigns ?? [])]
-  const argv0 = (): string | undefined => (named?.rest === rest && named.at === at ? named.argv0 : undefined)
-  const done = (): Unwrapped =>
-    fedCommand && at >= rest.length
-      ? { reason: REASONS.hiddenCommand }
-      : {
-          words: rest.slice(at),
-          chdir,
-          assigns,
-          fed,
-          ...(siblings && { siblings }),
-          ...(viaShellVar && { viaShellVar }),
-          ...(privileged && { privileged }),
-          ...(argv0() !== undefined && { argv0: argv0() }),
-        }
+  const done = (): Unwrapped => {
+    if (fedCommand && at >= rest.length) return { reason: REASONS.hiddenCommand }
+    const argv0 = named?.rest === rest && named.at === at ? named.argv0 : undefined
+    return {
+      words: rest.slice(at),
+      chdir,
+      assigns,
+      fed,
+      ...(siblings && { siblings }),
+      ...(viaShellVar && { viaShellVar }),
+      ...(privileged && { privileged }),
+      ...(argv0 !== undefined && { argv0 }),
+    }
+  }
   for (;;) {
     const head = rest[at]
     if (head === undefined) return done()
