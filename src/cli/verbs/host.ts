@@ -35,14 +35,25 @@ export const hostServeVerb = defineVerb({
   description:
     'run this machine as a host launcher (CC-951): announce it to the broker, answer its probes, and ' +
     'launch teleport successors here with the cwd and account the spec names; reconnects after a drop',
-  args: z.object({ host: z.string().optional() }),
+  args: z.object({ host: z.string().optional(), landing: z.string().optional() }),
   result: Report,
-  cli: { options: { host: HOST_FLAG } },
-  async run({ host }) {
+  cli: {
+    options: {
+      host: HOST_FLAG,
+      landing: {
+        long: '--landing <dir>',
+        description:
+          'where a successor lands when its cwd is missing on this machine (CC-1646); defaults to ~/agent-landing, ' +
+          'and is announced only while it exists under home',
+      },
+    },
+  },
+  async run({ host, landing }) {
     const identity = {
       host: host ?? os.hostname(),
       platform: process.platform,
       surfaces: hostSurfaces(process.platform, hasTmux()),
+      landing: path.resolve(landing ?? path.join(os.homedir(), 'agent-landing')),
     }
     const log = (line: string): void => console.log(`${new Date().toISOString()} host serve: ${line}`)
     return serveHost(socketPath(), identity, defaultLauncherDeps(os.homedir()), log)

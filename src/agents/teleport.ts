@@ -25,6 +25,7 @@ import {
   isInteractiveSurface,
   type AgentIdentity,
   type HostProbe,
+  type HostProbeMissing,
   type IsolationName,
   type RemoteLaunch,
   type Subscription,
@@ -360,6 +361,8 @@ export interface LauncherAnswer {
   reason?: string
   /** CC-1472: a probe's verdict on the session it was asked to resume. */
   transcript?: { path: string; found: boolean }
+  /** CC-1646: the probed path that does not exist on the launcher's machine. */
+  missing?: HostProbeMissing
 }
 
 /** CC-951: the host launchers connected to this broker, as teleport uses them. */
@@ -367,6 +370,8 @@ export interface LauncherSite {
   launchers(): ConnectedLauncher[]
   /** The surfaces the named machine's launcher said it can open. */
   surfacesOn(host: string): readonly SurfaceName[]
+  /** CC-1646: the landing dir the named machine's launcher announced, if any. */
+  landingOn?(host: string): string | undefined
   probe(host: string, probe: HostProbe): Promise<LauncherAnswer>
   launch(host: string, launch: RemoteLaunch): Promise<LauncherAnswer>
   /** CC-1472: through the launcher's spawn executor, which a host resume needs for `--resume`; teleport never calls it. */
@@ -510,7 +515,21 @@ interface Pending {
   seatRenderedAt?: Date
   /** CC-892: the checked account move, which `finish` carries out end-first. */
   account?: PendingMove
+  /** CC-1646: the launcher's landing dir, when the predecessor's cwd is missing on its machine. */
+  landedCwd?: string
 }
+
+interface ProbePaths {
+  cwd: string
+  configDir: string | undefined
+}
+
+/** CC-1646: the cwd the successor runs in at the destination, or why it cannot run there. */
+type Placement = { cwd: string } | { reason: string }
+
+const landingNote = (origin: string, landed: string, host: string): string =>
+  `Your predecessor's working directory ${origin} does not exist on ${host}, so you were launched in ` +
+  `${landed}, that machine's landing dir. ${origin} is recorded on the handoff as origin_cwd.`
 
 /** CC-892: an account move that passed every check in `begin`. */
 interface PendingMove {
@@ -587,8 +606,11 @@ export class Teleport {
   private readonly arrivals = new Map<string, Arrival>()
   /** CC-951: requests past preflight and not yet pending or refused. */
   private readonly starting = new Set<string>()
-  /** CC-892: what a moved session in a pane is told once it attaches, since a resumed pane gets no prompt. */
-  private readonly moveNotes = new Map<string, { name: string; note: string }>()
+  /**
+   * What a successor is told once it attaches: a moved session in a pane, since a resumed pane gets no
+   * prompt (CC-892), and one landed outside its predecessor's cwd (CC-1646).
+   */
+  private readonly attachNotes = new Map<string, { name: string; note: string }>()
   private readonly unwatch: () => void
 
   constructor(
@@ -604,15 +626,15 @@ export class Teleport {
       if (row.kind !== 'agent_attached' || row.ref === undefined) return
       this.closeLanding(row.ref)
       this.arrivals.get(row.ref)?.settle(undefined)
-      this.tellMoved(row.ref)
+      this.tellAttached(row.ref)
     })
   }
 
   /** Told after the append that announced the attach, not inside it. */
-  private tellMoved(agentId: string): void {
-    const pending = this.moveNotes.get(agentId)
+  private tellAttached(agentId: string): void {
+    const pending = this.attachNotes.get(agentId)
     if (pending === undefined) return
-    this.moveNotes.delete(agentId)
+    this.attachNotes.delete(agentId)
     setImmediate(() => this.tell(pending.name, pending.note))
   }
 
@@ -659,8 +681,9 @@ export class Teleport {
       loadProfile: name => this.host.loadProfile(name, req.account?.by ?? subject.name),
     })
     if ('error' in config) return refused(subject, 'config', config.error)
-    const impossible = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
-    if (impossible !== undefined) return this.cannotComplete(subject, impossible)
+    const placed = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
+    if ('reason' in placed) return this.cannotComplete(subject, placed.reason)
+    const landed = placed.cwd === subject.cwd ? undefined : placed.cwd
     const gone = route.site === 'launcher' ? this.goneDuringCheck(subject) : undefined
     if (gone !== undefined) return refused(subject, 'blocker', gone)
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
@@ -685,6 +708,7 @@ export class Teleport {
         ...(req.reason === undefined ? {} : { reason: req.reason }),
         ...(restated.length === 0 ? {} : { questions: restated.join(',') }),
         ...(move === undefined ? {} : { account_to: move.to.dir }),
+        ...(landed === undefined ? {} : { origin_cwd: subject.cwd, landed_cwd: landed }),
       },
     })
 
@@ -716,8 +740,14 @@ export class Teleport {
       inboxThrough: this.inboxCursor(subject.name),
       ...(req.reason === undefined ? {} : { reason: req.reason }),
       ...(move === undefined ? {} : { account: move }),
+      ...(landed === undefined ? {} : { landedCwd: landed }),
     }
     this.pending.set(subject.agentId, entry)
+    if (landed !== undefined)
+      this.attachNotes.set(descendantId, {
+        name: subject.name,
+        note: landingNote(subject.cwd, landed, route.host),
+      })
     logEvent('teleport_started', {
       name: subject.name,
       from: subject.agentId,
@@ -777,27 +807,45 @@ export class Teleport {
    * CC-880/CC-951: why the destination cannot run this successor, asked before anyone is ended.
    * The caller checks its own host; a launcher is asked about its machine's paths and surfaces.
    */
-  private async blockerAt(
-    route: Destination,
-    surface: SurfaceName,
-    paths: { cwd: string; configDir: string | undefined },
-  ): Promise<string | undefined> {
-    if (route.site === 'caller') return undefined
-    if (route.site === 'broker') return this.host.surfaceBlocker(surface)
+  private async blockerAt(route: Destination, surface: SurfaceName, paths: ProbePaths): Promise<Placement> {
+    const here = { cwd: paths.cwd }
+    if (route.site === 'caller') return here
+    const blocked =
+      route.site === 'broker' ? this.host.surfaceBlocker(surface) : this.launcherBlocker(route, surface)
+    if (blocked !== undefined) return { reason: blocked }
+    return route.site === 'broker' ? here : this.probeLauncher(route.host, surface, paths)
+  }
+
+  private launcherBlocker(route: Destination, surface: SurfaceName): string | undefined {
     const platformBlock =
       route.platform === undefined ? undefined : surfaceBlockerFor(surface, route.platform)
     if (platformBlock !== undefined) return platformBlock
     if (!this.hosts.surfacesOn(route.host).includes(surface))
       return `the launcher on ${route.host} cannot open a ${surface} surface`
+    return undefined
+  }
+
+  /** CC-1646: a cwd missing on the launcher's machine falls back to the landing dir it announced. */
+  private async probeLauncher(host: string, surface: SurfaceName, paths: ProbePaths): Promise<Placement> {
+    const answer = await this.probeAt(host, surface, paths)
+    if (answer.ok) return { cwd: paths.cwd }
+    const reason = answer.reason ?? `the launcher on ${host} refused`
+    const landing = answer.missing === 'cwd' ? this.hosts.landingOn?.(host) : undefined
+    if (landing === undefined || landing === paths.cwd) return { reason }
+    const landed = await this.probeAt(host, surface, { ...paths, cwd: landing })
+    if (landed.ok) return { cwd: landing }
+    return { reason: `${reason}, and its landing dir ${landing}: ${landed.reason ?? 'refused'}` }
+  }
+
+  private probeAt(host: string, surface: SurfaceName, paths: ProbePaths): Promise<LauncherAnswer> {
     const badPath = launchPathsBlocker(paths.cwd, paths.configDir)
-    if (badPath !== undefined) return badPath
+    if (badPath !== undefined) return Promise.resolve({ ok: false, reason: badPath })
     const probe: HostProbe = {
       cwd: paths.cwd,
       surface,
       ...(paths.configDir ? { configDir: paths.configDir } : {}),
     }
-    const answer = await this.hosts.probe(route.host, probe)
-    return answer.ok ? undefined : (answer.reason ?? `the launcher on ${route.host} refused`)
+    return this.hosts.probe(host, probe)
   }
 
   /** CC-863: the handoff is already stored when this runs, so a failed read drops the cursor and never the teleport. */
@@ -1434,7 +1482,7 @@ export class Teleport {
     })
     // Headless reads the note as its first turn; a resumed pane opens with no prompt at all.
     if (isInteractiveSurface(input.surface))
-      this.moveNotes.set(entry.descendantId, { name: subject.name, note })
+      this.attachNotes.set(entry.descendantId, { name: subject.name, note })
     return input
   }
 
@@ -1514,7 +1562,7 @@ export class Teleport {
       name: subject.name,
       profile: withCarried(entry.profile, entry.carried),
       brief,
-      cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
+      cwd: entry.landedCwd ?? entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,
       preamble: resume === undefined ? TELEPORT_PREAMBLE : ACCOUNT_MOVE_PREAMBLE,
       meta: {
@@ -1685,7 +1733,7 @@ export class Teleport {
     for (const agentId of [...this.landings.keys()]) this.closeLanding(agentId)
     for (const arrival of this.arrivals.values()) clearTimeout(arrival.timer)
     this.arrivals.clear()
-    this.moveNotes.clear()
+    this.attachNotes.clear()
     this.unwatch()
   }
 }
