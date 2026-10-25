@@ -699,6 +699,8 @@ class ShellLexer {
     const op = OPERATOR_TOKENS.find(token => ahead.startsWith(token)) ?? c
     // An `esac` touching the operator is taken first, so it cannot clear the pattern the operator makes due.
     this.endWord()
+    // A `|` between a case's patterns joins them and runs no pipe, so later commands read no pipe's output.
+    if (op === '|' && this.patternNext) return void (this.accept(op), this.advance(1))
     // zsh's `;|` ends a pattern's commands; bash reads `;` and `|`, so the two shells disagree.
     if (op === ';|' && this.closable()) this.budget.expansion = 'unreadable'
     if (CASE_ENDS.has(op) && this.cases.length > 0) this.patternNext = true

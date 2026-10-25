@@ -36,6 +36,8 @@ const BYPASSES: [string, string, string[]][] = [
   [`X=bash; $X -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
   [`X=bash; nice $X -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
   [`X=/bin/sh; $X -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
+  // Join a case's patterns at a | as a pipe or not at all: a pipe in a pattern body still feeds the shell.
+  [`b=bash; case q in (q|r) echo '${PUSH}' | $b;; esac`, REASONS.noVerify, BOTH],
 ]
 
 // Each row's mutation: read a definition's name, xargs' words or a clean -c string as a push.
@@ -49,6 +51,8 @@ const BENIGN: [string, RegExp][] = [
   [`f() { echo hi; }; f < push.sh; git status`, /^status$/],
   [`ls | xargs -P 2 wc -c; git status`, /^status$/],
   [`X=bash; $X -c 'echo hi'`, /^$/],
+  // Mutation: read the | between case patterns as a pipe, which feeds the glob pattern after it.
+  [`case "$a" in (q|r) echo 1;; (*) ;; esac; git status`, /^status$/],
 ]
 
 describe('checkCommand on a command word that may be a shell', () => {
