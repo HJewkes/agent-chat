@@ -41,6 +41,8 @@ export interface SimpleCommand {
   backslash: boolean
   /** The function name a `name ()` definition gives the body after it. */
   defines?: string | undefined
+  /** Its one word is the path a `<(…)` leaves, cut from the command it is an operand of, so it runs nothing. */
+  substitutionPath?: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
   before: string
   after: string
@@ -738,6 +740,7 @@ class ShellLexer {
     const opensCommand = this.word === null && !fed
     const kind = this.parenKind(opensCommand)
     if (fed) this.pending = null
+    if (fed && this.cur.marked.length === 0) this.cur.substitutionPath = true
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
     const defined = this.cur.marked.length - 1

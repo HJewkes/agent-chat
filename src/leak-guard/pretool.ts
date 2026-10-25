@@ -2353,11 +2353,16 @@ function checkHidden(
   scope: Scope,
   depth: number,
   outermost: boolean,
+  fed?: Fed,
 ): string | undefined {
   const viaWrite = unmark(marked[0] ?? '') === 'gh-write' && postsText(ghWriteArgs(marked))
   if (postsText(marked) || viaWrite) return REASONS.hiddenCommand
   const unseen = { ...scope, cwd: undefined, env: undefined }
-  const starts = outermost ? marked.flatMap((word, i) => (mayStartCommand(word) ? [i] : [])) : []
+  // The words xargs adds in place of its input are checked by its own rules (CC-1219), never as a shell.
+  const xargsTail = fed?.append === true ? marked.length - 1 : -1
+  const starts = outermost
+    ? marked.flatMap((word, i) => (i !== xargsTail && mayStartCommand(word) ? [i] : []))
+    : []
   scope.hiddenStarts.left -= starts.length
   const spent = scope.hiddenStarts.left < 0
   if (spent && lineMayReachGit(scope, ctx)) return REASONS.hiddenStarts
@@ -2373,7 +2378,7 @@ function checkHidden(
     ) ??
     // The word may be any shell, which runs its `-c` string or the text it is fed (CC-1411), so its
     // options are read as an unobserved shell's and every word may be its script.
-    (mayBeShell(head)
+    (readsAsShell(cmd, fed)
       ? checkShell(
           { name: UNOBSERVED_SHELL, marked, assigns },
           cmd,
@@ -2385,12 +2390,13 @@ function checkHidden(
   return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
 }
 
-// LIVE marks only at the end expand nothing: the `name` of a `name()` definition, or the empty
-// word the splitter leaves beside a process substitution, runs nothing.
-const NO_EXPANSION = new RegExp(`^[^${LIVE}]*${LIVE}+$`)
-
-/** An expanded command word that may be a shell; the words xargs or find fill have their own checks. */
-const mayBeShell = (head: string): boolean => !head.includes(XARGS_ARGS) && !NO_EXPANSION.test(head)
+/**
+ * Whether an unresolved command word is read as a shell. Only where the word came from exempts it,
+ * never its text: the words xargs places, a `name()` definition, and the path a `<(…)` leaves.
+ * A missing provenance only over-denies.
+ */
+const readsAsShell = (cmd: SimpleCommand, fed: Fed | undefined): boolean =>
+  fed?.hidden !== true && cmd.defines === undefined && cmd.substitutionPath !== true
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
@@ -2742,7 +2748,7 @@ function checkSimple(
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     // Privilege drops the shims and hooks path the hidden-word rules trust to catch it at run time (CC-1218).
     if (privileged && lineMayReachGit(at, ctx)) return REASONS.privilegedHidden
-    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
+    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost, unwrapped.fed)
   }
   const args = marked.map(unmark)
   const name = path.basename(head)

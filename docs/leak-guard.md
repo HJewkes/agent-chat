@@ -668,9 +668,13 @@ the text it is fed are checked as a script, and a feed it cannot read denies on 
 reach git or gh. The word may be any shell, so its options are read as an unknown shell's and
 every word may be its script: zsh, for one, takes `-O` as a plain flag where bash takes an
 operand. So `b=bash; $b -c '<push>'`, `X=bash; nice $X -c -- '<push>'`, `b=zsh; $b -c -O '<push>'
-x`, `${SHELL:-bash} -c '<push>'` and `echo '<push>' | $(echo bash)` deny, and so does `$X '<push>'`,
-since `$X` may be `eval`. `X=bash; $X -c 'echo hi'` and `x=git; $x status` stay allowed. The words xargs or find fill, and the name of a `name()` definition, are
-left to their own checks. One false deny is accepted: `git diff | $PAGER` denies, since `$PAGER`
+x`, `${SHELL:-bash} -c '<push>'`, `b=bash; $b$@ -c '<push>'` and `echo '<push>' | $(echo bash)`
+deny, and so does `$X '<push>'`, since `$X` may be `eval`. `X=bash; $X -c 'echo hi'` and
+`x=git; $x status` stay allowed. Nothing in the word's text exempts it; only where the word came
+from does. The words xargs places for its input are left to the xargs rules, the name of a
+`name()` definition defines and runs nothing, and the path a `<(…)` leaves runs nothing, so
+`diff <(git show a) <(git show b)` stays allowed. Each is a field the parser or the xargs reader
+sets, so a missing one can only deny more. One false deny is accepted: `git diff | $PAGER` denies, since `$PAGER`
 may be a shell fed by the pipe, and quoting it does not help. Write the pager out instead.
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
@@ -1676,10 +1680,10 @@ Not covered, by design or by cost:
 
   Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 tracks
   them, with a CC-1408 follow-up for the shells outside the list:
-  - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
-    word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
-    variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
-    `echo P | $(echo bash)`;
+  - a command word filled by `read`, which bash word-splits and runs as a command rather than
+    as a shell (`read -r l <<< TEXT; $l`). A command word the guard cannot resolve that is fed
+    text, such as `echo P | $b`, `echo P | ${SHELL:-bash}`, `echo P | $(echo bash)` or
+    `while read -r l; do $l; done < file`, is read as a shell and denies (CC-1411, above);
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
     `echo P | mksh`, `echo P | fish`;

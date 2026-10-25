@@ -49,9 +49,18 @@ const BYPASSES: [string, string, string[]][] = [
   [`b=zsh; $b -oerrexit -c '${PUSH}' x`, REASONS.noVerify, ['zsh']],
   [`b='bash -c'; $b '${PUSH}'`, REASONS.noVerify, ['bash']],
   [`E=eval; $E '${PUSH}'`, REASONS.noVerify, BOTH],
+  // An empty `$@` leaves the shell as it was, so no text of the word exempts it from the shell check.
+  [`b=bash; $b$@ -c '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`b=bash; "$b$@" -c '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`b=bash; \${b}"$@" -c '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`b=bash; "$@"$b -c '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`X=bash; nice $X$@ -c '${PUSH} origin HEAD:main'`, REASONS.noVerify, BOTH],
+  [`E=eval; $E$@ '${PUSH}'`, REASONS.noVerify, BOTH],
+  [`b=bash; echo '${PUSH}' | $b$@`, REASONS.noVerify, BOTH],
 ]
 
-// Each row's mutation: read a definition's name, xargs' words or a clean -c string as a push.
+// Each row's mutation: drop the cmd.defines, fed.hidden or cmd.substitutionPath skip, which reads
+// a definition's name, xargs' words or the path a <(…) leaves as a shell; or read a clean -c string as a push.
 const BENIGN: [string, RegExp][] = [
   [`read -r l <<< '${PUSH}'; "$l"`, /^$/],
   [`while read -r f; do echo "$f"; done < push.sh; git status`, /^status$/],
@@ -62,6 +71,7 @@ const BENIGN: [string, RegExp][] = [
   [`f() { echo hi; }; f < push.sh; git status`, /^status$/],
   [`ls | xargs -P 2 wc -c; git status`, /^status$/],
   [`X=bash; $X -c 'echo hi'`, /^$/],
+  [`diff <(git show a) <(git show b)`, /^show [ab]\nshow [ab]$/],
   // Mutation: read the | between case patterns as a pipe, which feeds the glob pattern after it.
   [`case "$a" in (q|r) echo 1;; (*) ;; esac; git status`, /^status$/],
 ]
