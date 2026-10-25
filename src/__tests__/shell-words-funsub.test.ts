@@ -504,15 +504,19 @@ const matrix = chained.flatMap(body =>
   ),
 )
 
+// A `{ }` group in a case inside a subshell is refused: the accepted cost of CC-1324's case boundary.
+const refused = (src: string): boolean => src.includes('( case a in a) { :; } esac )')
+
 describe('chained compound ends before a funsub }', () => {
   it('covers every leaf, wrapper pair, opener and tail', () => {
     expect(matrix).toHaveLength(1176)
+    expect(matrix.filter(refused)).toHaveLength(4)
   })
 
   it.each(matrix)('%j closes where bash does', src => {
     const push = find(src, 'git')
 
     expect(push?.nested).toBe(false)
-    expect(expansionRisk(src)).toBeUndefined()
+    expect(expansionRisk(src)).toBe(refused(src) ? 'unreadable' : undefined)
   })
 })

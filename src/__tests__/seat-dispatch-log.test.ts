@@ -222,7 +222,7 @@ describe('which seat owns the agent', () => {
   it('picks the seat with the longest matching prefix, not the first seat file', () => {
     plainSeat('seat-z', 'sx-q')
 
-    writerOver().dispatched(facts({ agent: 'sx-q-ab-12-fix' }))
+    writerOver().dispatched(facts({ agent: 'sx-q-ab-12-fix', spawner: 'human' }))
 
     expect(rowsOf(logFile('seat-z'))[0]).toMatchObject({ agent: 'sx-q-ab-12-fix', task: 'AB-12' })
     expect(fs.existsSync(logFile('seat-x'))).toBe(false)
