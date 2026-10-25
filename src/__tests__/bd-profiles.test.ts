@@ -329,6 +329,101 @@ const QUOTED_PUSHES = [
   'origin ma\\in',
 ]
 
+// CC-1618: every push rule anchors on a literal ` push`, but bash also strips quotes, backslashes
+// and globs inside the subcommand word itself. Each word below reaches git as `push`; three of them
+// deleted a scratch branch past main's rules in a live 2.1.310 run.
+const GLOBAL_PRELUDES = GIT_FORMS.slice(1).map(form => form.replace(/ push$/, ''))
+
+const QUOTED_SUBCOMMANDS = [
+  '"push"',
+  "'push'",
+  '""push',
+  '"p"ush',
+  '"pu"sh',
+  '"pus"h',
+  "''push",
+  "'p'ush",
+  "'pu'sh",
+  "'pus'h",
+  '\\push',
+  'p\\ush',
+  'pu\\sh',
+  'pus\\h',
+  'p"ush"',
+  "pu'sh'",
+  'pus"h"',
+  'push""',
+  "push''",
+  "$'push'",
+  '$"push"',
+  "pu$'s'h",
+  'push${X}',
+  '[p]ush',
+  '?ush',
+  'p?sh',
+  'pu[s]h',
+]
+
+// Without a global option the subcommand is the first word, so any expansion there is denied too.
+const EXPANDED_FIRST_WORDS = ['$P', '${P}', '$(echo push)', '`echo push`', '{p,}ush', 'p{u,}sh']
+
+// CC-1618 round 3 (structural): a comma-brace anywhere after a global option can expand to inject
+// `push`, whatever its first choice opens with, so one boundary rule `Bash(git -*{*,*)` denies them
+// all. These cases are generated from that rule — each global option crossed with each brace shape
+// — rather than listed opener by opener. As the first git word a brace is caught by `Bash(git {*)`,
+// and a brace that starts mid-word by `Bash(git pu{*)` and its siblings.
+const BRACE_PUSHES = [
+  '{push,x}',
+  '{x,push}',
+  '{,push}',
+  '{push,}',
+  'pu{s,}sh', // a brace in the middle of the word
+  '{p,}{ush,}', // two braces whose product includes push
+  '{"push",x}', // a choice that itself opens with a quote, backslash or brace
+  "{'push',x}",
+  '{\\push,x}',
+  '{{push,},}',
+  "{$'push',}",
+  '{[p]ush,}',
+]
+
+// A brace that finishes the global option's own argument and spells push as its next word, e.g.
+// `git -C {.,push} origin …` runs `git -C . push origin …`. The first choice is innocuous, so only
+// the comma-brace boundary catches it.
+const OPTION_ARG_BRACES = ['{.,push}', '{k=v,push}', '{-p,push}']
+
+// CC-1618 round 3: after a global option the literal word `push` followed by a double-quoted or
+// bare expansion that strips to nothing still reaches git as `push`. Denied by the empty-quote,
+// bare-`$` and `push"$`/`push"\`` rules. A bare command substitution right after the word
+// (`` push`:` ``) and a redirection (`push>f`) are left as residual, same class as the backtick
+// and `$P` forms the PR already lists.
+const PUSH_THEN_EXPANSION = [
+  'push"$X"',
+  'push"${X}"',
+  'push"$(:)"',
+  'push"`:`"',
+  'push$X',
+  'push""',
+  "push''",
+]
+
+// A bare `*` expands to every file in the directory, a file named `--delete` included. A rule
+// names a literal star as `\*`, which 2.1.310 matched live.
+const GLOBBED_PUSHES = ['origin x *', 'origin * x', '-u origin *']
+
+// The global-option rules span the whole line, so a later quoted word that spells the start of
+// push is denied too.
+const QUOTED_SUBCOMMAND_OVERMATCHES = [
+  'git -C x log --grep "push"',
+  "git -C x commit -m 'push fix'",
+  'git -C x commit -m "Fix [x]"',
+  'git -C x commit -m "why ?"',
+  // The one brace boundary cannot see word position, so a comma-brace in a message is denied once a
+  // global option is present. A worker writes `{x}` (no comma) or drops the `-C`.
+  'git -C x commit -m "see {a,b}"',
+  'git -c k=v log --grep "{a,b}"',
+]
+
 // The quote rules have no word boundary, so a quoted branch, an expansion, or a later command in
 // the same call is denied too. Agents push a literal branch name as their own Bash call.
 const QUOTED_OVERMATCHES = [
@@ -388,6 +483,14 @@ const LEGITIMATE_COMMANDS = [
   'git -C "$dir" log --oneline',
   // The quote rules for a global option look only after `push`, so the prelude's quoted -C works.
   'git -C "$dir" push -u origin agent-chat/x',
+  'git -C "$dir" add "packages/x.ts"',
+  'git -C "$dir" commit -m "Deny quoted push"',
+  'git -C "$dir" commit -m "Pin {x} rows"',
+  'git -C "$dir" commit -m "Fix `git push` docs"',
+  'git -C "$dir" commit -m "cost $5"',
+  'git pull --ff-only origin main',
+  'git commit -m "Fix `git push` [x] {y} ?"',
+  'git add src/*.ts',
 ]
 
 // The older `git * push` rules read any later ` push ` as the subcommand, and a global option
@@ -452,6 +555,48 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
   })
 
+  it.each(QUOTED_SUBCOMMANDS)('denies `git %s origin --delete x` under every global option', word => {
+    for (const git of ['git', ...GLOBAL_PRELUDES]) {
+      expect(isDenied(`${git} ${word} origin --delete x`, denied)).toBe(true)
+    }
+  })
+
+  it.each(EXPANDED_FIRST_WORDS)('denies `git %s origin --delete x`', word => {
+    expect(isDenied(`git ${word} origin --delete x`, denied)).toBe(true)
+  })
+
+  it.each(BRACE_PUSHES)(
+    'denies the brace `git %s origin --delete x`, first word and after an option',
+    word => {
+      for (const git of ['git', ...GLOBAL_PRELUDES]) {
+        expect(isDenied(`${git} ${word} origin --delete x`, denied)).toBe(true)
+      }
+    },
+  )
+
+  it.each(OPTION_ARG_BRACES)(
+    'denies `git -C %s origin --delete x`, the brace finishing the option arg',
+    brace => {
+      for (const opt of ['-C', '-c']) {
+        expect(isDenied(`git ${opt} ${brace} origin --delete x`, denied)).toBe(true)
+      }
+    },
+  )
+
+  it.each(PUSH_THEN_EXPANSION)('denies `git <opt> %s origin --delete x` under every global option', word => {
+    for (const git of GLOBAL_PRELUDES) {
+      expect(isDenied(`${git} ${word} origin --delete x`, denied)).toBe(true)
+    }
+  })
+
+  it.each(GLOBBED_PUSHES)('denies the globbed `git push %s` under every global option', tail => {
+    for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+  })
+
+  it.each(QUOTED_SUBCOMMAND_OVERMATCHES)('knowingly denies `%s`', command => {
+    expect(isDenied(command, denied)).toBe(true)
+  })
+
   it.each(QUOTED_OVERMATCHES)('knowingly denies the quoted `%s`', command => {
     expect(isDenied(command, denied)).toBe(true)
   })
@@ -507,6 +652,12 @@ describe('the matcher mirror on backslashes in a rule', () => {
       expect(isDenied(command, [rule])).toBe(true)
     },
   )
+
+  // CC-1618: live, this rule denied `git push origin z *` and allowed `git push -u origin HEAD:x`.
+  it('reads `\\*` as a literal star, as live', () => {
+    expect(isDenied('git push origin z *', ['Bash(git push *\\**)'])).toBe(true)
+    expect(isDenied('git push -u origin HEAD:x', ['Bash(git push *\\**)'])).toBe(false)
+  })
 })
 
 describe('the bd-reviewer profile', () => {
