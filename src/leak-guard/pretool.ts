@@ -1333,9 +1333,8 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
 /**
  * An untied expanded command word whose directory or config env the guard cannot tell still has its
  * subcommand looked up where it can look: the known directory or the hook's, with the hook's env
- * (CC-1315). git's own options whose value it cannot read are left out, so `$X -C "$D" p` looks
- * where `cd "$D" && $X p` does. This is a best guess, so an alias only the unknown directory or
- * root's config defines stays unseen, as TP-613 accepts.
+ * (CC-1315). This is a best guess, so an alias only the unknown directory or root's config defines
+ * stays unseen, as TP-613 accepts.
  */
 function checkAliasWhereHookLooks(
   run: GitRun,
@@ -1343,36 +1342,10 @@ function checkAliasWhereHookLooks(
   scope: Scope,
   depth: number,
 ): string | undefined {
-  const kept = readableOptionWords(run)
-  const words = kept.map(i => run.resolved[i])
-  const found = gitCall(words, scope.cwd ?? ctx.cwd, scope.gitParams)
-  if (found === undefined || found === UNSURE_CALL) return undefined
-  const call = { ...found, at: kept[found.at] as number }
+  const call = gitCall(run.resolved, scope.cwd ?? ctx.cwd, scope.gitParams)
+  if (call === undefined || call === UNSURE_CALL) return undefined
   const alias = ctx.readAlias(call.sub, call.dir, call.globals, {})
   return alias && checkFoundAlias(run, call, alias, {}, ctx, scope, depth)
-}
-
-const GIT_OPTS_WITH_VALUE = new Set([...GIT_VALUE_OPTS, '-c', '--config-env'])
-const gitOptionName = (word: string): string =>
-  /^-c./.test(word) ? '-c' : word.startsWith('--') && word.includes('=') ? word.slice(0, word.indexOf('=')) : word
-
-/**
- * The indexes of `run`'s words without each git option, before the subcommand, whose value the guard
- * cannot read. A word that hides whether it is an option at all is kept, so the lookup stays unsure.
- */
-function readableOptionWords(run: GitRun): number[] {
-  const kept: number[] = []
-  let i = 0
-  for (; i < run.resolved.length; i++) {
-    const text = run.resolved[i] ?? (run.args[i] ?? '').replace(QUOTING, '')
-    if (!text.startsWith('-')) break
-    const name = gitOptionName(text)
-    const takesValue = GIT_OPTS_WITH_VALUE.has(name)
-    const span = takesValue && name === text ? [i, i + 1] : [i]
-    if (!takesValue || span.every(j => run.resolved[j] !== undefined)) kept.push(...span)
-    i = span.at(-1) as number
-  }
-  return [...kept, ...[...run.resolved.keys()].slice(i)]
 }
 
 /** Re-checks a git command whose subcommand is `alias`, as the words the alias expands to. */

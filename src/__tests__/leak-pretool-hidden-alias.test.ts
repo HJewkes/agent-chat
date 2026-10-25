@@ -51,31 +51,25 @@ describe('an untied hidden command word whose directory or env is unknown (CC-13
     deny('GIT_DIR=$G $X p', REASONS.noVerify)
   })
 
+  // A git option value the line hides is itself a hidden word, so the suffix scan checks it as a command.
   it.each([
-    'D=$(mktemp -d); $X -C "$D" p',
-    '$X -C "$D" p',
-    '$X --git-dir="$(mktemp)" p',
-    '$X --git-dir "$G" p',
-    '$X -c "$C" p',
-    '$X -c"$C" p',
-    '$X --config-env="$E" p',
-    '$X --work-tree="$W" p',
-    'cd /work && $X -C "$D" p',
-    'D=$(mktemp -d); env -C /x $X -C "$D" p',
-  ])('reads the alias where the hook runs when a git option value is unknown: %s', command => {
-    deny(command, REASONS.noVerify)
+    ['D=$(mktemp -d); $X -C "$D" p', REASONS.aliasHidden],
+    ['read D; $X -C "$D" p', REASONS.aliasHidden],
+    ['source x; $X -C "$D" p', REASONS.noVerify],
+    ['source x; $X -C"$D" p', REASONS.noVerify],
+    ['read D; env -C /x $X -C "$D" p', REASONS.aliasHidden],
+    ['$X --git-dir="$(mktemp)" p', REASONS.aliasHidden],
+    ['read G; $X --git-dir "$G" p', REASONS.aliasHidden],
+    ['source x; $X --git-dir=$G p', REASONS.aliasHidden],
+    ['env -C /x $X --git-dir=$G p', REASONS.aliasHidden],
+    ['C=$(x); $X -c "$C" p', REASONS.aliasHidden],
+    ['source x; $X -c"$C" p', REASONS.noVerify],
+    ['sudo $X -c"$C" p', REASONS.noVerify],
+    ['read E; $X --config-env="$E" p', REASONS.aliasHidden],
+    ['source x; $X --work-tree=$W p', REASONS.noVerify],
+  ])('denies a hidden git option value before an alias: %s', (command, reason) => {
+    deny(command, reason)
   })
-
-  it('reads the alias in a known -C directory beside an unknown option value', () => {
-    expect(checkCommand('$X --work-tree="$W" -C /x p', ctx)).toBeUndefined()
-  })
-
-  it.each(['D=$(mktemp -d); $X -C "$D" q', 'D=$(mktemp -d); $X -C "$D" status', '$X -c "$C" q'])(
-    'allows a git option value it cannot read when the hook directory has no alias to follow: %s',
-    command => {
-      expect(checkCommand(command, ctx)).toBeUndefined()
-    },
-  )
 
   it.each(['find . -execdir $X p \\;', 'find . -exec true \\; -execdir "$X" p \\;'])(
     'reads the alias where the hook runs for a find -execdir command: %s',

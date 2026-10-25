@@ -562,7 +562,9 @@ on it blocked routine lines.
 Such an untied word still has its subcommand looked up where the guard can look: the directory
 the line is known to be in, or else the hook's own, with the hook's env (CC-1315). An alias found
 there is checked like any other, so `env -C /x $X p`, `sudo $X p`, `cd "$D" && $X p` and
-`GIT_DIR=$G $X p` deny what `$X p` denies. This is a best guess: an alias that only the unknown
+`GIT_DIR=$G $X p` deny what `$X p` denies. A git option value the guard cannot read, as in
+`$X -C "$D" p`, `$X --git-dir=$G p` or `$X -c "$C" p`, is itself a hidden word, so the hidden-suffix
+scan checks it as a command word and these deny too. This is a best guess: an alias that only the unknown
 directory's repo config defines, or that only root's config defines under `sudo`, stays unseen.
 
 The accepted gap is a command word set where the guard cannot see, such as a variable that a
