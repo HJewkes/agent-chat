@@ -364,8 +364,9 @@ the same way; with no command it runs a shell on stdin, which the guard checks. 
 hands the words after it to bash or a `--shell=` shell, which the guard checks; a `--shell=` that is
 not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `su -s` and
 `--shell=` take the shells of the one list the rest of the guard uses (`SHELLS` in
-`src/leak-guard/shell-invocation.ts`), so `ash`, `mksh` and `csh` included, and the guard reads the
-`-c` text as that shell's (CC-1629). `gosu`, `su-exec`,
+`src/leak-guard/shell-invocation.ts`: `sh`, `ash`, `bash`, `dash` and `zsh`), and the guard reads
+the `-c` text as that shell's (CC-1629). Any other shell there denies (privilegeOption) on a line
+that may reach git or gh (CC-1631). `gosu`, `su-exec`,
 `chpst`, `setuidgid` and `s6-setuidgid` are not covered.
 
 Behind any of these wrappers, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or
@@ -406,8 +407,7 @@ a line that may reach git or gh. That covers an unquoted `$F`, which may split, 
 `script` without
 `-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, which the guard
 derives as it derives git's config env: from the command's assignments (`env` included), earlier
-exports, and the hook env. A `SHELL` outside the guard's shell list, `csh` (which rewrites `!`
-history in text the guard reads as sh's), or one it cannot tell (named
+exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named
 on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
 macOS `script [file [command ...]]`, which runs its trailing words, is not covered. `sudo -s` and `--shell` run `$SHELL` too and get the same rule; `sudo -i` runs the passwd-entry shell, so a `SHELL` on the line does not change it.
 
@@ -429,21 +429,18 @@ which stops at its first operand and takes a subset of the GNU options: `busybox
 `busybox env git push` read as `sh -c TEXT` and `env git push` do. `ash`, busybox's shell and
 Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 
-`mksh` and `csh` are checked shells too, and `ksh`, `mksh` and `csh` have their options read as
-observed in mksh 59c, ksh93u+m 1.0.10, bsd-csh 20240808 and tcsh 6.24 (CC-1631), so the guard
-checks the `-c` string where the shell finds it: `mksh -T - -c TEXT` and `ksh -o errexit -c TEXT`
-run `TEXT`, and `ksh -c 'echo hi' TEXT` does not. `ksh` may be ksh93, which runs a script operand no
-file has as `name "$@"` (`ksh 'git push' --no-verify` pushes), so that operand is checked as text
-with each later operand appended as one quoted word: `ksh 'git -C' '#' push` runs `git -C '#' push`,
-not a comment. A later operand the outer shell expands (`ksh 'git push' "$F"`) may be any flag, so it
-denies (kshOperandExpansion) on a line that may reach git or gh. `-o -c` hides the call, since mksh reads it as the letter `c` and ksh93 as the next option.
-csh runs the word after the one holding `c`, whatever it starts with, and a letter neither csh
-knows hides the call, since bsd-csh ignores it (`csh --c TEXT` runs `TEXT`). A hidden call has every
-word checked as its `-c` string. The guard parses a csh `-c` string or fed text as sh, and csh reads
-some text differently: it rewrites `!` history (`!#:1` repeats a word of the line), a `\` inside
-double quotes does not escape the `"`, `#` starts a comment, and `set`, `setenv`, `alias`, `if`,
-`foreach`, `while` and `switch` are its own. So csh text holding any of these denies (cshSyntax) on a
-line that may reach git or gh, and the rest is checked as sh.
+The guard reads only the shells whose option grammar it has observed: `sh`, `ash`, `bash`, `dash`
+and `zsh` (`SHELLS`, the keys of `GRAMMARS` in `src/leak-guard/shell-invocation.ts`). Other shells
+read text unlike sh: csh rewrites `!` history, leaves a `"` open after `\`, and runs `nice +5 CMD`,
+`@ x = { CMD }` and `exit { CMD }`; ksh93 runs a script operand no file has as `name "$@"`; mksh
+predefines aliases. So a shell in `FOREIGN_SHELLS` (`csh`, `bsd-csh`, `tcsh`, `ksh`, `ksh93`, `rksh`,
+`rksh93`, `mksh`, `rmksh`, `lksh`, `rlksh`, `oksh`, `pdksh`, `posh`, `yash`, `fish`, `hush`, `rc`,
+`es`) denies (foreignShell) on a line that may reach git or gh, and the guard reads none of its
+`-c` text, stdin or operands (CC-1631). The shell is the base name of the program word after
+wrappers, so `/usr/bin/tcsh`, `env`, `sudo`, `xargs`, `find -exec` and `exec -a sh /bin/csh` all
+count as the real binary. The cost: `ksh -c 'git status'` and `git status && csh -c 'echo hi'`
+deny; run such text with one of the shells above. A foreign shell on a line with no git or gh is
+allowed.
 
 | Denied                                                                                                                                                                                                                                                                                                                                    | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -1585,7 +1582,7 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
-  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`, `ash`, `mksh`, `csh`; `SHELLS` in
+  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ash`; `SHELLS` in
   `src/leak-guard/shell-invocation.ts`), or `source`/`.` of a stdin path, that reads its script from any
   stdin source in scope, on a line that may reach git or gh (as for command starts above). The
   guard reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
@@ -1651,8 +1648,8 @@ Not covered, by design or by cost:
     variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
     `echo P | $(echo bash)`;
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
-  - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
-    `echo P | tcsh`, `echo P | ksh93`, `echo P | fish`;
+  - a shell outside both of the guard's lists (follow-up to CC-1408): `echo P | rbash`,
+    `echo P | rzsh`. A shell in `FOREIGN_SHELLS` (`echo P | tcsh`) denies by name (CC-1631);
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
   - more generally: any shell the feed reaches through a command word, wrapper or shell name the

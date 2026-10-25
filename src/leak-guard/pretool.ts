@@ -98,7 +98,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { observedShell, readShellCall, SHELLS } from './shell-invocation.js'
+import { FOREIGN_SHELLS, readShellCall, SHELLS } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -269,8 +269,7 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
-  cshSyntax: `leak-guard: csh reads this text differently from sh, which the guard parses it as: it rewrites ! history, a backslash does not escape a double quote, # starts a comment, and set, setenv, alias, if, foreach, while and switch are its own, and this line may reach git or gh. Run the text with sh. ${DOCS}`,
-  kshOperandExpansion: `leak-guard: ksh93 runs a script operand no file has as a command with the later operands as its arguments, and one of them is an expansion the guard cannot see, which may be --no-verify, on a line that may reach git or gh. Write the arguments out, or run the text with ksh -c. ${DOCS}`,
+  foreignShell: `leak-guard: this line runs a shell whose text the guard does not read, since it parses it unlike sh, ash, bash, dash and zsh, the only shells the guard reads, and this line may reach git or gh. Run the text with one of those. ${DOCS}`,
 } as const
 
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
@@ -340,6 +339,7 @@ const CHECKED_NAMES = new Set([
   ...OPTION_WRAPPERS,
   ...JOB_WRAPPERS,
   ...SHELLS,
+  ...FOREIGN_SHELLS,
   ...ENV_EDITS,
   ...SSH_PROGRAMS,
   ...PARALLELS,
@@ -2254,8 +2254,6 @@ function checkShell(
   depth: number,
 ): string | undefined {
   const fed = scope.fed
-  const foreign = foreignReading(call, fed)
-  if (foreign !== undefined && lineMayReachGit(scope, ctx)) return foreign
   const reason =
     fed === 'unknown'
       ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
@@ -2268,43 +2266,13 @@ function checkShell(
 
 /**
  * The texts a shell may run as its `-c` string, at the place its options leave it (`sh -c -e TEXT`,
- * `bash -oc pipefail TEXT`, CC-1342). Where the options hide the call, or belong to a shell whose
- * grammar was never observed (mksh's `-T` takes an operand), every word may be it.
+ * `bash -oc pipefail TEXT`, CC-1342). Where the options hide the call, every word may be it.
  */
 function commandTexts({ name, marked, assigns }: ShellRun): string[] {
   const { script } = readShellCall(name, marked, assigns)
-  if (script.from === 'hidden' || !observedShell(name)) return marked.map(unmark)
-  if (script.from === 'file' && script.missingRuns === true) return [missingFileRun(marked, script.at)]
+  if (script.from === 'hidden') return marked.map(unmark)
   if (script.from !== 'command') return []
   return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
-}
-
-/**
- * ksh93 runs a script operand no file has as `sh -c 'name "$@"'`: only that operand is shell text,
- * and the later operands are literal words, so `ksh 'git -C' '#' push` pushes in a directory `#`.
- */
-function missingFileRun(marked: readonly string[], at: number): string {
-  const literals = marked.slice(at + 1).map(word => singleQuote(unmark(word)))
-  return [unmark(marked[at] as string), ...literals].join(' ')
-}
-
-// What csh reads unlike sh: `!` history, `\` inside double quotes, `#` comments, and its own builtins and keywords.
-const CSH_ONLY = /[!\\"#]|(?:^|[\s;&|()])(?:set|setenv|alias|if|foreach|while|switch)(?=$|[\s;&|()])/
-
-/**
- * The deny reason for a shell whose reading of its script differs from the sh reading the guard
- * checks: csh text that leaves sh's common syntax, or ksh93 handing an expanded operand to a
- * missing-file script as an argument the guard would check as a literal.
- */
-function foreignReading(call: ShellRun, fed: Feed): string | undefined {
-  if (call.name === 'csh') {
-    const texts = [...commandTexts(call), ...(fed === 'unknown' ? [] : fed.texts)]
-    return texts.some(text => CSH_ONLY.test(text)) ? REASONS.cshSyntax : undefined
-  }
-  const { script } = readShellCall(call.name, call.marked, call.assigns)
-  const missing = script.from === 'file' && script.missingRuns === true
-  const live = missing && call.marked.slice(script.at + 1).some(word => word.includes(LIVE))
-  return live ? REASONS.kshOperandExpansion : undefined
 }
 
 /** A shell's base name, its marked words after the name, and the assignments it runs with. */
@@ -2575,7 +2543,10 @@ const inputEvaluated = (script: string): boolean =>
     const unwrapped = unwrap(cmd.marked)
     if ('reason' in unwrapped) return false
     const [name = '', ...args] = unwrapped.words
-    return (name === 'eval' || SHELLS.has(path.basename(name))) && args.some(arg => arg.includes(XARGS_ARGS))
+    return (
+      (name === 'eval' || SHELLS.has(path.basename(name)) || FOREIGN_SHELLS.has(path.basename(name))) &&
+      args.some(arg => arg.includes(XARGS_ARGS))
+    )
   })
 
 /** Checks parallel's no-command form, where each input is a command line of its own. */
@@ -2632,9 +2603,7 @@ function shellUnknown(
   scope: Scope,
 ): boolean {
   const shell = settingOf(settingsFor(assigns, cmd, ctx, scope), 'SHELL', scope)
-  if (shell === UNSURE) return true
-  // The guard reads what these run as sh's script, and csh rewrites `!` history in it where sh does not.
-  return shell !== undefined && (!SHELLS.has(path.basename(shell)) || path.basename(shell) === 'csh')
+  return shell === UNSURE || (shell !== undefined && !SHELLS.has(path.basename(shell)))
 }
 
 /** Reasons unwrap gives for a wrapper it cannot read, which deny only on a line that may reach git or gh. */
@@ -2687,6 +2656,7 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
+  if (FOREIGN_SHELLS.has(name)) return lineMayReachGit(at, ctx) ? REASONS.foreignShell : undefined
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)

@@ -246,42 +246,37 @@ describe('the bypass guard reads the -c script of sg and capsh (CC-1602)', () =>
   )
 })
 
-// Each wrapper that names its shell takes ash, mksh and csh as the shells they are (CC-1629).
-describe('the bypass guard reads ash, mksh and csh behind a privilege wrapper (CC-1629)', () => {
+// Each wrapper that names its shell takes ash as the shell it is, and a shell with no grammar fails closed (CC-1629, CC-1631).
+describe('the bypass guard reads ash behind a privilege wrapper (CC-1629)', () => {
   it.each([
     "su -s /bin/ash -c 'git push --no-verify'",
-    "su --shell=/bin/mksh -c 'git push --no-verify'",
-    "su -s /bin/csh -c 'git push --no-verify'",
     "su-rs -s /bin/ash -c 'git push --no-verify'",
     "runuser -s /bin/ash root -c 'git push --no-verify'",
     "capsh --shell=/bin/ash -- -c 'git push --no-verify'",
-    "capsh --shell=/bin/mksh -- -c 'git push --no-verify'",
-    "capsh --shell=/bin/csh -- -c 'git push --no-verify'",
     "SHELL=/bin/ash doas -s <<< 'git push --no-verify'",
-    "SHELL=/bin/mksh doas -s <<< 'git push --no-verify'",
   ])('denies %s', line => {
     deny(line, REASONS.noVerify)
   })
 
   it.each([
-    "su -s /bin/csh -c 'echo --no-verify; git push !#:1'",
-    "capsh --shell=/bin/csh -- -c 'echo --no-verify; git push !#:1'",
-  ])('denies %s, whose text csh rewrites', line => {
-    deny(line, REASONS.cshSyntax)
+    "su -s /bin/csh -c 'git status'",
+    "su --shell=/bin/mksh -c 'git status'",
+    "capsh --shell=/bin/csh -- -c 'git status'",
+  ])('denies %s, whose shell the guard does not read', line => {
+    deny(line, REASONS.privilegeOption)
   })
 
-  // doas -s runs $SHELL on text the guard reads as sh's, which csh reads with `!` history.
-  it("denies SHELL=/bin/csh doas -s <<< 'git status'", () => {
-    expect(checkCommand("SHELL=/bin/csh doas -s <<< 'git status'", ctx())).toMatch(/\$SHELL names/)
-  })
+  it.each(["SHELL=/bin/csh doas -s <<< 'git status'", "SHELL=/bin/mksh doas -s <<< 'git status'"])(
+    'denies %s, whose $SHELL the guard does not read',
+    line => {
+      expect(checkCommand(line, ctx())).toMatch(/\$SHELL names/)
+    },
+  )
 
   it.each([
     "su -s /bin/ash -c 'git status'",
-    "su -s /bin/csh -c 'git status'",
-    "su-rs -s /bin/mksh -c 'git status'",
     "runuser -s /bin/ash root -c 'git status'",
     "capsh --shell=/bin/ash -- -c 'git status'",
-    "SHELL=/bin/mksh doas -s <<< 'git status'",
   ])('allows %s', line => {
     expect(checkCommand(line, ctx())).toBeUndefined()
   })

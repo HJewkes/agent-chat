@@ -158,7 +158,7 @@ const PROCESS_SUBSTITUTIONS = [
   `printf '${PUSH}\\n' > >(zsh)`,
   `echo '${PUSH}' > >(sh)`,
   `echo '${PUSH}' > >(dash)`,
-  `echo '${PUSH}' > >(ksh)`,
+  `echo '${PUSH}' > >(ash)`,
   `echo '${PUSH}' 1> >(bash -s)`,
   `echo '${PUSH}' > >(bash -c bash)`,
   `echo '${PUSH}' | tee >(bash) > /dev/null`,

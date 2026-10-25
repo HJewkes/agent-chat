@@ -94,13 +94,13 @@ describe('a busybox applet is checked as the command it runs (CC-1342)', () => {
   })
 })
 
-// `ksh` may be mksh, whose `-T` takes an operand, so `-c` may come after it (CC-1631).
-describe("ksh reads -c after mksh's -T operand (CC-1342)", () => {
-  it.each([`ksh -T - -c '${P}'`, `ksh -T /dev/tty2 -c '${P}'`, `ksh -c '${P}'`])('denies %s', line => {
-    expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+// ksh has no observed grammar, so the guard reads none of its words (CC-1631).
+describe('a shell without an observed grammar denies on a line that may reach git (CC-1342)', () => {
+  it.each([`ksh -T - -c '${P}'`, `ksh -T /dev/tty2 -c '${P}'`, `ksh -c 'git status'`])('denies %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.foreignShell)
   })
 
-  it.each([`ksh -T - -c 'echo hi'`, `ksh -c 'git status'`, 'ksh script.ksh'])('allows %s', line => {
+  it.each([`ksh -T - -c 'echo hi'`, 'ksh script.ksh'])('allows %s', line => {
     expect(checkCommand(line, ctx)).toBeUndefined()
   })
 })

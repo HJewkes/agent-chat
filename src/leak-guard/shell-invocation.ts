@@ -1,5 +1,5 @@
 /**
- * Reads a shell invocation (`sh`, `ash`, `bash`, `dash`, `ksh`, `mksh`, `zsh`, `csh`) the way the shell does (CC-1288):
+ * Reads a shell invocation (`sh`, `ash`, `bash`, `dash`, `zsh`) the way the shell does (CC-1288):
  * options and their operands first, then the `-c` string, a script file or stdin. It also reports
  * whether the options may turn on `!` history, which rewrites a script read from stdin or a file
  * after the guard has read it. Observed in bash 5.3 and zsh 5.9: `-i`, or the history list together
@@ -13,15 +13,11 @@
  */
 import { LIVE } from './shell-words.js'
 
-/** The base names the guard checks as shells, wherever a shell may run: one list, so no copy lags it (CC-1629). */
-export const SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'csh'])
-
 export type ShellScript =
   /** `at` indexes the `-c` string in the words, undefined when none follows. */
   | { from: 'command'; at: number | undefined }
   | { from: 'stdin' }
-  /** `missingRuns`: ksh93 runs the operands from `at` as a command line when no file has that name. */
-  | { from: 'file'; at: number; missingRuns?: true }
+  | { from: 'file'; at: number }
   /** An option word the shell expands, so which script runs is unknown. */
   | { from: 'hidden' }
 
@@ -54,23 +50,17 @@ interface Letter {
 
 /**
  * How a letter that takes an option name reads it when more letters follow it in its word: `rest`
- * takes them as the name (zsh's `-ointeractive`), `next` takes the next word and reads them as flags
- * (bash's `-oi pipefail`), and `unread` hides the call, since either reading may be wrong. A letter
- * alone in its word takes the next word as its name under every rule.
+ * takes them as the name (zsh's `-ointeractive`), and `next` takes the next word and reads them as
+ * flags (bash's `-oi pipefail`). A letter alone in its word takes the next word as its name under
+ * either rule.
  */
-type NameRule = 'rest' | 'next' | 'unread'
+type NameRule = 'rest' | 'next'
 
 /** One shell's option grammar. Nothing about the options is shared between shells except through this record. */
 interface Grammar {
   letters: Readonly<Record<string, Letter>>
   /** The letters that take an option name, and how each reads it. */
   named: Readonly<Record<string, NameRule>>
-  /** Letters that take an operand naming no option, glued or as the next word (mksh's `-T tty`). */
-  operands?: ReadonlySet<string>
-  /** Whether an option name that starts with `-` or `+` hides the call, as the shells read `-o -c` differently. */
-  signedNameHides?: boolean
-  /** Whether the shell runs a script operand no file has as a command line (ksh93, observed). */
-  missingFileRuns?: boolean
   /** Words that end the options. zsh also ends them at a bare `+` or `+-`, which bash ignores or rejects. */
   ends: ReadonlySet<string>
   /** Words that hide the call, because the shells a name may stand for read them differently. */
@@ -131,31 +121,7 @@ const SH: Grammar = {
   stdinWithCommand: 'hidden',
 }
 
-// Observed in mksh 59c and ksh93u+m 1.0.10, either of which `ksh` may be (CC-1631). Both read `-c` under
-// `-` only, take an option name glued to `o` or as the next word, run only the string when `-s` and `-c`
-// are both on, and end the options at `-`, `--` or `+`. mksh's `-T` takes an operand, glued or the next
-// word, where ksh93 rejects it. mksh reads `-o -c` as the letter `c` and ksh93 reads `-c` as the next
-// option word, so a signed name hides the call. ksh93 alone has `-H`, and runs a script operand no file
-// has as a command line with the later operands appended (`ksh93 'echo A' x` prints `A x`).
-const KSH_LETTERS = { ...COMMON_LETTERS, c: { name: COMMAND } }
-
-const MKSH: Grammar = {
-  letters: KSH_LETTERS,
-  named: { o: 'rest' },
-  operands: new Set(['T']),
-  signedNameHides: true,
-  ends: new Set([...DASH_ENDS, '+']),
-  longOperands: {},
-  stdinWithCommand: 'command',
-}
-
-const KSH: Grammar = {
-  ...MKSH,
-  letters: { ...KSH_LETTERS, H: { name: 'histexpand' } },
-  missingFileRuns: true,
-}
-
-const GRAMMARS: Readonly<Record<string, Grammar>> = {
+const GRAMMARS: Readonly<Partial<Record<string, Grammar>>> = {
   zsh: {
     letters: {
       ...COMMON_LETTERS,
@@ -183,25 +149,23 @@ const GRAMMARS: Readonly<Record<string, Grammar>> = {
     longOperands: {},
     stdinWithCommand: 'hidden',
   },
-  ksh: KSH,
-  mksh: MKSH,
 }
 
-// Any other shell takes every letter's effect under either sign, hides a name glued to `o` or `O`, hides a
-// bare `+` or `+-`, which zsh reads as the end of the options and bash ignores, and reports history even
-// under `-c`: nothing shows its `-c` string is inert, and csh substitutes `!` in the text it reads.
-const UNOBSERVED: Grammar = {
-  letters: {
-    ...BASH_LETTERS,
-    i: { name: 'interactive', anySign: true },
-    K: { name: 'banghist', inverted: true },
-  },
-  named: { o: 'unread', O: 'unread' },
-  ends: DASH_ENDS,
-  hides: new Set(['+', '+-']),
-  longOperands: { ...BASH_LONG, '--emulate': 'operand' },
-  stdinWithCommand: 'hidden',
-}
+/**
+ * The shells the guard parses as sh: only those with an observed grammar, so the list grows only
+ * with one. One list, so the privilege wrappers' copy cannot lag it (CC-1629, CC-1631).
+ */
+export const SHELLS: ReadonlySet<string> = new Set(Object.keys(GRAMMARS))
+
+/**
+ * Shells whose text the guard does not read, since they parse it unlike sh (csh's `!` history,
+ * ksh93's missing-file runs, mksh's aliases). On a line that may reach git or gh they deny by name.
+ */
+export const FOREIGN_SHELLS: ReadonlySet<string> = new Set(
+  'csh bsd-csh tcsh ksh ksh93 rksh rksh93 mksh rmksh lksh rlksh oksh pdksh posh yash fish hush rc es'.split(
+    ' ',
+  ),
+)
 
 // `SHELLOPTS` can turn on history and histexpand before the script is read, and a startup file named
 // by `BASH_ENV` or `ENV` can run `set -H -o history` first; each fails closed whatever its value.
@@ -249,10 +213,9 @@ function apply(effect: Effect | undefined, opts: Options): void {
   else if (effect === 'hidden') opts.hidden = true
 }
 
-/** Reads an option name: its effect, or a hidden call when the shell expands it or the grammar hides it. */
-function readName(grammar: Grammar, operand: string | undefined, on: boolean, opts: Options): void {
-  const signed = grammar.signedNameHides === true && /^[-+]/.test(operand ?? '')
-  if (operand?.includes(LIVE) || signed) opts.hidden = true
+/** Reads an option name: its effect, or a hidden call when the shell expands it. */
+function readName(operand: string | undefined, on: boolean, opts: Options): void {
+  if (operand?.includes(LIVE)) opts.hidden = true
   else if (operand !== undefined) apply(nameEffect(operand, on), opts)
 }
 
@@ -265,23 +228,14 @@ function readCluster(grammar: Grammar, words: readonly string[], at: number, opt
     const letter = word[i] ?? ''
     const rest = word.slice(i + 1)
     const rule = grammar.named[letter]
-    if (grammar.operands?.has(letter) === true) return skipOperand(rest, words, next, opts)
     if (rule === undefined) apply(letterEffect(grammar, letter, on), opts)
-    else if (rest === '' || rule === 'next') readName(grammar, words[next++], on, opts)
+    else if (rest === '' || rule === 'next') readName(words[next++], on, opts)
     else {
-      if (rule === 'rest') readName(grammar, rest, on, opts)
-      else opts.hidden = true
+      readName(rest, on, opts)
       return next
     }
   }
   return next
-}
-
-/** Skips an operand glued as `rest` or in the next word, which hides the call when the shell expands it. */
-function skipOperand(rest: string, words: readonly string[], next: number, opts: Options): number {
-  if (rest !== '') return next
-  if (words[next]?.includes(LIVE) === true) opts.hidden = true
-  return next + 1
 }
 
 /** Reads `--name` or zsh's `+-name`, which turns the option off; returns the next index. */
@@ -289,7 +243,7 @@ function readLong(grammar: Grammar, words: readonly string[], at: number, opts: 
   const word = words[at] ?? ''
   const kind = grammar.longOperands[word]
   if (kind === undefined) {
-    readName(grammar, word.slice(2), word.startsWith('-'), opts)
+    readName(word.slice(2), word.startsWith('-'), opts)
     return at + 1
   }
   if (words[at + 1]?.includes(LIVE)) opts.hidden = true
@@ -318,40 +272,7 @@ function readOptions(grammar: Grammar, words: readonly string[]): Options {
   return { ...opts, end: Math.min(at, words.length) }
 }
 
-/** Whether `name` has a grammar observed in a real shell; any other shell's options are read by guess. */
-export const observedShell = (name: string): boolean => Object.hasOwn(GRAMMARS, name) || name === 'csh'
-
-// The letters bsd-csh 20240808 and tcsh 6.24 take, either of which `csh` may be (CC-1631, observed).
-const CSH_LETTERS: ReadonlySet<string> = new Set('bcdefFilmnqstvVxX')
 const HIDDEN_CALL: ShellCall = { script: { from: 'hidden' }, history: true }
-
-/**
- * csh takes `-` words as options up to the first other word, `+` words included. The word after the
- * one holding `c` is the string, whatever it starts with, and `b` ends the options after its word.
- * bsd-csh ignores a letter it does not know (`--c` runs the string) where tcsh exits, so any other
- * letter hides the call. csh substitutes `!` history in the text it reads, so history is always on.
- */
-function readCsh(marked: readonly string[]): ShellCall {
-  let stdin = false
-  let at = 0
-  for (; at < marked.length; at++) {
-    const word = marked[at] as string
-    if (word.includes(LIVE)) return HIDDEN_CALL
-    if (!word.startsWith('-') || word === '-') break
-    const letters = [...word.slice(1)]
-    if (letters.some(letter => !CSH_LETTERS.has(letter))) return HIDDEN_CALL
-    if (letters.includes('c'))
-      return { script: { from: 'command', at: at + 1 < marked.length ? at + 1 : undefined }, history: true }
-    stdin ||= letters.includes('s')
-    if (letters.includes('b')) return cshScript(marked, at + 1, stdin)
-  }
-  return cshScript(marked, at, stdin)
-}
-
-const cshScript = (marked: readonly string[], at: number, stdin: boolean): ShellCall => ({
-  script: stdin || at >= marked.length ? { from: 'stdin' } : { from: 'file', at },
-  history: true,
-})
 
 /**
  * `name` is the shell's base name, `marked` its marked words after the name, and `assigns` the
@@ -362,8 +283,8 @@ export function readShellCall(
   marked: readonly string[],
   assigns: readonly string[],
 ): ShellCall {
-  if (name === 'csh') return readCsh(marked)
-  const grammar = GRAMMARS[name] ?? UNOBSERVED
+  const grammar = GRAMMARS[name]
+  if (grammar === undefined) return HIDDEN_CALL
   const opts = readOptions(grammar, marked)
   const call = readScript(grammar, opts, marked, assigns)
   return opts.history && opts.rcfile !== undefined ? { ...call, rcfile: opts.rcfile } : call
@@ -376,14 +297,13 @@ function readScript(
   assigns: readonly string[],
 ): ShellCall {
   const both = opts.command && opts.stdin && grammar.stdinWithCommand === 'hidden'
-  if (opts.hidden || both) return { script: { from: 'hidden' }, history: true }
+  if (opts.hidden || both) return HIDDEN_CALL
   if (opts.command)
     return {
       script: { from: 'command', at: opts.end < marked.length ? opts.end : undefined },
-      history: grammar === UNOBSERVED,
+      history: false,
     }
   const history = opts.history || assigns.some(word => STARTUP_ASSIGNMENT.test(word))
   if (opts.stdin || opts.end >= marked.length) return { script: { from: 'stdin' }, history }
-  const runs = grammar.missingFileRuns === true ? { missingRuns: true as const } : {}
-  return { script: { from: 'file', at: opts.end, ...runs }, history }
+  return { script: { from: 'file', at: opts.end }, history }
 }

@@ -464,7 +464,7 @@ function suShell(values: ReadonlyMap<string, string>, args: readonly string[]): 
   const shell = values.get('s')
   if (shell !== undefined && !SHELLS.has(shell.split('/').pop() as string)) return undefined
   const command = values.get('c')
-  // The -s shell is read as itself, since csh rewrites `!` history where sh does not.
+  // The -s shell is read as itself, since its grammar may differ from sh's (zsh's `-b`, bash's `--rcfile`).
   const name = shell ?? 'sh'
   return { shell: command === undefined ? [name, ...args] : [name, '-c', command, ...args] }
 }
