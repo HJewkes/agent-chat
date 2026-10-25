@@ -2061,8 +2061,29 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git rebase -x 'npm test && npm run lint' main",
     "git submodule foreach 'git status'",
     "git bisect run sh -c 'npm test'",
+    "git filter-branch --msg-filter 'cat; echo $GIT_COMMIT' HEAD",
+    "git filter-branch --env-filter 'echo $GIT_AUTHOR_NAME' HEAD",
   ])('allows an ordinary quoted command (TP-2496): %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    "git difftool -x '$X --no-verify' HEAD",
+    "git difftool --extcmd='$X' HEAD",
+    "git filter-branch --tree-filter '$X' HEAD",
+    "git filter-branch --setup '$X' HEAD",
+    "git filter-branch --msg-filter '$GIT_COMMITX' HEAD",
+    "git grep -O'$X' x",
+    "git push --receive-pack '$X' origin main",
+    "git push --exec='$X' origin main",
+    "git fetch --upload-pack '$X' origin",
+    "git pull --upload-pack '$X' origin",
+    "git clone -u '$X' ../r",
+    "git ls-remote --upload-pack '$X' origin",
+    "git archive --exec '$X' --remote=origin HEAD",
+    "git send-email --to-cmd '$X' x.patch",
+  ])('denies a shell expansion in every script option (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
   })
 
   it('denies a plain alias that expands to a rebase exec', () => {

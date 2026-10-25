@@ -1280,7 +1280,7 @@ function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth:
         ? run.tied
           ? REASONS.nestedScript
           : undefined
-        : span.vars !== undefined && expandsUnknown(script, span.vars)
+        : expandsUnknown(script, span.vars)
           ? REASONS.nestedScript
           : checkAt(script, ctx, inner, depth + 1)
     if (reason !== undefined) return reason

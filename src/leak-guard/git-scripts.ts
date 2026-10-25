@@ -9,8 +9,11 @@ export interface ScriptSpan {
   from: number
   to: number
   offset: number
-  /** The variables git sets for the script; when given, any other expansion in it is unreadable (TP-2496). */
-  vars?: readonly string[]
+}
+
+/** A script git hands to a shell; any expansion in it but `vars`, which git sets, is unreadable (TP-2496). */
+export interface GitScript extends ScriptSpan {
+  vars: readonly string[]
 }
 
 export interface ScriptOptions {
@@ -22,15 +25,23 @@ export interface ScriptOptions {
   shortValue?: string
   /** The value must be attached, as `-O<pager>` and `--open-files-in-pager=<pager>` must. */
   attached?: boolean
+  /** The variables git sets for the script. */
+  vars?: readonly string[]
 }
 
 const FILTERS = ['env', 'tree', 'index', 'parent', 'msg', 'commit', 'tag-name'].map(f => `--${f}-filter`)
+
+/** What filter-branch exports for its filters: the commit and its author and committer. */
+const FILTER_VARS = [
+  'GIT_COMMIT',
+  ...['AUTHOR', 'COMMITTER'].flatMap(who => ['NAME', 'EMAIL', 'DATE'].map(field => `GIT_${who}_${field}`)),
+]
 
 const OPTION_SCRIPTS: ReadonlyMap<string, ScriptOptions> = new Map(
   Object.entries({
     rebase: { long: ['--exec'], short: 'x', shortValue: 'sXCS' },
     difftool: { long: ['--extcmd'], short: 'x', shortValue: 't' },
-    'filter-branch': { long: ['--setup', ...FILTERS] },
+    'filter-branch': { long: ['--setup', ...FILTERS], vars: FILTER_VARS },
     grep: { long: ['--open-files-in-pager'], short: 'O', shortValue: 'efmABC', attached: true },
     push: { long: ['--receive-pack', '--exec'], shortValue: 'o' },
     fetch: { long: ['--upload-pack'], shortValue: 'jo' },
@@ -82,27 +93,27 @@ export const CLONE_CONFIG: ScriptOptions = { long: ['--config'], short: 'c', sho
 const FOREACH_VARS = ['name', 'sm_path', 'displaypath', 'sha1', 'toplevel']
 
 /** The command after `foreach` or `run`, past the options git reads before it. */
-function trailingSpan(words: readonly string[], verbAt: number, vars: readonly string[]): ScriptSpan[] {
+function trailingSpan(words: readonly string[], verbAt: number, vars: readonly string[]): GitScript[] {
   let i = verbAt + 1
   while (i < words.length && (words[i] as string).startsWith('-')) i++
   return i < words.length ? [{ from: i, to: words.length, offset: 0, vars }] : []
 }
 
 /** `git submodule [--quiet] [--cached] foreach [--recursive] <command>`. */
-function submoduleSpans(words: readonly string[], at: number): ScriptSpan[] {
+function submoduleSpans(words: readonly string[], at: number): GitScript[] {
   let i = at + 1
   while (i < words.length && (words[i] as string).startsWith('-')) i++
   return words[i] === 'foreach' ? trailingSpan(words, i, FOREACH_VARS) : []
 }
 
-/** The script spans of `git <words>`, whose subcommand is at index `at`. */
-export function gitScripts(words: readonly string[], at: number): ScriptSpan[] {
+/** The scripts of `git <words>`, whose subcommand is at index `at`. */
+export function gitScripts(words: readonly string[], at: number): GitScript[] {
   const sub = words[at]
   if (sub === 'submodule') return submoduleSpans(words, at)
   if (sub === 'bisect') return words[at + 1] === 'run' ? trailingSpan(words, at + 1, []) : []
   const opts = sub === undefined ? undefined : OPTION_SCRIPTS.get(sub)
-  const spans = opts === undefined ? [] : optionSpans(words, at, opts)
-  return sub === 'rebase' ? spans.map(span => ({ ...span, vars: [] })) : spans
+  if (opts === undefined) return []
+  return optionSpans(words, at, opts).map(span => ({ ...span, vars: opts.vars ?? [] }))
 }
 
 /** A `$` expansion, with the name of a plain `$name` or `${name}`, or a backquote. */
