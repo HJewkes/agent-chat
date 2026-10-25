@@ -982,6 +982,20 @@ other checks so a more specific reason wins. Two rules carry this into the scrip
    read as unread words, so no caller sees a callback without them. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
    that names git or gh, for `trap` and `mapfile` on a line that may reach git or gh.
 
+A `{NAME}>file` (or `{NAME[sub]}>file`) redirect writes the descriptor it opens to `NAME`, and
+zsh does so before an external command starts, so `gh {GH_PAGER}>/dev/null pr view 1` runs a
+pager named by a number. The lexer records that `NAME` for any unquoted `{NAME}` word before a
+redirect operator, and it counts as any other write: a program var denies as `programEnv`, a
+search path as `searchPathEnv` and a shell startup variable as `shellStartupEnv` (CC-1630).
+`GIT_DIR` is no program var, so `exec {GIT_DIR}>/dev/null; git status` is allowed, as
+`GIT_DIR=x; git status` is.
+
+A double-quoted trap action that expands nothing, such as `trap "rm -f tmp" EXIT`, is read as
+written and allowed. One that expands a variable (`trap "rm -f $tmp" EXIT`) stays a `hiddenScript`
+deny on a line that may reach git. The shell splices the value into the action when the trap is
+set, so the value becomes script text, and the guard does not know the value the command will see.
+Single quotes (`trap 'rm -f "$tmp"' EXIT`) keep the expansion inside the script the guard reads.
+
 | builtin                | script                                                                                                             | not a script                                         | unreadable                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------- |
 | `eval`                 | its operands joined, past one `--` (zsh's `-` too)                                                                 |                                                      | an option or expansion as the first word |
