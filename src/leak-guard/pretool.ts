@@ -98,7 +98,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { observedShell, readShellCall } from './shell-invocation.js'
+import { observedShell, readShellCall, SHELLS } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -272,7 +272,6 @@ export const REASONS = {
   cshHistory: `leak-guard: csh rewrites ! history in the text it reads (!#:1 repeats a word of the line) before it runs it, which the guard never replays, and this line may reach git or gh. Drop the !, or run the text with sh. ${DOCS}`,
 } as const
 
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'csh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
@@ -2610,7 +2609,9 @@ function shellUnknown(
   scope: Scope,
 ): boolean {
   const shell = settingOf(settingsFor(assigns, cmd, ctx, scope), 'SHELL', scope)
-  return shell === UNSURE || (shell !== undefined && !SHELLS.has(path.basename(shell)))
+  if (shell === UNSURE) return true
+  // The guard reads what these run as sh's script, and csh rewrites `!` history in it where sh does not.
+  return shell !== undefined && (!SHELLS.has(path.basename(shell)) || path.basename(shell) === 'csh')
 }
 
 /** Reasons unwrap gives for a wrapper it cannot read, which deny only on a line that may reach git or gh. */

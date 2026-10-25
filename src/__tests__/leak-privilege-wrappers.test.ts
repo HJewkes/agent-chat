@@ -152,12 +152,12 @@ describe('a value option takes the next word even when it looks like an option',
     expect(run(w, glued, ...tail(w))).toEqual(expected(w, 2))
   })
 
-  it('su -s and --shell take the shell path', () => {
+  it('su -s and --shell take the shell path, and run that shell', () => {
     expect(run('su', '-s', '/bin/bash', 'root', '-c', 'git push')).toEqual({
-      shell: ['sh', '-c', 'git push'],
+      shell: ['/bin/bash', '-c', 'git push'],
     })
     expect(run('su', '--shell', '/bin/zsh', 'root', '-c', 'git push')).toEqual({
-      shell: ['sh', '-c', 'git push'],
+      shell: ['/bin/zsh', '-c', 'git push'],
     })
   })
 

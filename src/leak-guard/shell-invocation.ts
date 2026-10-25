@@ -13,6 +13,9 @@
  */
 import { LIVE } from './shell-words.js'
 
+/** The base names the guard checks as shells, wherever a shell may run: one list, so no copy lags it (CC-1629). */
+export const SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'csh'])
+
 export type ShellScript =
   /** `at` indexes the `-c` string in the words, undefined when none follows. */
   | { from: 'command'; at: number | undefined }

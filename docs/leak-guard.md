@@ -362,7 +362,10 @@ in a shell, so the guard checks it as a script; a second candidate command (util
 pick differently) or any word the shell expands denies. `newgrp`, the binary `sg` links to, is read
 the same way; with no command it runs a shell on stdin, which the guard checks. `capsh` runs nothing unless `--` or `-+`
 hands the words after it to bash or a `--shell=` shell, which the guard checks; a `--shell=` that is
-not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `gosu`, `su-exec`,
+not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `su -s` and
+`--shell=` take the shells of the one list the rest of the guard uses (`SHELLS` in
+`src/leak-guard/shell-invocation.ts`), so `ash`, `mksh` and `csh` included, and the guard reads the
+`-c` text as that shell's (CC-1629). `gosu`, `su-exec`,
 `chpst`, `setuidgid` and `s6-setuidgid` are not covered.
 
 Behind any of these wrappers, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or
@@ -403,7 +406,8 @@ a line that may reach git or gh. That covers an unquoted `$F`, which may split, 
 `script` without
 `-c`, and `unshare` with no command, as a shell reading stdin. Those run `$SHELL`, which the guard
 derives as it derives git's config env: from the command's assignments (`env` included), earlier
-exports, and the hook env. A `SHELL` outside the guard's shell list, or one it cannot tell (named
+exports, and the hook env. A `SHELL` outside the guard's shell list, `csh` (which rewrites `!`
+history in text the guard reads as sh's), or one it cannot tell (named
 on the line in a way it cannot follow, or after `source`), denies on a line that may reach git or gh. Under `unshare` the directory is unknown, since `-R` and `-w` move it. BSD and
 macOS `script [file [command ...]]`, which runs its trailing words, is not covered. `sudo -s` and `--shell` run `$SHELL` too and get the same rule; `sudo -i` runs the passwd-entry shell, so a `SHELL` on the line does not change it.
 
@@ -1578,7 +1582,7 @@ Not covered, by design or by cost:
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
   Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`, `ash`, `mksh`, `csh`; `SHELLS` in
-  `src/leak-guard/pretool.ts`), or `source`/`.` of a stdin path, that reads its script from any
+  `src/leak-guard/shell-invocation.ts`), or `source`/`.` of a stdin path, that reads its script from any
   stdin source in scope, on a line that may reach git or gh (as for command starts above). The
   guard reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
   - `echo P | bash`, `sh`, `sh -s`, `zsh -f`, `|&`, and `sudo -n bash`; `printf` text as well;

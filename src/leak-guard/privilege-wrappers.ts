@@ -11,6 +11,7 @@
  * sg and newgrp (util-linux 2.41) from `--help` and runs, and capsh (libcap 2) from `--help`.
  */
 
+import { SHELLS } from './shell-invocation.js'
 import { LIVE } from './shell-words.js'
 
 /** The command's first word, or the argv of the shell the wrapper hands the command to. */
@@ -409,7 +410,6 @@ const SU_KEYS: ReadonlyMap<string, string> = new Map([
   ['--shell', 's'],
   ['--user', 'u'],
 ])
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 
 /**
  * util-linux su permutes, so options after the user still count. Its first operand is the user and
@@ -464,7 +464,9 @@ function suShell(values: ReadonlyMap<string, string>, args: readonly string[]): 
   const shell = values.get('s')
   if (shell !== undefined && !SHELLS.has(shell.split('/').pop() as string)) return undefined
   const command = values.get('c')
-  return { shell: command === undefined ? ['sh', ...args] : ['sh', '-c', command, ...args] }
+  // The -s shell is read as itself, since csh rewrites `!` history where sh does not.
+  const name = shell ?? 'sh'
+  return { shell: command === undefined ? [name, ...args] : [name, '-c', command, ...args] }
 }
 
 /**
