@@ -552,3 +552,57 @@ describe('the armed helper process', () => {
     expect(fs.existsSync(out)).toBe(false)
   })
 })
+
+describe('arming the helper when its inputs have gone missing (CC-1051)', () => {
+  const CWD_PROBE = [
+    "import fs from 'node:fs'",
+    'fs.writeFileSync(process.env.LAND_OUT, process.cwd())',
+  ].join('\n')
+
+  function probeLocal(over: Partial<Parameters<typeof armHelper>[0]> = {}) {
+    fs.mkdirSync(path.join(callerHome, 'agents', SPEC.agentId), { recursive: true })
+    const script = path.join(cwd, 'probe.mjs')
+    const out = path.join(cwd, 'cwd-out.txt')
+    fs.writeFileSync(script, CWD_PROBE)
+    return { out, local: { cliEntry: script, cwd, env: { ...process.env, LAND_OUT: out }, ...over } }
+  }
+
+  const landLog = () => fs.readFileSync(path.join(callerHome, 'agents', SPEC.agentId, 'land.log'), 'utf8')
+
+  it('falls back to the home dir and says which cwd was missing', async () => {
+    const gone = path.join(cwd, 'renamed-away')
+    const { out, local } = probeLocal({ cwd: gone })
+
+    const armed = await armHelper(local, SPEC, 4321)
+    armed.go('tok')
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    expect(fs.realpathSync(fs.readFileSync(out, 'utf8'))).toBe(fs.realpathSync(os.homedir()))
+    expect(landLog()).toContain(`cwd ${gone}`)
+  })
+
+  it('names the command when the node binary is missing, instead of a bare ENOENT', async () => {
+    const node = path.join(cwd, 'no-such-node')
+    const { local } = probeLocal({ node })
+
+    await expect(armHelper(local, SPEC, 4321)).rejects.toThrow(`command ${node}`)
+  })
+
+  it('names the entry script when it is missing', async () => {
+    const entry = path.join(cwd, 'no-such-entry.mjs')
+    const { local } = probeLocal({ cliEntry: entry })
+
+    await expect(armHelper(local, SPEC, 4321)).rejects.toThrow(`command ${entry}`)
+  })
+
+  it('runs in the caller cwd and writes no note when both are present', async () => {
+    const { out, local } = probeLocal()
+
+    const armed = await armHelper(local, SPEC, 4321)
+    armed.go('tok')
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    expect(fs.realpathSync(fs.readFileSync(out, 'utf8'))).toBe(fs.realpathSync(cwd))
+    expect(landLog()).toBe('')
+  })
+})

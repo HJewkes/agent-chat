@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { endHostSession } from '../agents/end-session.js'
 import { writeLaunchFiles } from '../agents/launch-files.js'
@@ -30,6 +31,8 @@ export interface LocalHost {
   cliEntry: string
   cwd: string
   env: NodeJS.ProcessEnv
+  /** The node binary that runs the helper; this process's own unless a test says otherwise. */
+  node?: string
 }
 
 export interface Armed {
@@ -59,11 +62,21 @@ function landArgs(local: LocalHost, spec: RemoteLaunch, hostPid: number): string
   ]
 }
 
+/** Node reports a missing cwd as `spawn <node> ENOENT`, so each input is checked and named before the spawn. */
+function missingCommand(node: string, local: LocalHost): string | undefined {
+  return [node, local.cliEntry].find(file => !fs.existsSync(file))
+}
+
 /** Detached and in its own session, so it outlives this process and the Claude Code it is about to end. */
 export async function armHelper(local: LocalHost, spec: RemoteLaunch, hostPid: number): Promise<Armed> {
+  const node = local.node ?? process.execPath
+  const gone = missingCommand(node, local)
+  if (gone !== undefined) throw new Error(`the landing helper command ${gone} does not exist on this host`)
   const log = fs.openSync(path.join(agentDir(spec.agentId), 'land.log'), 'a', 0o600)
-  const child = spawn(process.execPath, landArgs(local, spec, hostPid), {
-    cwd: local.cwd,
+  const cwdGone = !fs.existsSync(local.cwd)
+  if (cwdGone) fs.writeSync(log, `cwd ${local.cwd} no longer exists; the helper runs in ${os.homedir()}\n`)
+  const child = spawn(node, landArgs(local, spec, hostPid), {
+    cwd: cwdGone ? os.homedir() : local.cwd,
     env: local.env,
     detached: true,
     stdio: ['pipe', log, log],
