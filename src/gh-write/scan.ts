@@ -15,6 +15,7 @@ import {
   type TermsLoad,
 } from '../leak-guard/pretool.js'
 import { NOT_UTF8, readBodyFile, utf8Body } from './body-text.js'
+import { GH_GROUPS } from './gh-groups.js'
 
 export { NOT_UTF8 }
 
@@ -84,15 +85,6 @@ function afterRepo(words: readonly string[]): readonly string[] | undefined {
   }
   return words.slice(i)
 }
-
-/** gh 2.87's own groups and their cobra aliases; a config alias (`co`) or an extension is refused. */
-const GH_GROUPS = new Set(
-  (
-    'agent-task alias api attestation auth browse cache codespace cs completion config copilot ' +
-    'extension extensions ext gist gpg-key issue label licenses org pr preview project release repo ' +
-    'ruleset rs run search secret ssh-key status variable workflow'
-  ).split(' '),
-)
 
 const GROUP_VERBS: Readonly<Record<string, ReadonlySet<string>>> = {
   pr: new Set(

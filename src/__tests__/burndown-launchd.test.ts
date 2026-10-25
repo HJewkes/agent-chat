@@ -87,7 +87,7 @@ describe('burndownInstall', () => {
   it('tells the checker the allowlist never merges without spelling a merge command', () => {
     const report = burndownInstall(false, refusingControl)
     const allowlist = report.lines.find(l => l.includes('Settings allowlist'))
-    expect(allowlist).toContain('gh pr create/view/checks (never merge).')
+    expect(allowlist).toContain('gh pr view/checks, agent-chat gh-write -- pr create (never merge).')
     expect(report.lines.some(l => /\bpr\s+merge\b/i.test(l))).toBe(false)
   })
 

@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stateCoreRemaining, stateCooldownEnd } from '../cli/gh-write.js'
 import { writeGhShim } from '../gh-shim/install.js'
 import { GH_BUDGET_URL_ENV } from '../gh-shim/rate-limit.js'
+import { GH_WRITE_TICKET_ENV, mintTicket } from '../gh-shim/ticket.js'
+import { readGhWriteKey, writeGhWriteKey } from '../gh-shim/write-key.js'
 import { ghWrite, type GhResult } from '../gh-write/throttle.js'
+import { AGENT_ID_ENV } from '../launch-identity.js'
 import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
@@ -21,6 +24,7 @@ import { expectSpawned } from './helpers/spawn-result.js'
  */
 
 const MAIN = path.join(import.meta.dirname, '..', '..', 'dist', 'gh-shim', 'main.js')
+const AGENT = 'ag0000rl'
 const CLOSED_GATEWAY = 'http://127.0.0.1:1/rpc/shepherd.ghBudget'
 
 const FAKE_GH = `#!${process.execPath}
@@ -96,8 +100,11 @@ beforeEach(() => {
     FAKE_GH_LOG: path.join(dir, 'calls.jsonl'),
     XDG_STATE_HOME: path.join(dir, 'state'),
     AGENT_CHAT_NAME: 'agent-under-test',
+    AGENT_CHAT_HOME: path.join(dir, 'home'),
+    [AGENT_ID_ENV]: AGENT,
     [GH_BUDGET_URL_ENV]: CLOSED_GATEWAY,
   }
+  writeGhWriteKey(AGENT, path.join(dir, 'keys'))
 })
 
 afterEach(() => {
@@ -106,6 +113,18 @@ afterEach(() => {
 
 const gh = (...args: string[]) =>
   expectSpawned(spawnSync('gh', args, { cwd: dir, env, encoding: 'utf8' }), `gh ${args.join(' ')}`)
+
+/** The env gh-write gives gh (CC-1644): a ticket for exactly these args, so the shim runs them. */
+const ticketed = (args: string[]): Record<string, string> => {
+  const key = readGhWriteKey(path.join(dir, 'keys'), AGENT) ?? ''
+  return { ...env, [GH_WRITE_TICKET_ENV]: mintTicket(key, AGENT, args, Date.now()) }
+}
+
+const ghTicketed = (...args: string[]) =>
+  expectSpawned(
+    spawnSync('gh', args, { cwd: dir, env: ticketed(args), encoding: 'utf8' }),
+    `gh ${args.join(' ')}`,
+  )
 
 /** Async, so a gateway fixture served from this process can answer while the shim waits. */
 function ghAsync(...args: string[]): Promise<{ status: number | null; stderr: string }> {
@@ -191,7 +210,7 @@ describe('gh shim shared cooldown', () => {
   it('leaves the GraphQL lane open during a REST cooldown', () => {
     gh(...COMMENTS)
 
-    const result = gh(...GRAPHQL)
+    const result = ghTicketed(...GRAPHQL)
 
     expect(result.status).toBe(0)
     expect(realCalls()).toEqual([COMMENTS, GRAPHQL])
@@ -200,7 +219,7 @@ describe('gh shim shared cooldown', () => {
   it('still sends a write during a cooldown, since gh-write waits rather than failing', () => {
     gh(...COMMENTS)
 
-    const result = gh(...COMMENT_WRITE)
+    const result = ghTicketed(...COMMENT_WRITE)
 
     expect(result.status).toBe(0)
     expect(realCalls()).toEqual([COMMENTS, COMMENT_WRITE])
@@ -218,7 +237,7 @@ describe('gh shim shared cooldown', () => {
 describe('gh-write through the real shim', () => {
   function runGhThroughShim(args: string[]): Promise<GhResult> {
     return new Promise((resolve, reject) => {
-      const child = spawn('gh', args, { cwd: dir, env })
+      const child = spawn('gh', args, { cwd: dir, env: ticketed(args) })
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
       child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))

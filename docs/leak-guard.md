@@ -843,6 +843,52 @@ It reads the list from the passwd home's `~/.config/titan-egress/private-terms`,
 hook. It does not read `HOME`, `XDG_CONFIG_HOME` or `TITAN_EGRESS_TERMS`. No variable or flag turns
 the scan off. With the hook in place, a post is scanned twice.
 
+### The gh shim refuses writes not from gh-write (CC-1644)
+
+Under enforce (see "Staged rollout" below), the `gh` shim on a spawned agent's PATH runs a command only when it is a known read, or carries
+the ticket gh-write mints after its scan passes. Anything else exits 1 with stderr
+`gh-shim: refused (write)` and a pointer to `agent-chat gh-write -- <args>`, and never starts the
+real gh. The shim reads gh's argv after the shell expanded it, so a hidden head (`f() { "$@"; }; f gh …`,
+`set -- gh …; "$@"`, `b=gh; $b …`) is refused like a plain write.
+
+The known reads, each matched at an exact position with no flag before it:
+
+- one of gh's own groups followed by `view`, `list`, `status`, `checks`, `diff` or `watch`;
+- `search …`, `auth status`, `auth token`, `auth git-credential` (git's credential helper);
+- `run download`, `release download`;
+- `gh api` that the guard's strict GET classifier accepts: one REST endpoint, no URL, no `graphql`,
+  only `--paginate`, `--slurp`, `--silent`, `-i`, `--verbose`, `--jq`, `--template`, `-H`,
+  `--hostname`, `--cache` and `--preview`, so no method, field or input flag;
+- `version`, `--version`, `help …`, and a `--help` or `-h` as the last of at most three words.
+
+Everything else needs a ticket, including `gh -R o/r pr view`, `gh pr ls`, `gh api -X GET … -f …`
+and `gh api graphql` reads. Send those through gh-write, which scans `-f`/`-F` fields:
+`agent-chat gh-write -- api graphql -f query=…`.
+
+The ticket is an HMAC, keyed by a per-launch key that run-agent writes under the protected hooks
+root, over the agent id, a 60 s expiry, a nonce and the exact argv gh-write hands gh. That argv names
+gh-write's 0600 copy paths, so a ticket cannot carry other text or another command. The shim script
+bakes the key root on its exec line, so `AGENT_CHAT_GH_KEY_ROOT` set in the environment is ignored.
+The shim takes the ticket out of the environment before the real gh starts, so neither gh nor what
+it runs sees it. `AGENT_CHAT_GH_SHIM_OFF=1` turns off the REST answers, never this check. A refusal
+appends one line to `leak-guard.log` naming the group and verb, or the api method and route
+template, then `caller=<AGENT_CHAT_NAME>` and, where `/proc` has it, `parent=` and the basenames
+of the calling process's first two argv words; free-text words log as `?`. With its build gone,
+the shim script runs a smaller read list as a POSIX `case` and refuses every `gh api` call and
+every write.
+
+**Staged rollout.** The gate ships in log mode: `GATE_MODE` in `src/gh-shim/write-gate.ts` is
+`'log'`, so a call it would refuse still runs, and the line reads `gh-shim: would-refuse (write)`.
+The census of those lines names the callers that must move to gh-write. Switching to `'enforce'`,
+which refuses as described above, is its own one-line pull request. The mode is a source constant
+and no environment variable or file changes it. The build-gone fallback refuses in both modes.
+
+Limit: the key is readable by the agent's uid. An agent that reads it by a spelling the
+`protectedPaths` substring check misses, or that imports agent-chat's own mint function under
+`node -e`, can forge a ticket. This closes writes that skip the scan; it does not stop an agent set
+on forging one. gh run by absolute path, or after a PATH reset, skips the shim; that residual is
+the `ghByPath` rule's.
+
 ### A command git runs for its subcommand (TP-634)
 
 Some git subcommands run a command line they are given. The guard checks that command like a
