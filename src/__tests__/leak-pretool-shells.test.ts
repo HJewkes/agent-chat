@@ -337,10 +337,17 @@ const SET_BY_SCRIPT: [string, string, string][] = [
   ['read S < vars; eval "$S"; $G fetch o', REASONS.hiddenScript, 'sh'],
   ['read S < vars; eval $S; $G fetch o', REASONS.hiddenScript, 'sh'],
   ['cat vars | . /dev/stdin; $G fetch o', REASONS.pipedScript, 'zsh'],
+  // A quoted script read after the unread one runs the word it set.
+  [`read S < vars; eval "$S"; eval '$G fetch o'`, REASONS.hiddenScript, 'sh'],
+  [`read S < vars; eval "$S"; trap '$G fetch o' EXIT`, REASONS.hiddenScript, 'sh'],
+  [`read S < vars; eval "$S"; bash -c '$G fetch o'`, REASONS.hiddenScript, 'sh'],
+  [`read S < vars; eval "$S"; sh -c "\\$G fetch o"`, REASONS.hiddenScript, 'sh'],
+  [`read S < vars; eval "$S"; echo '$G fetch o' | bash`, REASONS.hiddenScript, 'sh'],
+  [`read S < vars; eval "$S"; bash <<< '$G fetch o'`, REASONS.hiddenScript, 'sh'],
 ]
 
 describe.skipIf(SHELLS.length === 0)('an expanded command word after a script the guard cannot read', () => {
-  beforeAll(() => fs.writeFileSync(path.join(WORK, 'vars'), 'G=echo\n'))
+  beforeAll(() => fs.writeFileSync(path.join(WORK, 'vars'), 'export G=echo\n'))
 
   it.each(SET_BY_SCRIPT)('denies %j, and a shell runs the word the script set', (command, reason, runs) => {
     const ran = SHELLS.filter(([shell]) => shell.endsWith(runs)).map(([shell, flags]) =>

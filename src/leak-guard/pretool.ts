@@ -175,8 +175,11 @@ interface Scope {
   targets: readonly (string | undefined)[]
   /** Every command before this one on the line is from a short set that cannot change what `agent-chat` resolves to. */
   deferrable: boolean
-  /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
-  hiddenStarts: { left: number; reachesGit?: boolean }
+  /**
+   * Command starts after an expansion the whole call may still check; nested shells draw on the same
+   * budget. `unreadRan`: a script the guard cannot read was let through earlier in the call (TP-4245).
+   */
+  hiddenStarts: { left: number; reachesGit?: boolean; unreadRan?: boolean }
   /** What a command with no pipe or heredoc of its own reads: the stdin of the shell running the line. */
   stdin: Feed
   /** What this command reads on stdin. */
@@ -2346,7 +2349,7 @@ function checkSourcedStdin(
   const fed = scope.fed
   if (!operands.some(mayReadStdin) || isNothing(fed)) return undefined
   if (fed !== 'unknown') return checkFed(fed.texts, ctx, scope, depth)
-  return scriptMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  return deniesUnread(scriptMayReachGit(scope, ctx), scope) ? REASONS.pipedScript : undefined
 }
 
 /** Each fed text as a script, past the line's budget only a deny when the line may reach git or gh. */
@@ -2357,7 +2360,8 @@ function checkFed(
   depth: number,
 ): string | undefined {
   scope.fedChecks.left -= texts.length
-  if (scope.fedChecks.left < 0) return scriptMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  if (scope.fedChecks.left < 0)
+    return deniesUnread(scriptMayReachGit(scope, ctx), scope) ? REASONS.pipedScript : undefined
   return firstReason(texts, text => checkAt(text, ctx, { ...scope, stdin: NOTHING }, depth + 1))
 }
 
@@ -2467,12 +2471,27 @@ const scriptMayReachGit = (scope: Scope, ctx: GuardContext): boolean =>
   scope.hiddenHead || lineMayReachGit(scope, ctx)
 
 /**
+ * Whether a script the current shell runs unread (eval, trap, mapfile -C, source) is denied, given
+ * whether it may reach git. One let through may set any variable, so it is recorded for the whole
+ * call, and any text checked after it that runs an expanded word denies (checkAt), however deep: an
+ * eval or trap body, a `sh -c` string, a fed script, a parallel input.
+ */
+function deniesUnread(reaches: boolean, scope: Scope): boolean {
+  if (!reaches) markUnreadRan(scope)
+  return reaches
+}
+
+const markUnreadRan = (scope: Scope): void => {
+  scope.hiddenStarts.unreadRan = true
+}
+
+/**
  * Whether the command may run a word the shell expands: its command word past its wrappers is an
  * expansion, unwrap refuses it, or it is not one that never runs its arguments and any word other
  * than an assignment is one. A program the guard does not know (`watch`, `npx`, `sh -c "$G …"`) may
  * run any of them as a command, as a literal git there would set namesGit, and a wrapper may have
- * dropped one as an option (`xargs $G fetch`). The words of eval, trap and mapfile are the script
- * checkShellScript gates, so they do not count here.
+ * dropped one as an option (`xargs $G fetch`), or one of its words may be a script that runs one.
+ * The words of eval, trap and mapfile are the script checkShellScript reads, so they do not count here.
  */
 function runsHiddenHead(cmd: SimpleCommand): boolean {
   const head = commandHead(cmd)
@@ -2480,8 +2499,17 @@ function runsHiddenHead(cmd: SimpleCommand): boolean {
   const word = head.words[0] ?? ''
   if (word.includes(LIVE)) return true
   if (runsNoArgument(path.basename(word))) return false
-  return cmd.marked.some(marked => marked.includes(LIVE) && !ASSIGNMENT.test(marked))
+  return cmd.marked.some(
+    (marked, i) => !ASSIGNMENT.test(marked) && (marked.includes(LIVE) || (i > 0 && scriptRunsHidden(marked))),
+  )
 }
+
+/**
+ * A quoted word such a program may run as a script (`watch '$G push o'`), read with the shell's own
+ * parser. Only words after the first are read again, and a word that holds several is longer than
+ * each of them, so the reading ends.
+ */
+const scriptRunsHidden = (marked: string): boolean => parseShell(unmark(marked)).some(runsHiddenHead)
 
 const runsNoArgument = (name: string): boolean =>
   PLAIN_COMMANDS.has(name) ||
@@ -2599,11 +2627,16 @@ function checkShellScript(
   const fedUnread = scope.stdin === 'unknown' && lineMayReachGit(scope, ctx)
   const gated =
     name === 'eval' ? scope.namesGit || scope.hiddenHead || fedUnread : scriptMayReachGit(scope, ctx)
-  if (script.kind === 'unreadable' || script.unread) {
-    if (gated) return REASONS.hiddenScript
-    if (script.kind === 'unreadable') return undefined
-  }
-  return checkAt(script.text, ctx, { ...scope, deferrable: false }, depth + 1)
+  if (script.kind === 'script' && !script.unread)
+    return checkAt(script.text, ctx, { ...scope, deferrable: false }, depth + 1)
+  if (gated) return REASONS.hiddenScript
+  // The words it reads as written are checked before the script counts as run unread.
+  const reason =
+    script.kind === 'script'
+      ? checkAt(script.text, ctx, { ...scope, deferrable: false }, depth + 1)
+      : undefined
+  markUnreadRan(scope)
+  return reason
 }
 
 /** The command `cmd` runs past its wrappers, or undefined where unwrap refuses it (checkSimple denies those). */
@@ -3504,7 +3537,11 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
   const cmds = parseShell(command)
-  if (!at.hiddenHead && cmds.some(runsHiddenHead)) at = { ...at, hiddenHead: true }
+  if (cmds.some(runsHiddenHead)) {
+    // The unread script ran first and may have set the word to git, whatever script this text is.
+    if (at.hiddenStarts.unreadRan === true) return REASONS.hiddenScript
+    at = { ...at, hiddenHead: true }
+  }
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   const line = lineFeeds(cmds)

@@ -1029,7 +1029,36 @@ describe('a gh command the command line hides', () => {
     expect(checkCommand(`eval "$(cat f)"; ${command}`, ctx())).toBe(REASONS.hiddenScript)
   })
 
+  // The unread script runs first, so an expanded word in any script read after it may be git.
   it.each([
+    `eval '$G push o'`,
+    `eval "\\$G fetch o"`,
+    `builtin eval '$G fetch o'`,
+    `command eval '$G fetch o'`,
+    `eval 'eval "\\$G push o"'`,
+    `trap '$G push o' EXIT`,
+    `trap -- '$G push o' EXIT`,
+    `bash -c '$G fetch o'`,
+    `sh -c "\\$G fetch o"`,
+    `echo '$G push o' | bash`,
+    `bash <<< '$G push o'`,
+    `watch '$G push o'`,
+    `parallel ::: '$G push o'`,
+  ])('denies eval of unread text before a script that runs an expanded word: %s', command => {
+    expect(checkCommand(`eval "$(cat f)"; ${command}`, ctx())).toBe(REASONS.hiddenScript)
+  })
+
+  it.each([`eval '$G push o'`, `trap '$G push o' EXIT`])(
+    'denies source of unread text before %s',
+    command => {
+      expect(checkCommand(`cat f | . /dev/stdin; ${command}`, ctx())).toBe(REASONS.pipedScript)
+    },
+  )
+
+  it.each([
+    `eval "$(cat f)"; eval 'npm test'`,
+    `bash -c 'eval "$(ssh-agent -s)"; npm test'`,
+    'parallel $X ::: a',
     'eval "$(ssh-agent -s)"; echo $X',
     'eval "$(ssh-agent -s)"; cd $D && npm test',
     'eval "$(ssh-agent -s)"; export K=$D/key; read -r L < "$K"; npm test',
