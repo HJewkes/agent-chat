@@ -2036,24 +2036,48 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   })
 
   it.each([
+    "git submodule foreach '$sha1x'",
+    "git submodule foreach '${sha1}x'",
+    "git submodule foreach '$sha12 push'",
     "git submodule foreach '$names'",
-    "git submodule foreach '$sm_paths'",
-    "git submodule foreach '$name2 push'",
     "git submodule foreach '${name}x'",
-    "git submodule foreach '$toplevelx'",
   ])('denies a near-miss of a variable foreach sets (TP-2496): %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
   })
 
   it.each([
     "git submodule foreach 'echo $name'",
-    "git submodule foreach 'echo $sm_path $sha1 $toplevel $displaypath'",
-    'git submodule foreach \'echo "${name}: $sm_path"\'',
     "git submodule foreach '$name'",
     "git submodule foreach '$sm_path push'",
     "git submodule foreach 'git push $sm_path'",
-  ])('allows the variables foreach sets (TP-2496): %s', command => {
-    expect(checkCommand(command, ctx())).toBeUndefined()
+    "git submodule foreach 'echo $toplevel $displaypath'",
+    'git submodule foreach \'echo "${name}: $sm_path"\'',
+  ])('denies a foreach variable read from files the agent writes (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+  })
+
+  it.each([
+    "git submodule foreach 'sha1=git; $sha1 push --no-verify'",
+    "git submodule foreach 'read sha1; $sha1 push'",
+    "git submodule foreach 'for sha1 in git; do $sha1 push; done'",
+  ])('denies a foreach variable the script sets itself (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+  })
+
+  it.each(["git submodule foreach 'echo $sha1'", "git submodule foreach 'git log -1 ${sha1}'"])(
+    'allows the object id foreach sets (TP-2496): %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
+
+  it.each([
+    "git filter-branch --msg-filter 'cat; echo $GIT_COMMIT' HEAD",
+    "git filter-branch --env-filter 'echo $GIT_AUTHOR_NAME' HEAD",
+    "git filter-branch --msg-filter '$GIT_AUTHOR_NAME; cat' HEAD",
+    "git filter-branch --env-filter 'GIT_COMMIT=git' --tree-filter '$GIT_COMMIT push --no-verify' HEAD",
+  ])('denies a filter-branch variable that holds commit data (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
   })
 
   it.each([
@@ -2061,8 +2085,7 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git rebase -x 'npm test && npm run lint' main",
     "git submodule foreach 'git status'",
     "git bisect run sh -c 'npm test'",
-    "git filter-branch --msg-filter 'cat; echo $GIT_COMMIT' HEAD",
-    "git filter-branch --env-filter 'echo $GIT_AUTHOR_NAME' HEAD",
+    "git filter-branch --msg-filter 'cat' HEAD",
   ])('allows an ordinary quoted command (TP-2496): %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })

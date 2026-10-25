@@ -25,23 +25,15 @@ export interface ScriptOptions {
   shortValue?: string
   /** The value must be attached, as `-O<pager>` and `--open-files-in-pager=<pager>` must. */
   attached?: boolean
-  /** The variables git sets for the script. */
-  vars?: readonly string[]
 }
 
 const FILTERS = ['env', 'tree', 'index', 'parent', 'msg', 'commit', 'tag-name'].map(f => `--${f}-filter`)
-
-/** What filter-branch exports for its filters: the commit and its author and committer. */
-const FILTER_VARS = [
-  'GIT_COMMIT',
-  ...['AUTHOR', 'COMMITTER'].flatMap(who => ['NAME', 'EMAIL', 'DATE'].map(field => `GIT_${who}_${field}`)),
-]
 
 const OPTION_SCRIPTS: ReadonlyMap<string, ScriptOptions> = new Map(
   Object.entries({
     rebase: { long: ['--exec'], short: 'x', shortValue: 'sXCS' },
     difftool: { long: ['--extcmd'], short: 'x', shortValue: 't' },
-    'filter-branch': { long: ['--setup', ...FILTERS], vars: FILTER_VARS },
+    'filter-branch': { long: ['--setup', ...FILTERS] },
     grep: { long: ['--open-files-in-pager'], short: 'O', shortValue: 'efmABC', attached: true },
     push: { long: ['--receive-pack', '--exec'], shortValue: 'o' },
     fetch: { long: ['--upload-pack'], shortValue: 'jo' },
@@ -89,8 +81,12 @@ export function optionSpans(words: readonly string[], at: number, opts: ScriptOp
 /** `git clone -c`/`--config <key>=<value>`, beside clone's other short options that take a value. */
 export const CLONE_CONFIG: ScriptOptions = { long: ['--config'], short: 'c', shortValue: 'obuj' }
 
-/** The variables `git submodule foreach` sets for its command. */
-const FOREACH_VARS = ['name', 'sm_path', 'displaypath', 'sha1', 'toplevel']
+/**
+ * The variables `git submodule foreach` sets whose value git fixes: `$sha1` is always an object id.
+ * `$name`, `$sm_path`, `$displaypath` and `$toplevel` come from `.gitmodules` and paths the agent
+ * writes, so they are as unreadable as any other variable.
+ */
+const FOREACH_VARS = ['sha1']
 
 /** The command after `foreach` or `run`, past the options git reads before it. */
 function trailingSpan(words: readonly string[], verbAt: number, vars: readonly string[]): GitScript[] {
@@ -113,18 +109,24 @@ export function gitScripts(words: readonly string[], at: number): GitScript[] {
   if (sub === 'bisect') return words[at + 1] === 'run' ? trailingSpan(words, at + 1, []) : []
   const opts = sub === undefined ? undefined : OPTION_SCRIPTS.get(sub)
   if (opts === undefined) return []
-  return optionSpans(words, at, opts).map(span => ({ ...span, vars: opts.vars ?? [] }))
+  return optionSpans(words, at, opts).map(span => ({ ...span, vars: [] }))
 }
 
 /** A `$` expansion, with the name of a plain `$name` or `${name}`, or a backquote. */
 const EXPANSION = /\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))?|`/g
 
+/** Whether the script names `name` other than to expand it, as `sha1=x`, `read sha1` or `for sha1 in` do. */
+const rebinds = (script: string, name: string): boolean =>
+  new RegExp(`(?<![\\w$\\{])${name}(?!\\w)`).test(script)
+
 /**
  * Whether the script expands anything but the variables git sets for it. The guard cannot know
  * what the shell git starts finds there, so a program or `--no-verify` could hide in it. A
- * variable git sets counts only when no name character follows it: `${name}x` is a near miss.
+ * variable git sets counts only when no name character follows it (`${sha1}x` is a near miss)
+ * and the script never sets it itself.
  */
 export function expandsUnknown(script: string, vars: readonly string[]): boolean {
+  if (vars.some(name => rebinds(script, name))) return true
   for (const match of script.matchAll(EXPANSION)) {
     if (match[0] === '$' && match.index + 1 === script.length) continue
     const name = match[1] ?? match[2]
