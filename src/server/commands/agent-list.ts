@@ -21,6 +21,35 @@ const resumeHint = (agent: AgentIdentity): string =>
 const stateSegment = (agent: AgentIdentity, registered: ReadonlySet<string>): string =>
   agent.state === 'live' && !registered.has(agent.name) ? 'live, attached-unregistered' : agent.state
 
+/**
+ * An adopted identity has no profile and no surface we chose, and its name is
+ * self-reported — so it says what it is rather than rendering two empty fields
+ * and reading like an agent someone spawned.
+ */
+const kindSegment = (agent: AgentIdentity, withSurface: boolean): string =>
+  agent.origin === 'adopted'
+    ? 'human-started session'
+    : withSurface
+      ? `${agent.profile}, ${agent.surface}`
+      : agent.profile
+
+function detailRow(a: AgentIdentity, state: string, budget: string): string {
+  return (
+    `- ${a.name} [${state}, ${kindSegment(a, true)}${budget}]` +
+    ` spawned by ${a.spawnedBy}${a.launchedBy ? ` (${a.launchedBy})` : ''}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}` +
+    // CC-1059: the machine it launched on, so a row on another host reads as such.
+    `${a.host ? `, host: ${a.host}` : ''}\n    ${a.cwd}` +
+    // A headless agent's output is discarded, so this is the only way to read
+    // what it actually did without interrupting it for a report.
+    `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`
+  )
+}
+
+/** CC-1597: one line per agent, so 150 rows fit a coordinator's tool result; a retired row keeps its session. */
+const compactRow = (a: AgentIdentity, state: string, budget: string): string =>
+  `- ${a.name} [${state}, ${kindSegment(a, false)}${budget}]` +
+  (a.state === 'retired' && a.sessionId !== '' ? ` session: ${a.sessionId}` : '')
+
 const DEFAULT_LIMIT = 50
 /** A page past this overflows a coordinator's tool-result limit again. */
 const MAX_LIMIT = 500
@@ -60,9 +89,10 @@ export const agentList = defineTool({
     limit: z.number().describe(`Max rows (default ${DEFAULT_LIMIT}, cap ${MAX_LIMIT}).`).optional(),
     mine: z.boolean().describe('Only agents you spawned.').optional(),
     prefix: z.string().describe('Only names starting with this.').optional(),
+    verbose: z.boolean().describe('Add spawner, account, cwd and transcript.').optional(),
   }),
   result: z.string(),
-  async run({ include_finished, include_retired, limit: asked = DEFAULT_LIMIT, mine, prefix }, ctx) {
+  async run({ include_finished, include_retired, limit: asked = DEFAULT_LIMIT, mine, prefix, verbose }, ctx) {
     const limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(asked)))
     const { agents, hidden, slots } = await rosterPage(ctx, {
       ...(mine === true ? { spawner: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
@@ -94,26 +124,16 @@ export const agentList = defineTool({
     const account = accountReader()
     const accounts = [...new Set(live.map(a => account(a.configDir)))]
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
+    const render = verbose === true ? detailRow : compactRow
     const rows = agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
       // rather than adding a whole new line per row. Absent entirely for a
       // non-live row, rather than "no budget reading" — there, absence is the
       // default, not information.
       const read = budgetByName.get(a.name)
-      const budgetPart = read === undefined ? '' : `, ${budgetSegment(read)}`
-      return (
-        // An adopted identity has no profile and no surface we chose, and its
-        // name is self-reported — so it says what it is rather than rendering
-        // two empty fields and reading like an agent someone spawned.
-        `- ${a.name} [${stateSegment(a, registered)}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
-        ` spawned by ${a.spawnedBy}${a.launchedBy ? ` (${a.launchedBy})` : ''}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}` +
-        // CC-1059: the machine it launched on, so a row on another host reads as such.
-        `${a.host ? `, host: ${a.host}` : ''}\n    ${a.cwd}` +
-        // A headless agent's output is discarded, so this is the only way to read
-        // what it actually did without interrupting it for a report.
-        `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`
-      )
+      return render(a, stateSegment(a, registered), read === undefined ? '' : `, ${budgetSegment(read)}`)
     })
-    return `Durable agents:\n${accountUsageLines(accounts, slots)}\n${rows.join('\n')}\n${footer}`
+    const hint = verbose === true ? '' : ' (verbose adds spawner, account, cwd and transcript)'
+    return `Durable agents${hint}:\n${accountUsageLines(accounts, slots)}\n${rows.join('\n')}\n${footer}`
   },
 })

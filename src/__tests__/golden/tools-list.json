@@ -757,13 +757,17 @@
     },
     {
       "name": "agent_profiles",
-      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner. Pass name to read one profile; an unknown name errors with close matches.",
+      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the role, model, surface and isolation each grants. Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner. Pass name to read one profile with its tools and denies; an unknown name errors with close matches.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "name": {
             "description": "Return only this profile.",
             "type": "string"
+          },
+          "verbose": {
+            "description": "Every profile with its tools and denies.",
+            "type": "boolean"
           }
         }
       }
@@ -793,6 +797,10 @@
           "prefix": {
             "type": "string",
             "description": "Only names starting with this."
+          },
+          "verbose": {
+            "type": "boolean",
+            "description": "Add spawner, account, cwd and transcript."
           }
         }
       }
