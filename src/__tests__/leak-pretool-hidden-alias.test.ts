@@ -51,6 +51,32 @@ describe('an untied hidden command word whose directory or env is unknown (CC-13
     deny('GIT_DIR=$G $X p', REASONS.noVerify)
   })
 
+  it.each([
+    'D=$(mktemp -d); $X -C "$D" p',
+    '$X -C "$D" p',
+    '$X --git-dir="$(mktemp)" p',
+    '$X --git-dir "$G" p',
+    '$X -c "$C" p',
+    '$X -c"$C" p',
+    '$X --config-env="$E" p',
+    '$X --work-tree="$W" p',
+    'cd /work && $X -C "$D" p',
+    'D=$(mktemp -d); env -C /x $X -C "$D" p',
+  ])('reads the alias where the hook runs when a git option value is unknown: %s', command => {
+    deny(command, REASONS.noVerify)
+  })
+
+  it('reads the alias in a known -C directory beside an unknown option value', () => {
+    expect(checkCommand('$X --work-tree="$W" -C /x p', ctx)).toBeUndefined()
+  })
+
+  it.each(['D=$(mktemp -d); $X -C "$D" q', 'D=$(mktemp -d); $X -C "$D" status', '$X -c "$C" q'])(
+    'allows a git option value it cannot read when the hook directory has no alias to follow: %s',
+    command => {
+      expect(checkCommand(command, ctx)).toBeUndefined()
+    },
+  )
+
   it.each(['find . -execdir $X p \\;', 'find . -exec true \\; -execdir "$X" p \\;'])(
     'reads the alias where the hook runs for a find -execdir command: %s',
     command => {
