@@ -4,15 +4,16 @@ import { resolveGhWriteGapMs } from '../config.js'
 import { defaultTermsFile, prepareGhWrite, scanDeps, type ScanDeps } from '../gh-write/scan.js'
 import { ghWrite, type GhResult, type ThrottleDeps } from '../gh-write/throttle.js'
 import { currentCooldowns, writeLane } from '../gh-shim/rate-limit.js'
+import { ghWriteTicketEnv } from '../gh-shim/write-key.js'
 import { ghWriteLockPath, ghWriteStampPath } from '../paths.js'
 
 /**
  * gh never gets stdin: a retry would replay an already-drained pipe. `--body-file -`,
  * `--input -` and `-F key=@-` are read once by the scan and reach gh as a file copy.
  */
-export function runGh(args: string[]): Promise<GhResult> {
+export function runGh(args: string[], env: Record<string, string> = {}): Promise<GhResult> {
   return new Promise(resolve => {
-    const child = spawn('gh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('gh', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
@@ -41,6 +42,15 @@ export const stateCooldownEnd =
   async (args: string[]): Promise<number> =>
     (await currentCooldowns(env, now()))[writeLane(args)]?.until ?? 0
 
+/**
+ * CC-1644: runGhWrite only reaches gh after its scan passed, so each start (a throttle retry
+ * included) carries a fresh ticket for exactly the argv gh is given.
+ */
+export const ticketedRunGh =
+  (env: NodeJS.ProcessEnv, now: () => number, keyRoot?: string) =>
+  (args: string[]): Promise<GhResult> =>
+    runGh(args, ghWriteTicketEnv(env, args, now(), keyRoot))
+
 /** Scans the text gh would post and refuses with exit 1 before gh starts on a finding. */
 export async function runGhWrite(args: string[], scan: ScanDeps, throttle: ThrottleDeps): Promise<GhResult> {
   const prepared = await prepareGhWrite(args, scan)
@@ -57,7 +67,7 @@ export async function ghWriteCommand(args: string[]): Promise<void> {
   const result = await runGhWrite(args, scanDeps(defaultTermsFile()), {
     now: Date.now,
     sleep: ms => sleep(ms),
-    runGh,
+    runGh: ticketedRunGh(process.env, Date.now),
     coreRemaining: stateCoreRemaining(process.env, Date.now),
     cooldownEnd: stateCooldownEnd(process.env, Date.now),
     notice: line => process.stderr.write(`${line}\n`),

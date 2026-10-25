@@ -120,6 +120,9 @@ export const denylistPath = (): string => path.join(home(), 'private-denylist.js
 /** The `core.hooksPath` every spawned agent's git runs with; rewritten at each spawn (CC-268). */
 export const gitHooksDir = (): string => path.join(home(), 'git-hooks')
 
+/** CC-1644: one 0600 key per launch, under the protected hooks root, that gh-write signs its gh calls with. */
+export const ghWriteKeysDir = (): string => path.join(gitHooksDir(), 'gh-write-keys')
+
 /** Holds the `gh` every spawned agent finds first on its PATH (CC-395). */
 export const ghShimDir = (): string => path.join(home(), 'gh-shim')
 

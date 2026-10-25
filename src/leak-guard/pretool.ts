@@ -21,6 +21,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
+import { ghWriteKeysDir } from '../paths.js'
 import {
   configPrograms,
   configWriteScript,
@@ -3674,6 +3675,7 @@ export function guardContext(
       terms,
       'titan-egress/private-terms',
       '.agent-chat/git-hooks',
+      ghWriteKeysDir(),
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
       ...ownerOnlyPaths(env),

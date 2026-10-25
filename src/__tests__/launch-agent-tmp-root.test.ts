@@ -79,7 +79,11 @@ describe('a launch TMPDIR root (CC-1184, CC-1264)', () => {
 
   it('removes the TMPDIR at exit from the root it was made under', () => {
     const removeTmp = vi.fn()
-    const hook = launchExitHook('agent-1', 'seat-a-impl', DISK_ROOT, { reap: vi.fn(), removeTmp })
+    const hook = launchExitHook('agent-1', 'seat-a-impl', DISK_ROOT, {
+      reap: vi.fn(),
+      removeTmp,
+      removeKey: vi.fn(),
+    })
 
     hook()
 
