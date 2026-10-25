@@ -4777,6 +4777,8 @@ export class Supervisor implements TeleportHost {
         cwd: allocation.cwd,
         session_id: sessionId,
         allowed_tools: input.profile.allowedTools.join(','),
+        // CC-1612: without it toolSetOf finds no deny list and CC-40 waves the successor through.
+        disallowed_tools: (input.profile.disallowedTools ?? []).join(','),
         perm_mode: permModeFor(input.surface),
         surface_lifetime: lifetimeOf(input.profile),
         // Carried across rather than re-resolved: a descendant spends the same
