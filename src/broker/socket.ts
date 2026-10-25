@@ -67,6 +67,7 @@ import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
 import { noticeWakeCapped } from './codex-wake-cap.js'
 import { DeclaredCallers, declaredIdOf, resolveDeclared, type Caller } from './declared-callers.js'
+import { classOf } from './frame-classes.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -203,7 +204,7 @@ const replyQueuedForSeat = (conn: Conn, to: string, msgId: string): void => {
  *
  * Named explicitly rather than derived from "is this connection registered",
  * because an UNREGISTERED connection is the normal shape of the human at the CLI
- * — `isHuman` is literally defined as having no name. A blanket check would fire
+ * — `admits` takes the human to be a connection with no name. A blanket check would fire
  * on every ordinary CLI command. Each frame here already refuses when there is no
  * name behind it; the list only says which refusals mean "you should have had a
  * registration", as opposed to "the human may not do this".
@@ -429,7 +430,7 @@ export class SocketServer {
   private readonly hosts = new HostDirectory<Conn>()
   /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
   private readonly remoteSpawners = new Map<string, Conn>()
-  /** CC-1138: the agent id each connection's `hello` declared; recorded only, nothing gates on it yet. */
+  /** CC-1138: the agent id each connection's `hello` declared; `admits` gates Class 1 and 3 frames on it. */
   private readonly declared = new DeclaredCallers<Conn>()
   /** CC-1454: keyed sends and resumes by requester and nonce. Memory only: a restart forgets them. */
   private readonly dedupe = new RequestDedupe<KeyedJoiner, KeyedReply>()
@@ -810,7 +811,7 @@ export class SocketServer {
 
   /**
    * CC-892: the human moving a live session to another account. Human-only on the same
-   * `isHuman` gate as `teleport_abort`, and the subject is the named session's own registration,
+   * `admits` gate as `teleport_abort`, and the subject is the named session's own registration,
    * read exactly as `teleport` reads its requester's. Decision 381: the target check in
    * `Teleport.begin` is the guard, not a deny rule.
    */
@@ -821,9 +822,10 @@ export class SocketServer {
     const name = typeof msg.name === 'string' ? msg.name : 'unnamed'
     const turnedAway = (stage: RefusalStage, reason: string): void =>
       reply(conn, { t: 'teleport_result', ...refused({ name }, stage, reason) })
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, msg.t)) {
       this.refuseToSession(conn, 'move a session to another account')
-      return turnedAway('account', 'moving a session to another account is the human’s call')
+      const hint = this.refusalHint(conn, msg.t)
+      return turnedAway('account', `moving a session to another account is the human’s call${hint}`)
     }
     if (typeof msg.to !== 'string' || (msg.force !== undefined && typeof msg.force !== 'boolean'))
       return turnedAway('preflight', 'account_move needs a "to" account and a boolean "force"')
@@ -864,15 +866,50 @@ export class SocketServer {
    * adversarial co-resident process. See `profiles.ts` for the other half:
    * denying the builtin profiles' own `Bash` the ability to invoke these CLI
    * verbs at all, which is what actually stops the common case.
+   *
+   * CC-1138 narrows "no registration" to "no registration and no `hello` id": a CLI run
+   * from an agent's own process tree declares `AGENT_CHAT_AGENT_ID` and is not the human.
+   * A Class 1 frame is refused from it outright. A Class 3 frame is accepted from it only
+   * when `subject`, the agent the frame speaks for, is the declared agent. The hello is
+   * self-declared, so `env -u` still reads as the human; the bar is the same as above.
    */
-  private isHuman(conn: Conn): boolean {
-    return this.core.registry.nameOf(conn) === undefined
+  private admits(conn: Conn, t: ClientMessage['t'], subject?: string): boolean {
+    const caller = this.callerOf(conn)
+    if (caller.kind === 'human') return true
+    if (caller.kind === 'session' || classOf(t) !== 3) return false
+    return 'name' in caller && caller.name === subject
   }
 
-  /** Record that a session reached for an action only the human may take. */
+  /** Record that a session or a declared agent reached for an action only the human may take. */
   private refuseToSession(conn: Conn, action: string): void {
-    const name = this.core.registry.nameOf(conn) ?? '?'
-    this.core.append({ kind: 'verdict_refused', actor: name, body: `a session tried to ${action}` })
+    const caller = this.callerOf(conn)
+    if (caller.kind !== 'declared') {
+      const name = this.core.registry.nameOf(conn) ?? '?'
+      this.core.append({ kind: 'verdict_refused', actor: name, body: `a session tried to ${action}` })
+      return
+    }
+    this.core.append({
+      kind: 'verdict_refused',
+      actor: 'name' in caller ? caller.name : '?',
+      body: `an agent's process tried to ${action}`,
+      meta: { declared_agent_id: caller.agentId },
+    })
+  }
+
+  /** CC-1138: the sentence a refusal's reason gains for a declared agent; nothing for a session. */
+  private refusalHint(conn: Conn, t: ClientMessage['t']): string {
+    if (this.callerOf(conn).kind !== 'declared') return ''
+    return classOf(t) === 3
+      ? '. This connection declared an agent id, so it may send this frame only for that agent'
+      : '. This connection declared an agent id (AGENT_CHAT_AGENT_ID), so it is not the human: ' +
+          'run the verb from a plain shell, not an agent’s pane'
+  }
+
+  /** The session's registered name, or a known declared agent's; undefined for the human or an unknown id. */
+  private nameOfCaller(conn: Conn): string | undefined {
+    const caller = this.callerOf(conn)
+    if (caller.kind === 'session') return this.core.registry.nameOf(conn)
+    return caller.kind === 'declared' && 'name' in caller ? caller.name : undefined
   }
 
   /** CC-1138: a registered connection is its session; otherwise the `hello`, if any, decides. */
@@ -883,7 +920,7 @@ export class SocketServer {
     return { kind: 'declared', ...resolveDeclared(agentId, id => this.core.agents.get(id)) }
   }
 
-  /** CC-1138: recorded and logged only; the caller gate that reads it is a later slice. */
+  /** CC-1138: the declaration `callerOf` reads, logged once per connection. */
   private handleHello(conn: Conn, rawId: unknown): void {
     const agentId = declaredIdOf(rawId)
     if (agentId === undefined || !this.declared.declare(conn, agentId)) return
@@ -903,16 +940,18 @@ export class SocketServer {
    * A REGISTERED connection is a session, and no session may cancel a shutdown
    * (its own or anyone's): a descendant suppressing its predecessor's veto would
    * make the human's 30 seconds a formality. What is left is the human at the
-   * CLI. No MCP tool exposes this frame. See `isHuman` for what this check does
+   * CLI. No MCP tool exposes this frame. See `admits` for what this check does
    * and does not guarantee.
    */
   private handleTeleportAbort(conn: Conn, name: string): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, 'teleport_abort')) {
       this.refuseToSession(conn, 'cancel a teleport countdown')
       return reply(conn, {
         t: 'teleport_result',
         ok: false,
-        reason: 'aborting a teleport is the human’s call; a session cannot cancel a countdown',
+        reason:
+          'aborting a teleport is the human’s call; a session cannot cancel a countdown' +
+          this.refusalHint(conn, 'teleport_abort'),
       })
     }
     const result = this.supervisor.abortTeleport(name)
@@ -924,15 +963,18 @@ export class SocketServer {
     })
   }
 
-  /** CC-1545: from the supervisor's CLI socket only, so no session can put words in another's spawner notice. */
+  /**
+   * CC-1545: from the supervisor's CLI socket only, so no session can put words in another's spawner
+   * notice. CC-1138: a declared agent may report only the cap of the session its `hostPid` names.
+   */
   private handleCodexWakeCapped(conn: Conn, msg: Extract<ClientMessage, { t: 'codex_wake_capped' }>): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, msg.t, this.core.registry.nameOnHost(msg.hostPid, msg.host))) {
       this.refuseToSession(conn, 'report a Codex wake cap')
       return reply(conn, {
         t: 'send_result',
         ok: false,
         recipients: [],
-        reason: 'a wake cap is reported by agent-chat codex run, not by a session',
+        reason: `a wake cap is reported by agent-chat codex run, not by a session${this.refusalHint(conn, msg.t)}`,
       })
     }
     reply(conn, noticeWakeCapped(this.core, msg))
@@ -1427,15 +1469,17 @@ export class SocketServer {
    * session's question and have it delivered as `from: HUMAN` — the single
    * cheapest forgery found, since it needs nothing but a frame on a connection
    * the caller already legitimately holds. No MCP tool exposes `answer`, so a
-   * model reaches this only by talking to the socket directly; see `isHuman`.
+   * model reaches this only by talking to the socket directly; see `admits`.
    */
   private handleAnswer(conn: Conn, msgId: string, text: string, channel: unknown = 'cli'): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, 'answer')) {
       this.refuseToSession(conn, 'answer a queue item')
       return reply(conn, {
         t: 'answer_result',
         ok: false,
-        reason: 'answering is the human’s call; a session cannot answer on the human’s behalf',
+        reason:
+          'answering is the human’s call; a session cannot answer on the human’s behalf' +
+          this.refusalHint(conn, 'answer'),
       })
     }
     if (!isAnswerChannel(channel)) {
@@ -1490,17 +1534,20 @@ export class SocketServer {
    * AUTHOR may withdraw its own request — declining someone else's is still
    * human-only. CC-22's adversarial review found neither check present: any
    * registered session could silently dismiss any other session's pending item,
-   * including one still waiting on human review.
+   * including one still waiting on human review. CC-1138: a declared agent is its
+   * declared name here, so it too may withdraw its own item and nobody else's.
    */
   private handleDismiss(conn: Conn, msgId: string): void {
     const author = this.core.events.authorOf(msgId)
-    const caller = this.core.registry.nameOf(conn)
-    if (!this.isHuman(conn) && caller !== author) {
+    const caller = this.nameOfCaller(conn)
+    if (!this.admits(conn, 'dismiss') && (caller === undefined || caller !== author)) {
       this.refuseToSession(conn, 'dismiss another session’s queue item')
       return reply(conn, {
         t: 'answer_result',
         ok: false,
-        reason: 'dismissing someone else’s item is the human’s call; a session may withdraw its own',
+        reason:
+          'dismissing someone else’s item is the human’s call; a session may withdraw its own' +
+          this.refusalHint(conn, 'dismiss'),
       })
     }
     const result = this.core.dismiss(msgId)
@@ -1515,16 +1562,18 @@ export class SocketServer {
   /**
    * The human's approval, and the second half of what makes the marker
    * unforgeable AGAINST A SESSION USING ITS OWN CONNECTION — the first being
-   * that no message shape carries the field itself. See `isHuman` for what this
+   * that no message shape carries the field itself. See `admits` for what this
    * check does and does not guarantee against a more determined bypass.
    */
   private handleEndorseApprove(conn: Conn, msgId: string, approval: EndorseApproval): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, 'endorse_approve')) {
       this.refuseToSession(conn, 'endorse a message')
       return reply(conn, {
         t: 'answer_result',
         ok: false,
-        reason: 'endorsing is the human’s call; a session cannot endorse its own message or a peer’s',
+        reason:
+          'endorsing is the human’s call; a session cannot endorse its own message or a peer’s' +
+          this.refusalHint(conn, 'endorse_approve'),
       })
     }
     const result = this.core.endorse(msgId, approval)
@@ -1541,8 +1590,8 @@ export class SocketServer {
    * The guard is the load-bearing part of this verb, not an addition to it: an
    * agent that could reach this frame could grant itself or a peer any tool
    * call the human never approved, which is docs/ideas.md R1 and is declined.
-   * Same `isHuman` gate as `endorse_approve` and `teleport_abort`, with the
-   * same limits — see `isHuman`.
+   * Same `admits` gate as `endorse_approve` and `teleport_abort`, with the
+   * same limits — see `admits`.
    *
    * The verdict goes to the prompting session ALONE, because `request_id` is
    * meaningful only in the process whose dialog is open. Nothing is retried and
@@ -1550,14 +1599,15 @@ export class SocketServer {
    * answer wins, so a late verdict is discarded there rather than here.
    */
   private handleApprovePermission(conn: Conn, msgId: string, behavior: PermissionBehavior): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, 'approve_permission')) {
       this.refuseToSession(conn, 'answer a permission prompt')
       return reply(conn, {
         t: 'answer_result',
         ok: false,
         reason:
           'answering a permission prompt is the human’s call; no session may grant a tool call, ' +
-          'its own or a peer’s',
+          'its own or a peer’s' +
+          this.refusalHint(conn, 'approve_permission'),
       })
     }
     const { core } = this
@@ -1621,15 +1671,17 @@ export class SocketServer {
    * Only from an UNREGISTERED connection. The hook never registers, so it holds no
    * name to send or spawn with; a registered session is refused because it would be
    * using its own connection to file a prompt under whatever `session` it typed.
+   * CC-1138: a hook that declared an agent id files only under that agent's name.
    */
   private handlePermissionHook(conn: Conn, msg: Extract<ClientMessage, { t: 'permission_hook' }>): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, msg.t, msg.session)) {
       this.refuseToSession(conn, 'raise a permission prompt through the hook frame')
       return reply(conn, {
         t: 'permission_hook_result',
         ok: false,
         reason:
-          'permission_hook comes from a PermissionRequest hook, which never registers; a session cannot send it',
+          'permission_hook comes from a PermissionRequest hook, which never registers; a session cannot send it' +
+          this.refusalHint(conn, msg.t),
       })
     }
     const { core } = this
@@ -1659,12 +1711,14 @@ export class SocketServer {
     conn: Conn,
     msg: Extract<ClientMessage, { t: 'permission_self_granted' }>,
   ): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, msg.t, msg.session)) {
       this.refuseToSession(conn, 'record a self-granted permission')
       return reply(conn, {
         t: 'permission_hook_result',
         ok: false,
-        reason: 'permission_self_granted comes from a PermissionRequest hook; a session cannot send it',
+        reason:
+          'permission_self_granted comes from a PermissionRequest hook; a session cannot send it' +
+          this.refusalHint(conn, msg.t),
       })
     }
     const refusal = selfGrantFrameRefusal(msg as unknown as Record<string, unknown>)
@@ -1729,12 +1783,14 @@ export class SocketServer {
    * with `ask`, under its own name and budget. The label is not vouched for.
    */
   private handleServiceAsk(conn: Conn, msg: Extract<ClientMessage, { t: 'service_ask' }>): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, msg.t)) {
       this.refuseToSession(conn, 'ask the human through the service_ask frame')
       return reply(conn, {
         t: 'service_ask_result',
         ok: false,
-        reason: 'service_ask is for processes that never register; a session asks with ask',
+        reason:
+          'service_ask is for processes that never register; a session asks with ask' +
+          this.refusalHint(conn, msg.t),
       })
     }
     const held = this.serviceAsks.get(conn) ?? new Set<string>()
@@ -1796,16 +1852,18 @@ export class SocketServer {
    * check instead of none at all. CC-22's adversarial review found this had
    * NONE: any connection, registered or not, could forge `from: HUMAN` AND
    * override do-not-disturb, with no CLI or endorsement flow involved. See
-   * `isHuman` for what the fix below does and does not guarantee.
+   * `admits` for what the fix below does and does not guarantee.
    */
   private handleHumanSend(conn: Conn, to: string, text: string, source?: WakeSource): void {
-    if (!this.isHuman(conn)) {
+    if (!this.admits(conn, 'human_send')) {
       this.refuseToSession(conn, 'send a message as the human')
       return reply(conn, {
         t: 'send_result',
         ok: false,
         recipients: [],
-        reason: 'sending as the human is the human’s call; a session cannot speak with that authority',
+        reason:
+          'sending as the human is the human’s call; a session cannot speak with that authority' +
+          this.refusalHint(conn, 'human_send'),
       })
     }
     const { core } = this
