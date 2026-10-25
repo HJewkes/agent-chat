@@ -2206,10 +2206,52 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git submodule foreach 'bash -e -c true'",
     "bash -ic 'echo hi'; git status",
     "trap 'echo hi' EXIT; git status",
+    "git submodule foreach 'hash'",
+    "git submodule foreach 'export CI=1; npm test'",
+    "git submodule foreach 'command -v git'",
+    "git submodule foreach 'type git; test -f x && echo y'",
+    "git submodule foreach 'cd sub; pwd; set -e; git status'",
+    'hash -p /usr/bin/git git; git status',
+    'hash -r; git status',
+    'hash -p /usr/bin/node node; git status',
   ])(
     'allows a plain trap or non-interactive shell git starts, and either at top level (TP-4236): %s',
     command => {
       expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
+
+  it.each([
+    "git submodule foreach 'hash -p /usr/bin/git p; p push --no-verify'",
+    'git submodule foreach \'bash -c "hash -p /usr/lib/git-core/git p; p push origin HEAD --no-verify"\'',
+    'git submodule foreach \'zsh -c "hash p=/usr/bin/git; p push --no-verify"\'',
+    "git rebase -x 'hash -p /usr/bin/git p; p push --no-verify' main",
+    "git -c core.pager='hash -p /usr/bin/git p; less' log",
+    'git submodule foreach \'zsh -c "autoload -Uz /work/sub/p; p"\'',
+    'git submodule foreach \'bash -c "enable -f ./x.so x; x"\'',
+    'git submodule foreach \'zsh -c "zmodload ./m"\'',
+    "git submodule foreach 'typeset -fu p; p'",
+    "git submodule foreach 'export -f p'",
+    "git submodule foreach 'functions -c p q'",
+    "git submodule foreach 'emulate sh -c true'",
+    "git submodule foreach 'fc -s'",
+    "git submodule foreach 'sched +1 true'",
+  ])(
+    'denies a builtin that loads code or changes command lookup in a shell git starts (TP-4236): %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.gitShellBuiltin)
+    },
+  )
+
+  it.each([
+    'hash -p /usr/bin/git p; p push --no-verify',
+    'hash -p/usr/bin/git p; p push',
+    'hash -t -p /usr/bin/git p q; git status',
+    'hash p=/usr/bin/git; p push --no-verify',
+  ])(
+    'denies a hash entry that names a command after another program on a git line (TP-4236): %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.searchPathEnv)
     },
   )
 

@@ -840,9 +840,17 @@ the table above, which judges a nested script by its outer git line (TP-2499), a
 text the same shell runs, so `trap ". ./f" EXIT` denies like `. ./f`. At top
 level the same file is left to the push shim, which is on that shell's PATH. An `alias` that defines
 anything denies as well (TP-4237), since `alias p=git` turns a later `p push --no-verify` into a push
-the guard never reads; a bare `alias` or `alias l`, which only prints, is allowed. Not read: a script
-file run by its path (`./f`), programs such as `npm test` or `make`, and shells the guard does not
-know by name (`mksh`, `yash`). git passes its `-c` and `--config-env`
+the guard never reads; a bare `alias` or `alias l`, which only prints, is allowed. Every other
+builtin is held to an allow-list (`src/leak-guard/git-shell-builtins.ts`): the builtin names bash
+5.3, zsh 5.9, dash and busybox ash report, each denied unless it is inert in every form (`cd`,
+`echo`, `test`, `set`, `read`, `type`), lists only when given no words (`hash`, `enable`,
+`zmodload`, `autoload`, `functions`), or is a declaration with no option word (`export CI=1`, but
+not `export -f p` or `typeset -fu p`). So `hash -p /usr/bin/git p`, `autoload -Uz /d/p`, `enable -f
+./x.so x`, `zmodload ./m`, `fc`, `emulate -c` and `sched` deny. `eval`, `trap` and `mapfile -C`
+are allowed because their text is read as this shell's own. Not read: a script file run by its
+path (`./f`), programs such as `npm test` or `make`, shells the guard does not know by name
+(`mksh`, `yash`, `fish`, `csh`, `tcsh`), ksh93's `builtin -f <lib>`, and the `~/.zshenv` every zsh
+reads, which the agent's own shell reads too. git passes its `-c` and `--config-env`
 options on to every git the command runs, and the command may write an include file before git
 reads it. So an `include.path` or `includeIf.<cond>.path` on the outer git is a deny, whatever the
 file holds, and so is a `-c` or `--config-env` word the guard cannot read. A command word the guard
@@ -1165,8 +1173,10 @@ or alias named git runs before any file. That covers `path=($X $path)`, `command
 it as a variable: `src/path.ts` and `git log -- path` do not count, and a bare operand does
 (`cd path && git status` and `cd functions && git status` are known false denies). The builtins that
 write the hash table, `COMMAND_LOOKUP_BUILTINS` (`hash -p <file> git` in bash, `hash git=<file>` in
-zsh), deny when given any word the guard cannot read; a literal `hash -p /usr/bin/git git` names a
-file as a literal `PATH` does and stays allowed. Known gap: the `alias` builtin itself.
+zsh), deny when given any word the guard cannot read, or an entry that gives a name another
+program's file (`hash -p /usr/bin/git p`, `hash p=/usr/bin/git`, TP-4236), since a later `p push`
+is then a push; a literal `hash -p /usr/bin/git git` names a file as a literal `PATH` does and stays
+allowed. Known gap: the `alias` builtin itself.
 
 **git options and config writes.** `safe.directory` makes git trust the config and hooks of a
 repository another user owns, and git reads it only from protected config: system, global and the

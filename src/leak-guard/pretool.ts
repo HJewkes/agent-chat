@@ -32,6 +32,7 @@ import {
   PROTOCOL_ENV,
 } from './git-programs.js'
 import { expandsShell, gitScripts, type ScriptSpan } from './git-scripts.js'
+import { loadsOrRebinds } from './git-shell-builtins.js'
 import {
   findClauses,
   parallelCall,
@@ -251,6 +252,7 @@ export const REASONS = {
   shellExpansion: `leak-guard: git hands this text to a shell, and it expands a variable, $(...) or backquote whose value the guard cannot see, so it may run a program or add --no-verify. Write the value out literally. ${DOCS}`,
   gitShellFile: `leak-guard: git hands this text to a shell, and that shell sources or runs a script file the guard cannot read. git puts its own directory first on that shell's PATH, so the push shim never sees a git the file runs. Run the file as its own Bash call, outside git. ${DOCS}`,
   gitShellAlias: `leak-guard: git hands this text to a shell, and it defines an alias, which turns a later command word into words the guard does not read. git puts its own directory first on that shell's PATH, so the push shim never sees a git the alias runs. Write the command out in full. ${DOCS}`,
+  gitShellBuiltin: `leak-guard: git hands this text to a shell, and it runs a builtin that may load code or change what a command word runs (hash, autoload, enable, zmodload, fc, emulate, a declaration with an option, and the like). git puts its own directory first on that shell's PATH, so the push shim never sees a git it runs. Run that builtin as its own Bash call, outside git. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
@@ -1346,7 +1348,8 @@ function checkShellText(script: string, ctx: GuardContext, scope: Scope, depth: 
  * In a shell git starts, a sourced or shell-run script file runs text the guard never reads, and an
  * alias turns a later command word into words it does not see (`alias p=git` then `p push`). git's
  * exec-path leaves the push shim off PATH there, so nothing catches either at run time (TP-4236, TP-4237).
- * A shell's startup file counts as a script file.
+ * A shell's startup file counts as a script file, and any other builtin outside the inert allow-list
+ * (`hash -p`, `autoload`, `enable -f`, `zmodload`) denies.
  */
 function checkGitShellCommand({ name, marked, assigns }: ShellRun): string | undefined {
   if (name === 'source' || name === '.') return marked.length > 0 ? REASONS.gitShellFile : undefined
@@ -1355,9 +1358,9 @@ function checkGitShellCommand({ name, marked, assigns }: ShellRun): string | und
     const file = from === 'file' || from === 'hidden' || readsStartupFile(name, marked)
     return file ? REASONS.gitShellFile : undefined
   }
-  return name === 'alias' && aliasDefinitions(['alias', ...marked]).length > 0
-    ? REASONS.gitShellAlias
-    : undefined
+  if (name === 'alias')
+    return aliasDefinitions(['alias', ...marked]).length > 0 ? REASONS.gitShellAlias : undefined
+  return loadsOrRebinds(name, marked.map(unmark)) ? REASONS.gitShellBuiltin : undefined
 }
 
 /** A git config file path, or `git config` on an alias or include key, anywhere on the line (TP-607). */
@@ -3185,13 +3188,31 @@ function commandHeadAt(words: readonly string[]): number | undefined {
 }
 
 /**
- * Whether a `hash` builtin is given a word the guard cannot read (CC-1236): bash's `hash -p <file> git`
- * and zsh's `hash git=<file>` pick the program a later `git` runs without naming PATH.
+ * Whether a `hash` builtin is given a word the guard cannot read (CC-1236), or names a command after
+ * another program (TP-4236): bash's `hash -p <file> p` and zsh's `hash p=<file>` pick the program a
+ * later `p` runs without naming PATH, so `hash -p /usr/bin/git p; p push` is a push. `hash -p
+ * /usr/bin/git git` names git's own file and stays allowed.
  */
 function hashesUnread(words: readonly string[]): boolean {
   const at = commandHeadAt(words)
   if (at === undefined || !COMMAND_LOOKUP_BUILTINS.has(unmark(words[at] as string))) return false
-  return words.slice(at + 1).some(word => word.includes(LIVE))
+  const args = words.slice(at + 1)
+  return args.some(word => word.includes(LIVE)) || hashRenames(args.map(unmark))
+}
+
+/** Whether a `hash` entry gives a name a file of another base name: `p=<file>`, or `-p <file>` then names. */
+function hashRenames(args: readonly string[]): boolean {
+  const renamed = (name: string, file: string): boolean => path.basename(file) !== name
+  const pAt = args.findIndex(arg => arg.startsWith('-') && !arg.startsWith('--') && arg.includes('p'))
+  if (pAt < 0) {
+    const entries = args.filter(arg => arg.includes('='))
+    return entries.some(arg => renamed(arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)))
+  }
+  const option = args[pAt] as string
+  const glued = option.slice(option.indexOf('p') + 1)
+  const file = glued === '' ? (args[pAt + 1] ?? '') : glued
+  const names = args.slice(pAt + (glued === '' ? 2 : 1)).filter(arg => !arg.startsWith('-'))
+  return names.some(name => renamed(name, file))
 }
 const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const ENV_UNSET = new Set(['-u', '--unset'])
