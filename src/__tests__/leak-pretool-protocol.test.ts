@@ -502,7 +502,38 @@ describe('a nameref or an indirect default assignment, on a line that runs git (
     'declare -n R=$A; R=x; ls',
     'echo "${!A:-none}"; git status',
     'echo "${!A}"; git status',
+    'echo "${!A#=x}"; git status',
+    `echo '\${!A:=x}'; git status`,
   ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
+describe('assignments in redirects, heredocs and eval bodies (TP-2499 review)', () => {
+  it.each([
+    ': <<< ${!A:=ext}; git fetch o',
+    ': <<E\n${!A:=ext}\nE\ngit fetch o',
+    ': 3<<E\n${!A:=ext}\nE\ngit fetch o',
+    ': > ${!A:=x}; git fetch o',
+    'read x < ${!A:=x}; git fetch o',
+    ': <<< ${GIT_ALLOW_PROTOCOL:=ext}; git fetch o',
+    ': <<E\n${GIT_SSH_COMMAND:=x}\nE\ngit fetch o',
+    ': > ${GIT_PAGER:=x}; git log',
+    `eval 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval 'read $A <<< ext'; git fetch o`,
+    `eval ': \${!A:=ext}'; git fetch o`,
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'git log > out.txt',
+    ': <<< "$x"; git status',
+    `cat <<'E'\n\${!A:=ext}\nE\ngit status`,
+    'read -r sha <<< "$(git rev-parse HEAD)"',
+    `eval 'declare -a list=(a b)'; git status`,
+    `eval 'x=1'; git status`,
+  ])('allows %j', command => {
     expect(hookReason(command)).toBeUndefined()
   })
 })

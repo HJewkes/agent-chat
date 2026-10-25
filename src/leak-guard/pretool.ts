@@ -2904,8 +2904,27 @@ function declareHidesName(args: readonly string[]): boolean {
   return false
 }
 
-// `${!A=x}` and `${!A:=x}` assign the variable A names, which may be any program var (TP-2499).
-const INDIRECT_ASSIGN = /\$\{![^}=:]*:?=/
+// `${!A=x}` and `${!A:=x}` assign the variable A names, which may be any program var (TP-2499), where
+// the shell expands them: not inside single quotes. `${!A#=x}` strips a prefix and assigns nothing.
+const INDIRECT_ASSIGN = new RegExp(`${LIVE}\\$\\{!(?:${NAME}|\\d+|[@*#?$!-])(?:\\[[^\\]]*\\])?:?=`)
+
+/**
+ * Whether marked text the shell expands assigns a variable whose name it builds, or holds an
+ * assigning expansion of a program env var: `${!A:=x}` anywhere, or `${NAME:=x}` in a redirect,
+ * here-string or heredoc body, which the word rules never read.
+ */
+function expandedEvents(cmd: SimpleCommand): EnvEvent[] {
+  const indirect = [...cmd.marked, ...cmd.expanded].some(text => INDIRECT_ASSIGN.test(text))
+  const named = cmd.expanded.filter(liveExpandsProgramEnv).map(text => nameEvent(unmark(text), true))
+  return [...(indirect ? [NAME_HIDDEN] : []), ...named]
+}
+
+/** The commands `eval` runs from its words as written, so a nameref or hidden name there counts (TP-2499). */
+function evalCommands(body: readonly string[]): SimpleCommand[] {
+  const at = commandHeadAt(body)
+  if (at === undefined || unmark(body[at] as string) !== 'eval') return []
+  return parseShell(body.slice(at + 1).map(unmark).join(' '))
+}
 
 /** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
 // The word a `<(...)` or `>(...)` redirection leaves: the shell passes a `/dev/fd` path, never a variable name.
@@ -3084,12 +3103,19 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const written = writtenEnvUse(cmd, roles)
   const unwrapped = unwrappedEnvUse(cmd, roles)
   const body = functionBody(cmd.marked)
-  const indirect = cmd.marked.some(word => INDIRECT_ASSIGN.test(unmark(word)))
-  const hidden: EnvEvent[] = indirect || hidesVariableName(body) ? [NAME_HIDDEN] : []
+  const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
   const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
+  const evaled = evalCommands(body).map(envUse)
   return {
-    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed],
-    scan: [...written.scan, ...unwrapped.scan],
+    events: [
+      ...written.events,
+      ...unwrapped.events,
+      ...hidden,
+      ...hashed,
+      ...expandedEvents(cmd),
+      ...evaled.flatMap(use => use.events),
+    ],
+    scan: [...written.scan, ...unwrapped.scan, ...evaled.flatMap(use => use.scan)],
   }
 }
 
