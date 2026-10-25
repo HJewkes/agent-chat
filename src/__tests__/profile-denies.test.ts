@@ -10,6 +10,8 @@ const APPROVE = 'Bash(agent-chat approve:*)'
 const ENDORSE = 'Bash(agent-chat endorse:*)'
 const ASK = 'Bash(agent-chat ask:*)'
 const DEBUG_SEND = 'Bash(agent-chat debug send:*)'
+const BURNDOWN = 'Bash(agent-chat burndown:*)'
+const SEATS = 'Bash(agent-chat seats:*)'
 const SHIPPED = path.join(__dirname, '../../profiles')
 
 const valid = { model: 'sonnet', allowedTools: ['Read', 'Bash'], isolation: 'none', surface: 'headless' }
@@ -176,9 +178,12 @@ describe('the teleport deny (CC-951)', () => {
   })
 
   it('keeps teleport for a file that allows it by name', () => {
-    const profile = parsed({ allowedTools: ['Read', TELEPORT], disallowedTools: [SEND, DEBUG_SEND] })
+    const profile = parsed({
+      allowedTools: ['Read', TELEPORT],
+      disallowedTools: [SEND, DEBUG_SEND, BURNDOWN, SEATS],
+    })
 
-    expect(profile.disallowedTools).toEqual([SEND, DEBUG_SEND])
+    expect(profile.disallowedTools).toEqual([SEND, DEBUG_SEND, BURNDOWN, SEATS])
   })
 })
 
@@ -197,9 +202,12 @@ describe('the debug send deny (CC-1083)', () => {
 
   // Mutation caught: dropping the allowed-by-name escape for this rule, which overrides a file's explicit grant.
   it('keeps debug send for a file that allows it by name', () => {
-    const profile = parsed({ allowedTools: ['Read', DEBUG_SEND], disallowedTools: [SEND, TELEPORT] })
+    const profile = parsed({
+      allowedTools: ['Read', DEBUG_SEND],
+      disallowedTools: [SEND, TELEPORT, BURNDOWN, SEATS],
+    })
 
-    expect(profile.disallowedTools).toEqual([SEND, TELEPORT])
+    expect(profile.disallowedTools).toEqual([SEND, TELEPORT, BURNDOWN, SEATS])
     expect(profile).not.toHaveProperty('warnings')
   })
 
@@ -215,5 +223,53 @@ describe('the debug send deny (CC-1083)', () => {
 
   it('leaves a file that does not deny send alone', () => {
     expect(parsed({ disallowedTools: ['Write'] }).disallowedTools).toEqual(['Write'])
+  })
+})
+
+describe('the burndown and seats denies (CC-1138)', () => {
+  const SEND = 'Bash(agent-chat send:*)'
+
+  // Mutation caught: dropping the seats line from WORKER_CLI_DENY, which lets a worker kick the watchdog.
+  it.each(['implementer', 'reviewer', 'peer', 'planner'])('denies agent-chat seats to builtin %s', name => {
+    expect(BUILTIN_PROFILES.find(p => p.name === name)?.disallowedTools).toContain(SEATS)
+  })
+
+  // Mutation caught: dropping either rule from DERIVED_DENIES, which leaves installed bd-* files without it.
+  it('adds both to a file that denies only send, with one warning each', () => {
+    const profile = parsed({ disallowedTools: [SEND] })
+
+    expect(profile.disallowedTools?.filter(tool => tool === BURNDOWN || tool === SEATS)).toEqual([
+      BURNDOWN,
+      SEATS,
+    ])
+    expect(deniedAtLaunch(profile)).toEqual(expect.arrayContaining([BURNDOWN, SEATS]))
+    expect(profile.warnings?.filter(w => w.includes('agent-chat burndown'))).toHaveLength(1)
+    expect(profile.warnings?.filter(w => w.includes('agent-chat seats'))).toHaveLength(1)
+  })
+
+  // Mutation caught: dropping the prefix escape in `needs`, which takes `burndown release` from the triager.
+  it('keeps the shipped triager its burndown release and status allows', () => {
+    const triager = loadProfile('triager', SHIPPED) as AgentProfile
+
+    expect(triager.allowedTools).toContain('Bash(agent-chat burndown release:*)')
+    expect(triager.disallowedTools).not.toContain(BURNDOWN)
+    expect(triager.disallowedTools).toContain(SEATS)
+  })
+
+  it('leaves a file that does not deny send alone', () => {
+    expect(parsed({ disallowedTools: ['Write'] }).disallowedTools).toEqual(['Write'])
+  })
+
+  it('names seats outright in every shipped file that denies send, so none warns about it', () => {
+    const names = fs.readdirSync(SHIPPED).filter(f => f.endsWith('.json'))
+
+    for (const name of names.map(f => f.replace(/\.json$/, ''))) {
+      const profile = loadProfile(name, SHIPPED) as AgentProfile
+      if (!profile.disallowedTools?.includes(SEND)) continue
+      expect(profile.disallowedTools, name).toContain(SEATS)
+      expect(profile.warnings ?? [], name).not.toContainEqual(
+        expect.stringMatching(/agent-chat (seats|burndown)/),
+      )
+    }
   })
 })

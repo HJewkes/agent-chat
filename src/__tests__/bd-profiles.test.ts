@@ -44,6 +44,7 @@ const HUMAN_ONLY_ACTIONS = [
   'Bash(agent-chat mirror:*)',
   'Bash(agent-chat lifecycle:*)',
   'Bash(agent-chat burndown:*)',
+  'Bash(agent-chat seats:*)',
 ]
 
 /** What a worker needs to land its own branch and open a PR; none of this may ever be denied. */

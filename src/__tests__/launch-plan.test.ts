@@ -427,6 +427,7 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat debug send:*)',
       'Bash(agent-chat agent:*)',
       'Bash(agent-chat port:*)',
+      'Bash(agent-chat seats:*)',
       'AskUserQuestion',
     ])
 

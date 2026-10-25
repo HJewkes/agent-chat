@@ -90,8 +90,9 @@ const HUMAN_ONLY_CLI_DENY = [
  * resume around the CC-163 role gate. Same configuration-not-guarantee limit as
  * `HUMAN_ONLY_CLI_DENY`. Workers read the roster through `agent_list` instead.
  * CC-1194: the `port` verbs spawn, resume and retire over the same connection.
+ * CC-1138: so do the `seats` verbs, and `seats watchdog` also sends `human_send`.
  */
-const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)', 'Bash(agent-chat port:*)']
+const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)', 'Bash(agent-chat port:*)', 'Bash(agent-chat seats:*)']
 
 /**
  * CC-47: the operator's global CLAUDE.md requires every turn that ends without
@@ -344,6 +345,18 @@ const DERIVED_DENIES: DerivedDeny[] = [
     deny: 'Bash(agent-chat debug send:*)',
     when: ['Bash(agent-chat send:*)'],
     why: 'the file denies send, and debug send sends a message as the human',
+  },
+  {
+    // CC-1138: a kicked tick spawns, resumes and retires with the tick's authority, not the caller's.
+    deny: 'Bash(agent-chat burndown:*)',
+    when: ['Bash(agent-chat send:*)'],
+    why: 'the file denies send, and the burndown verbs spawn and retire agents as the human',
+  },
+  {
+    // CC-1138: the seat verbs spawn and retire seats, and the watchdog sends `human_send`.
+    deny: 'Bash(agent-chat seats:*)',
+    when: ['Bash(agent-chat send:*)'],
+    why: 'the file denies send, and the seats verbs spawn seats and message them as the human',
   },
 ]
 
