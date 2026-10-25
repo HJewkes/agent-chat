@@ -124,7 +124,7 @@ import { pickAccount, rotationText, type RotationConfig, type RotationRecord } f
 import type { AccountUsage } from './account-budget.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
-import { withReturnContract } from './return-contract.js'
+import { contractOf, withReturnContract } from './return-contract.js'
 import {
   checkResumeSession,
   allocationRecord,
@@ -2229,13 +2229,21 @@ export class Supervisor implements TeleportHost {
    * discipline `anchor` and `parentAgentId` follow. A slug is a pointer to a
    * directory that gets read and handed to a new process, so letting the caller
    * assert where it is standing would turn `auto` into "read me any initiative".
+   *
+   * CC-1596: scoped by the profile's contract, not the spawn's `return_contract`, which
+   * only says the brief carries its own report format.
    */
-  private async briefingFor(req: SpawnRequest, targetCwd: string): Promise<BriefingResult | undefined> {
+  private async briefingFor(
+    req: SpawnRequest,
+    targetCwd: string,
+    profile: AgentProfile,
+  ): Promise<BriefingResult | undefined> {
     if (req.briefing === undefined) return undefined
     const requester = this.core.registry.list().find(session => session.name === req.requestedBy)
     return resolveSpawnBriefing({
       briefing: req.briefing,
       brief: req.brief,
+      scope: contractOf(profile) === 'implementer' ? 'implementer' : 'full',
       ...(requester ? { requesterCwd: requester.cwd } : {}),
       targetCwd,
     })
@@ -2391,7 +2399,7 @@ export class Supervisor implements TeleportHost {
     // A briefing is an improvement to the brief, never a precondition for one:
     // an unresolvable initiative warns and spawns anyway. The alternative is a
     // spawn that fails for a reason unrelated to the work.
-    const briefing = await this.briefingFor(req, cwd)
+    const briefing = await this.briefingFor(req, cwd, profile)
     if (briefing?.warning !== undefined) warnings.push(briefing.warning)
     const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
 
@@ -2473,7 +2481,7 @@ export class Supervisor implements TeleportHost {
   ): Promise<SpawnOutcome> {
     const gated = await this.remoteGates(req, profile, site)
     if ('refusal' in gated) return this.refuse(req, gated.refusal, gated.cause ?? {})
-    const briefing = await this.briefingFor(req, gated.cwd)
+    const briefing = await this.briefingFor(req, gated.cwd, profile)
     const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
     if (briefing?.warning !== undefined) gated.warnings.push(briefing.warning)
     const account = this.remoteAccount(req, profile, gated, injected)
