@@ -486,6 +486,38 @@ describe('teleporting a local session to a launcher’s machine', () => {
     expect(core.agents.get(successorOf())).toMatchObject({ state: 'live', host: MAC })
   })
 
+  it('re-probes and launches in the announced landing dir when the cwd is missing there (CC-1646)', async () => {
+    const landing = path.join(home, 'agent-landing')
+    const launcher = wire()
+    const nonce = challenge(launcher)
+    launcher.send({
+      t: 'host_hello',
+      host: MAC,
+      platform: 'darwin',
+      surfaces: ['iterm-tab', 'headless'],
+      landing,
+      proof: helloProof(ensureBrokerKey(MAC), MAC, nonce),
+    })
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+    const first = frame(launcher, 'host_probe')
+    launcher.send({
+      t: 'host_probe_result',
+      id: first?.id as string,
+      ok: false,
+      reason: 'gone',
+      missing: 'cwd',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const second = launcher.frames.filter(f => f.t === 'host_probe').at(1) as typeof first
+    expect(second?.probe).toEqual({ cwd: landing, surface: 'iterm-tab' })
+    launcher.send({ t: 'host_probe_result', id: second?.id as string, ok: true })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(frame(launcher, 'host_launch')?.launch).toMatchObject({ cwd: landing })
+  })
+
   it('refuses with the launcher’s reason when the cwd is missing there, writing no handoff', async () => {
     const launcher = macLauncher()
     const predecessor = localPredecessor()
@@ -703,6 +735,15 @@ describe('the host directory', () => {
 
     expect(sent).toEqual([])
     for (const answer of answers) expect(answer.reason).toContain('has not proved its host key')
+    expect(brokerLog()).toContain('launcher_unproved')
+  })
+
+  it('keeps the landing dir a launcher announced, for teleport to read (CC-1646)', () => {
+    const hosts = new HostDirectory<string>()
+    hosts.hello('launcher', { ...macHello, landing: '/home/example/agent-landing' }, () => undefined, true)
+
+    expect(hosts.landingOn(MAC)).toBe('/home/example/agent-landing')
+    expect(hosts.landingOn('other.example')).toBeUndefined()
   })
 
   it('takes an answer only from the connection that was asked', async () => {

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
+import path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   encode,
@@ -14,6 +15,7 @@ import {
   type ClientMessage,
   type Correlated,
   type DeliveredMessage,
+  type HostProbeMissing,
   type ItemShape,
   type PermissionBehavior,
   type ServerMessage,
@@ -331,7 +333,15 @@ function launcherHello(
   if (platform === undefined) return `unknown platform "${String(msg.platform)}"`
   const offered: unknown[] = Array.isArray(msg.surfaces) ? msg.surfaces : []
   const surfaces = SURFACE_NAMES.filter(surface => offered.includes(surface))
-  return { host: msg.host.trim(), platform, surfaces }
+  // CC-1646: kept only as an absolute path; teleport checks it lexically and the launcher on its own disk.
+  const landing = typeof msg.landing === 'string' && path.isAbsolute(msg.landing) ? msg.landing : undefined
+  return { host: msg.host.trim(), platform, surfaces, ...(landing === undefined ? {} : { landing }) }
+}
+
+/** CC-1646: a probe's missing path, kept only when it names one, so a garbled one reads as none. */
+const missingOf = (msg: object): { missing?: HostProbeMissing } => {
+  const missing = (msg as { missing?: unknown }).missing
+  return missing === 'cwd' || missing === 'configDir' ? { missing } : {}
 }
 
 /**
@@ -2320,6 +2330,7 @@ export class SocketServer {
           ok: msg.ok === true,
           ...(msg.reason === undefined ? {} : { reason: String(msg.reason) }),
           ...transcriptVerdictOf(msg),
+          ...missingOf(msg),
         })
         return
       case 'hosts':
