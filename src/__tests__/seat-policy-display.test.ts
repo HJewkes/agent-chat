@@ -11,7 +11,9 @@ import { agentProfiles } from '../server/commands/agent-profiles.js'
 const SEAT = 'example-seat'
 const POLICY = {
   version: 1,
-  seats: { [SEAT]: { root: true, launchProfiles: ['example-coord'], ceiling: ['example-worker', 'example-coord'] } },
+  seats: {
+    [SEAT]: { root: true, launchProfiles: ['example-coord'], ceiling: ['example-worker', 'example-coord'] },
+  },
 }
 
 let home: string
@@ -53,8 +55,7 @@ const ctxFor = (agents: AgentIdentity[], registeredName: string | null) =>
     },
   }) as never
 
-const listRows = async (agents: AgentIdentity[]): Promise<string> =>
-  agentList.run({}, ctxFor(agents, 'boss'))
+const listRows = async (agents: AgentIdentity[]): Promise<string> => agentList.run({}, ctxFor(agents, 'boss'))
 
 beforeEach(() => {
   home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cc1616-')))
