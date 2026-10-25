@@ -47,7 +47,10 @@ beforeEach(() => {
   fs.mkdirSync(path.join(root, 'widgets'))
   fs.writeFileSync(path.join(root, 'widgets', 'brief.md'), '# Widgets\n\nWhy: to prove orientation lands.\n')
   fs.mkdirSync(path.join(root, 'widgets', 'tasks'))
-  fs.writeFileSync(path.join(root, 'widgets', 'tasks', 'XX-1.yml'), 'id: XX-1\ntitle: Hum louder\nstatus: open\n')
+  fs.writeFileSync(
+    path.join(root, 'widgets', 'tasks', 'XX-1.yml'),
+    'id: XX-1\ntitle: Hum louder\nstatus: open\n',
+  )
   fs.mkdirSync(path.join(root, 'widgets', 'sessions'))
   fs.writeFileSync(path.join(root, 'widgets', 'sessions', '2026-07-31-latest.md'), 'Hummed yesterday.\n')
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = root
