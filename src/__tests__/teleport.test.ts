@@ -2856,7 +2856,10 @@ describe('a remote predecessor moving to the broker host (CC-951)', () => {
 
     const result = await returnFrom(agentId, landing)
 
-    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/working directory .* does not exist/) })
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/working directory .* does not exist/),
+    })
   })
 
   it('refuses a caller whose agent-chat cannot end itself, and ends nothing', async () => {
