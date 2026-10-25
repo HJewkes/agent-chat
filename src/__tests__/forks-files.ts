@@ -28,7 +28,8 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/leak-pretool-heredoc.test.ts',
   'src/__tests__/leak-pretool-piped-shell.test.ts',
   'src/__tests__/leak-pretool-stdin-sources.test.ts',
-  'src/__tests__/leak-pretool-read-command-word.test.ts',
+  'src/__tests__/leak-pretool-shell-command-word.test.ts',
+  'src/__tests__/leak-pretool-hidden-sub.test.ts',
   'src/__tests__/posix-shell-shebang.test.ts',
   'src/__tests__/spawn-attach-live.test.ts',
   'src/__tests__/burndown-watchdog-unusable.test.ts',
@@ -46,6 +47,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/leak-pretool-locale-quote.test.ts',
   'src/__tests__/leak-pretool-push-expansion.test.ts',
   'src/__tests__/leak-pretool-job-wrappers.test.ts',
+  'src/__tests__/leak-pretool-exec-wrappers.test.ts',
 ]
 
 /**
@@ -57,9 +59,10 @@ export const FORKS_FILES = [
   'src/__tests__/seat-journal.test.ts',
   // Sets process.env.TZ, which a worker thread keeps in its own env copy and never applies.
   'src/__tests__/seat-dispatches-verb.test.ts',
-  // The next six point HOME at a temp dir for the in-process broker, but os.homedir() in a
+  // The next seven point HOME at a temp dir for the in-process broker, but os.homedir() in a
   // worker thread still returns the developer's real home.
   'src/__tests__/spawn-account.test.ts',
+  'src/__tests__/spawn-account-request.test.ts',
   'src/__tests__/spawn-home-cwd.test.ts',
   'src/__tests__/spawn-default-account.test.ts',
   'src/__tests__/resume-role-gate.test.ts',

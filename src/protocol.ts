@@ -84,6 +84,7 @@ export interface SpawnResultFields {
     | 'reviewer_account_limit'
     | 'broker_draining'
     | 'harness_unsupported'
+    | 'account_exhausted'
   /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
   retryable?: boolean
   /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */
@@ -98,7 +99,10 @@ export interface SpawnResultFields {
   disallowedTools?: string[]
   /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
   transcript?: { path: string; found: boolean }
-  /** CC-1546: the account a worker spawn's rotation chose, with the seven_day readings it compared. */
+  /**
+   * CC-1546: the account a worker spawn's rotation chose, with the seven_day readings it compared.
+   * TP-4214: or a requested account's pick and its readings, set on a refusal too.
+   */
   account?: string
   /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
   base?: { ref: string; sha: string }
@@ -1127,6 +1131,12 @@ export type ClientMessage =
        */
       configDir?: string
       /**
+       * TP-4214: the account by name (`default` for `~/.claude`), or `least-used` for the logged-in
+       * account with the lowest fresh max(five_hour, seven_day) on the broker's host. Never sent
+       * with `configDir`; the broker refuses both.
+       */
+      account?: string
+      /**
        * The REQUESTER's own `CLAUDE_CONFIG_DIR`, observed by its MCP server from
        * its own environment (CC-100).
        *
@@ -1287,6 +1297,12 @@ export type ClientMessage =
    */
   | { t: 'account_move'; name: string; to: string; force?: boolean }
   /**
+   * CC-1592: `account_move`'s refusals with nothing ended, for a dry run. Its own frame, not a flag
+   * on `account_move`, so a broker that predates it drops it unanswered instead of moving the
+   * session. Human-only like `account_move`; answered with `teleport_result`.
+   */
+  | { t: 'account_move_check'; name: string; to: string; force?: boolean }
+  /**
    * CC-1545: `agent-chat codex run` reached its `--wake-cap`. Names the Codex process by pid
    * and machine, since a session without `--name` has a name only the broker knows. The
    * broker refuses it from a REGISTERED connection; answered with `send_result`.
@@ -1346,6 +1362,12 @@ export type ClientMessage =
    * for a heartbeat check, the seat; it carries no path, flag or env, and the broker reads nothing else.
    */
   | { t: 'job_kick'; job: JobKickName; seat?: string }
+  /**
+   * CC-1138: the first frame on every connection from a process that carries `AGENT_CHAT_AGENT_ID`,
+   * so the broker can tell an agent's shell from the human's. Self-declared, and never answered:
+   * a broker that predates it ignores it, so no client waits on it.
+   */
+  | { t: 'hello'; agentId: string }
 
 /** Broker -> session. */
 /** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */

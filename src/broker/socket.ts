@@ -55,11 +55,18 @@ import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
-import { claudeCodeAncestor, linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
+import {
+  claudeCodeAncestorOf,
+  humanProofGap,
+  linuxPeerPorts,
+  provePeerLocal,
+  type PeerPorts,
+} from './peer-locality.js'
 import { HostDirectory, type LauncherHello } from './host-directory.js'
 import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
 import { noticeWakeCapped } from './codex-wake-cap.js'
+import { DeclaredCallers, declaredIdOf, resolveDeclared, type Caller } from './declared-callers.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -349,18 +356,21 @@ export const sanitizeCallerAgent = (value: unknown): string | undefined =>
  * Code ancestor of the socket peer. It only ever lowers trust, so its absence proves no human:
  * `env -u AGENT_CHAT_NAME` drops the claim, and a caller detached from its own tree (`setsid`,
  * `nohup … &`, `tmux new -d`, `systemd-run --user`) or a raw socket write from such a process has
- * no Claude Code ancestor. Off Linux and through a forwarded socket there is no peer pid, so only
- * the claim applies. Positive proof of a human is CC-1246.
+ * no Claude Code ancestor. So CC-1246 adds positive proof: with no agent found, the spawn is the
+ * human's only when `humanProofGap` finds none, and otherwise carries the gap as `humanUnproven`.
  */
 const callerAgentOf = (
   conn: Conn,
   msg: { callerAgent?: unknown },
   peer: PeerPorts,
-): { callerAgent?: string } => {
+): Pick<SpawnRequest, 'callerAgent' | 'humanUnproven'> => {
   const claimed = sanitizeCallerAgent(msg.callerAgent)
   if (claimed !== undefined) return { callerAgent: claimed }
-  const pid = claudeCodeAncestor(conn, peer)
-  return pid === undefined ? {} : { callerAgent: `claude-code:${pid}` }
+  const peerPid = peer.peerPid(conn)
+  const agent = claudeCodeAncestorOf(peerPid, peer)
+  if (agent !== undefined) return { callerAgent: `claude-code:${agent}` }
+  const gap = humanProofGap(peerPid, peer)
+  return gap === undefined ? {} : { humanUnproven: gap }
 }
 
 /** CC-1472: a launcher's transcript verdict, kept only when well formed, so a garbled one reads as none. */
@@ -419,6 +429,8 @@ export class SocketServer {
   private readonly hosts = new HostDirectory<Conn>()
   /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
   private readonly remoteSpawners = new Map<string, Conn>()
+  /** CC-1138: the agent id each connection's `hello` declared; recorded only, nothing gates on it yet. */
+  private readonly declared = new DeclaredCallers<Conn>()
   /** CC-1454: keyed sends and resumes by requester and nonce. Memory only: a restart forgets them. */
   private readonly dedupe = new RequestDedupe<KeyedJoiner, KeyedReply>()
   /** CC-1151: runs a kicked job in the broker's env; unset until the daemon attaches it. */
@@ -567,6 +579,7 @@ export class SocketServer {
       // registration, which the broker observed rather than took on trust. The
       // frame's copy exists for the human at the CLI, who holds no entry to read.
       ...(msg.configDir === undefined ? {} : { configDir: msg.configDir }),
+      ...(typeof msg.account === 'string' && msg.account !== '' ? { account: msg.account } : {}),
       ...(spawnerConfigDir === undefined ? {} : { spawnerConfigDir }),
       // CC-156: an observed Claude session id proves the requester is a session, whose unset var means ~/.claude.
       ...(observed?.claudeSessionId === undefined ? {} : { spawnerIsSession: true }),
@@ -607,7 +620,7 @@ export class SocketServer {
     conn: Conn,
     msg: Extract<ClientMessage, { t: 'spawn' }>,
     requestedBy: string,
-  ): Pick<SpawnRequest, 'spawnedAs' | 'callerAgent' | 'launchedBy' | 'launchReason'> {
+  ): Pick<SpawnRequest, 'spawnedAs' | 'callerAgent' | 'humanUnproven' | 'launchedBy' | 'launchReason'> {
     if (requestedBy !== HUMAN) return {}
     const spawnedAs = spawnedAsOf(msg)
     const caller = spawnedAs.spawnedAs === undefined ? callerAgentOf(conn, msg, this.peer) : {}
@@ -803,7 +816,7 @@ export class SocketServer {
    */
   private async handleAccountMove(
     conn: Conn,
-    msg: Extract<ClientMessage, { t: 'account_move' }>,
+    msg: Extract<ClientMessage, { t: 'account_move' | 'account_move_check' }>,
   ): Promise<void> {
     const name = typeof msg.name === 'string' ? msg.name : 'unnamed'
     const turnedAway = (stage: RefusalStage, reason: string): void =>
@@ -819,12 +832,12 @@ export class SocketServer {
     const entry = target === undefined ? undefined : registry.entryFor(target)
     if (target === undefined || entry?.agentId === undefined)
       return turnedAway('identity', `no live session with a durable identity is named "${name}"`)
-    const outcome = await this.supervisor.teleport({
-      subject: this.teleportSubject(target, { ...entry, agentId: entry.agentId }),
-      handoff: '',
-      reason: 'account',
-      account: { to: msg.to, by: HUMAN, ...(msg.force === true ? { force: true } : {}) },
-    })
+    const subject = this.teleportSubject(target, { ...entry, agentId: entry.agentId })
+    const account = { to: msg.to, by: HUMAN, ...(msg.force === true ? { force: true } : {}) }
+    // CC-1592: answered before teleport is reached, so a dry run records no handoff and ends nothing.
+    if (msg.t === 'account_move_check')
+      return replyTeleport(conn, this.supervisor.checkAccountMove(subject, account))
+    const outcome = await this.supervisor.teleport({ subject, handoff: '', reason: 'account', account })
     replyTeleport(conn, outcome)
   }
 
@@ -860,6 +873,26 @@ export class SocketServer {
   private refuseToSession(conn: Conn, action: string): void {
     const name = this.core.registry.nameOf(conn) ?? '?'
     this.core.append({ kind: 'verdict_refused', actor: name, body: `a session tried to ${action}` })
+  }
+
+  /** CC-1138: a registered connection is its session; otherwise the `hello`, if any, decides. */
+  callerOf(conn: Conn): Caller {
+    if (this.core.registry.nameOf(conn) !== undefined) return { kind: 'session' }
+    const agentId = this.declared.idOf(conn)
+    if (agentId === undefined) return { kind: 'human' }
+    return { kind: 'declared', ...resolveDeclared(agentId, id => this.core.agents.get(id)) }
+  }
+
+  /** CC-1138: recorded and logged only; the caller gate that reads it is a later slice. */
+  private handleHello(conn: Conn, rawId: unknown): void {
+    const agentId = declaredIdOf(rawId)
+    if (agentId === undefined || !this.declared.declare(conn, agentId)) return
+    const declared = resolveDeclared(agentId, id => this.core.agents.get(id))
+    logEvent('caller_declared', {
+      agentId,
+      ...('name' in declared ? { name: declared.name } : { unknown: true }),
+      registered: this.core.registry.nameOf(conn) ?? null,
+    })
   }
 
   /**
@@ -2071,6 +2104,7 @@ export class SocketServer {
       case 'teleport_abort':
         return this.handleTeleportAbort(conn, msg.name)
       case 'account_move':
+      case 'account_move_check':
         void this.handleAccountMove(conn, msg)
         return
       case 'codex_wake_capped':
@@ -2103,6 +2137,8 @@ export class SocketServer {
         return reply(conn, { t: 'hosts_result', hosts: this.hosts.list() })
       case 'job_kick':
         return this.handleJobKick(conn, msg)
+      case 'hello':
+        return this.handleHello(conn, msg.agentId)
       case 'surface':
         return this.answerSwitch(conn, this.handleSurface(conn, msg.name))
       case 'background':
@@ -2278,6 +2314,7 @@ export class SocketServer {
     conn.on('data', read)
 
     const drop = (): void => {
+      this.declared.drop(conn)
       this.dropHooks(conn)
       this.hosts.drop(conn)
       this.dropRemoteSpawners(conn)

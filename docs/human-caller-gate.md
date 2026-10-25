@@ -2,7 +2,8 @@
 
 Decision record for CC-1083 (slice b), 2026-10-12. Follow-up implementation:
 **CC-1138** (claude-channels initiative, tags `kind:security`, `repo:agent-chat`),
-filed and open; nothing in it has landed. **CC-1151** has landed (#785, #818): the
+filed and open. Only its frame-class table has landed (see "Frame inventory"); the gate
+itself has not. **CC-1151** has landed (#785, #818): the
 tick and seat opt-out sites no longer run in an agent's process, and the root rule below
 is superseded (see "The boundary that closes the class").
 
@@ -28,10 +29,17 @@ frames by caller.
 
 This inventory comes from the `switch (msg.t)` dispatcher in `handleMessage`
 (`src/broker/socket.ts`), read with `git show origin/main:src/broker/socket.ts` at
-origin/main `d173e6c` (2026-10-12), and recounted at origin/main `2e2ec80` (2026-10-14).
-It lists all 52 cases there, and each case appears in exactly one class: 7 refused, 6
-requester mapped, 2 session bound and 37 out of scope. When a frame is added to the
-dispatcher, add it here too.
+origin/main `d173e6c` (2026-10-12), and recounted at origin/main `907fed5` (2026-10-25).
+It lists all 58 cases there, and each case appears in exactly one class: 9 refused, 6
+requester mapped, 3 session bound and 40 out of scope. The recount added `account_move`
+(Class 1), `codex_wake_capped` (Class 3), and `message_by_id` and `host_challenge`
+(Class 4). CC-1592 then added `account_move_check` (Class 1), and CC-1138's slice C
+added `hello` (Class 4).
+
+The same classes live in code as `FRAME_CLASSES` (`src/broker/frame-classes.ts`), typed
+over the whole `ClientMessage` union. `src/__tests__/frame-classes.test.ts` fails when a
+dispatcher case has no row there, or when this inventory and the table disagree. A new
+frame therefore needs a row in both before the suite passes.
 
 ### Class 1: refused from a declared connection
 
@@ -46,6 +54,12 @@ These frames are guarded by `isHuman`, and they mean "the human decided".
 | `approve_permission` | `handleApprovePermission`                                       |
 | `teleport_abort`     | `handleTeleportAbort`                                           |
 | `service_ask`        | `handleServiceAsk`                                              |
+| `account_move`       | `handleAccountMove`                                             |
+| `account_move_check` | `handleAccountMove`                                             |
+
+`account_move` moves a session to another account, which spends the human's quota on
+that account. Its handler already refuses a registered connection as the human's call.
+`account_move_check` (CC-1592) is its dry run, gated the same way in the same handler.
 
 `service_ask` is here because it asks the human under a service label that nothing
 vouches for. Profiles already deny agents `agent-chat ask` (CC-169, landed), and leaving
@@ -103,12 +117,13 @@ literal spelling.
 
 ### Class 3: bound to the declared session
 
-| Frame                     | Today                                                                                                                     | With a declared id                                        |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `permission_hook`         | `isHuman` passes, and the caller picks `msg.session`                                                                      | accepted only when `msg.session` names the declared agent |
-| `permission_self_granted` | `isHuman` passes; the `approval_request` and `allow` `resolution` rows take `actor = msg.session`, which the caller picks | accepted only when `msg.session` names the declared agent |
+| Frame                     | Today                                                                                                                     | With a declared id                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `permission_hook`         | `isHuman` passes, and the caller picks `msg.session`                                                                      | accepted only when `msg.session` names the declared agent                     |
+| `permission_self_granted` | `isHuman` passes; the `approval_request` and `allow` `resolution` rows take `actor = msg.session`, which the caller picks | accepted only when `msg.session` names the declared agent                     |
+| `codex_wake_capped`       | `isHuman` passes, and the caller picks `hostPid` and `host`, which name the capped session                                | accepted only when `registry.nameOnHost(hostPid, host)` is the declared agent |
 
-Both frames come from the PermissionRequest hook (`permission_self_granted` is CC-694's
+The first two frames come from the PermissionRequest hook (`permission_self_granted` is CC-694's
 audit row for a call the hook allowed itself). The hook runs inside an agent's process
 tree, so it always carries the agent's id and has to stay open. Binding `msg.session`
 keeps one agent from filing a prompt, or an audit row, under another agent's name.
@@ -128,11 +143,13 @@ connection, checks something other than "unregistered", or only reads.
 | `readopt`                                                                                                                    | `handleReadopt`: the name comes from the log for an adopted session, and is refused while a live connection holds it                                                                                                                                                                                                                                                                                                                                                                           |
 | `permission_hook_withdrawn`                                                                                                  | only the connection that raised the hook may withdraw it                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `host_hello`                                                                                                                 | refuses a registered connection; the `machines` list bounds which hosts may be announced; the first live launcher holds a host                                                                                                                                                                                                                                                                                                                                                                 |
+| `host_challenge`                                                                                                             | refuses a registered connection; it only hands out a nonce that `host_hello` must answer                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `host_probe_result`, `host_launch_result`                                                                                    | `HostDirectory.answer` settles only a request the broker sent on that same connection                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `spawn_launched`, `spawn_placed`                                                                                             | `remoteReportRefusal`: only the connection the broker handed that agent's remote launch may report on it                                                                                                                                                                                                                                                                                                                                                                                       |
 | `job_kick`                                                                                                                   | `handleJobKick`: a closed job set (`burndown_tick`, `seats_watchdog`, `seats_heartbeat_check`); the request is rebuilt from `job` and `seat` alone; a seat must be at most 64 characters and have a seat file in the broker's own autonomy root; single flight per job and seat. The broker launches the job detached with `jobEnv` of its own environment plus the user bus, never the caller's. It runs only what the timers run, so it is accepted from a declared connection too (CC-1151) |
+| `hello`                                                                                                                      | the declaration itself: it records the connection's agent id, and the first one stands. It grants nothing and is never answered                                                                                                                                                                                                                                                                                                                                                                |
 | `inbox`                                                                                                                      | reads the caller's own inbox; empty for an unnamed connection                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `list`, `queue`, `history`, `inbox_since`, `activity`, `reported`, `answers_since`, `agents`, `hosts`                        | read-only. `inbox_since` and `answers_since` read any name's rows, which is a confidentiality question outside this gate                                                                                                                                                                                                                                                                                                                                                                       |
+| `list`, `queue`, `history`, `inbox_since`, `message_by_id`, `activity`, `reported`, `answers_since`, `agents`, `hosts`       | read-only. `inbox_since`, `message_by_id` and `answers_since` read any name's rows, which is a confidentiality question outside this gate                                                                                                                                                                                                                                                                                                                                                      |
 
 ## Options weighed
 
@@ -176,7 +193,8 @@ The design:
   resolves to no known agent is refused. CC-1138 also adds the retire ownership check
   described under Class 2.
 - **Class 3**: `permission_hook` and `permission_self_granted` are accepted only when
-  `msg.session` names the declared agent.
+  `msg.session` names the declared agent, and `codex_wake_capped` only when its host pid
+  is registered under the declared agent.
 - **Class 4** frames are unchanged.
 
 Why class 2 frames get the agent as requester instead of being refused: an agent already

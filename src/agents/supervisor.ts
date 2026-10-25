@@ -1,4 +1,4 @@
-import { brokerHost, signalSessionPid } from '../broker/host-guard.js'
+import { brokerHost, isLocalHost, signalSessionPid } from '../broker/host-guard.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -55,6 +55,15 @@ import {
   type ProcessProbe,
 } from './detached-reap.js'
 import { HARNESS_UNSUPPORTED, harnessRefusal, loadProfileSource, recordedRole, roleOf } from './profiles.js'
+import { loadSeatPolicy, seatPolicyPath } from './seat-policy.js'
+import {
+  ceilingDriftRefusal,
+  ceilingRefusal,
+  policySeat,
+  seatRootOf,
+  startsSeatRoot,
+  type SeatClaim,
+} from './seat-root.js'
 import {
   refusalOf,
   resolve as resolveIsolation,
@@ -122,6 +131,7 @@ import { withLinkedDirs } from './linked-dirs.js'
 import { crossingBriefPaths } from './brief-paths.js'
 import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { pickAccount, rotationText, type RotationConfig, type RotationRecord } from './account-rotation.js'
+import { chooseAccount, LEAST_USED, remoteAccountDir, type AccountChoice } from './account-request.js'
 import type { AccountUsage } from './account-budget.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
@@ -229,6 +239,7 @@ import {
 import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
+import { defaultAutonomyRoot } from './seats/io.js'
 import {
   isAdoptedSuccessor,
   SuccessorNotStarted,
@@ -241,9 +252,15 @@ import {
   type TeleportHost,
   type TeleportOutcome,
   type TeleportRequest,
+  type TeleportSubject,
   type LauncherSite,
 } from './teleport.js'
-import type { AccountMoves } from './teleport-account.js'
+import {
+  accountMoveRefusal,
+  realAccountMoves,
+  type AccountMoveRequest,
+  type AccountMoves,
+} from './teleport-account.js'
 import {
   DEFAULT_SURFACE_LIFETIME,
   type AgentProfile,
@@ -440,12 +457,16 @@ interface Requester {
   /** Coordinator links above the requester; a human-started root is 0. */
   coordinatorDepth: number
   profile: string
+  /** CC-1615: the policy seat the requester holds, which makes it a root under that seat's ceiling. */
+  seat?: string
 }
 
 /** Where a new agent sits: its spawn-tree depth and its coordinator depth. */
 interface Lineage {
   depth: number
   coordinatorDepth: number
+  /** CC-1615: the root seat whose ceiling admitted this spawn, recorded as `seat_ceiling`. */
+  seat?: string
 }
 
 interface Resolved {
@@ -486,6 +507,25 @@ interface RemoteDraft extends RemoteGated {
   agentId: string
   account: Account
   injected: { slug: string; text: string } | undefined
+}
+
+const ACCOUNT_TWICE = 'account and config_dir both name the account; pass one'
+
+/**
+ * TP-4214: a requested account on another host. The readings are this host's, so least-used
+ * refuses there, and a name passes as the explicit config dir it names under that host's home.
+ */
+function remoteAccountRequest(
+  req: SpawnRequest,
+  gated: RemoteGated,
+): { configDir?: string } | { refusal: string } {
+  if (req.account === undefined) return req.configDir === undefined ? {} : { configDir: req.configDir }
+  if (req.configDir !== undefined) return { refusal: ACCOUNT_TWICE }
+  if (req.account === LEAST_USED)
+    return {
+      refusal: `${LEAST_USED} reads ${brokerHost()}'s accounts; on ${gated.site.host} pass --account <name>`,
+    }
+  return { configDir: remoteAccountDir(req.account, gated.home) }
 }
 
 const toolsetOf = (profile: AgentProfile): NonNullable<IsolationContext['toolset']> => ({
@@ -529,6 +569,10 @@ async function remoteBrief(
   return { brief: [contracted.brief, allocation.note].filter(Boolean).join('\n\n'), warnings }
 }
 
+/** CC-1615: on the row so an audit can tell a spawn the seat ceiling admitted from one CC-39/40 did. */
+const seatCeilingMeta = (lineage: Lineage): { seat_ceiling?: string } =>
+  lineage.seat === undefined ? {} : { seat_ceiling: lineage.seat }
+
 /** The remote spawn's `agent_spawned` meta: the local row's facts, with `host` and `site` naming where it runs. */
 function remoteSpawnMeta(
   req: SpawnRequest,
@@ -559,6 +603,7 @@ function remoteSpawnMeta(
     depth: String(lineage.depth),
     role: roleOf(profile),
     coordinator_depth: String(lineage.coordinatorDepth),
+    ...seatCeilingMeta(lineage),
     ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
     ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
     ...callerAgentMeta(req),
@@ -661,6 +706,8 @@ export interface SpawnRequest {
    * fall back.
    */
   configDir?: string
+  /** TP-4214: an account name or `least-used`, resolved to an explicit `configDir`; never with one. */
+  account?: string
   /** The requester's own `CLAUDE_CONFIG_DIR`, observed rather than claimed (CC-100). */
   spawnerConfigDir?: string
   /** CC-156: the requester is a known Claude Code session, so no `spawnerConfigDir` means `~/.claude`. */
@@ -681,6 +728,8 @@ export interface SpawnRequest {
   spawnedAs?: 'burndown' | 'shepherd'
   /** CC-1206: an agent the broker found behind an unregistered CLI spawn; such a spawn is not the human's. */
   callerAgent?: string
+  /** CC-1246: why an unregistered CLI spawn with no agent found is still not proven the human's. */
+  humanUnproven?: string
   /** CC-915: the task id this agent runs; required for a burndown spawn. */
   task?: string
   /** CC-915: one of `WORK_ROLES` or `fix-round-<n>`; inferred from profile and name when absent. */
@@ -723,8 +772,10 @@ export interface SpawnRequest {
 
 /** CC-1466: what a spawn or resume row records of its launcher. Audit only: no gate reads it back. */
 /** CC-1206: the agent found behind a CLI spawn the row would otherwise credit to the human. */
-const callerAgentMeta = (req: { callerAgent?: string }): Record<string, string> =>
-  req.callerAgent === undefined ? {} : { caller_agent: req.callerAgent }
+const callerAgentMeta = (req: { callerAgent?: string; humanUnproven?: string }): Record<string, string> => ({
+  ...(req.callerAgent === undefined ? {} : { caller_agent: req.callerAgent }),
+  ...(req.humanUnproven === undefined ? {} : { human_unproven: req.humanUnproven }),
+})
 
 const launchMeta = (req: { launchedBy?: Launcher; launchReason?: string }): Record<string, string> =>
   req.launchedBy === undefined
@@ -744,6 +795,7 @@ export type SpawnRefusalCode =
   | 'surface_refused'
   | 'spawn_rate_limit'
   | 'broker_draining'
+  | typeof ACCOUNT_EXHAUSTED
   | MachineRefusalCode
   | SeatBudgetRefusalCode
   | SeatOverlapRefusalCode
@@ -779,13 +831,21 @@ export interface PoolPickReaders {
 }
 
 /** CC-1546: the readings a worker spawn's account rotation compared, kept or rotated. */
-type Account = Extract<ConfigDirResolution, { dir: string }> & { rotation?: RotationRecord }
+/** TP-4214: `choice` is a requested account's line: the pick and every reading it compared. */
+type Account = Extract<ConfigDirResolution, { dir: string }> & { rotation?: RotationRecord; choice?: string }
 
 /** CC-1546: the `accountRotation` config and every account's reading, both read per spawn. */
 export interface AccountRotationReaders {
   config: () => RotationConfig
   readings: () => AccountUsage[]
+  /** TP-4214: a config dir's login, so a requested account's pick sees one row per login. */
+  identify?: (configDir: string) => string | undefined
 }
+
+/** TP-4214: every account a requested pick could launch on is closed; the readings say until when. */
+export const ACCOUNT_EXHAUSTED = 'account_exhausted'
+
+type RequestedAccount = { dir: string; text: string; warning?: string } | { refused: SpawnOutcome }
 /** The profile facts the seat budget gate reads: its name for the inferred role, and its model. */
 type SpawnProfile = { name: string; model: string }
 
@@ -799,6 +859,13 @@ const pickedAccount =
   })
 const poolAccount = pickedAccount('pool')
 const rotationAccount = pickedAccount('rotation')
+
+/** TP-4214: a requested account that lands on the default one runs it unset too, as a pick would. */
+const requestedBilling = (account: Account, choice: string): Account => ({
+  ...account,
+  choice,
+  ...(path.resolve(account.dir) === defaultConfigDir() ? { unset: true as const } : {}),
+})
 
 /**
  * CC-1546: only a fresh worker spawn rotates. A coordinator keeps its spawner's account, and a
@@ -835,6 +902,9 @@ export interface SpawnOutcome {
   /** CC-1546: the account a worker spawn's rotation chose, and the readings it compared. */
   account?: string
 }
+
+/** Who asks to act on an existing agent, as the broker resolved it from the connection. */
+type OwnershipClaim = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId' | 'requesterBinding'>
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
 /** CC-282: who asked, resolved by the broker from the connection, for the worker ownership rule. */
@@ -994,9 +1064,13 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
 /**
  * Burndown and Shepherd spawn over unregistered CLI sockets, so they arrive as HUMAN but carry `spawnedAs`.
  * CC-1206: so does an agent's own CLI spawn, which the broker marks with `callerAgent`.
+ * CC-1246: and one the broker could not prove came from the human at a terminal (`humanUnproven`).
  */
 const isHumanSpawn = (req: SpawnRequest): boolean =>
-  req.requestedBy === HUMAN && req.spawnedAs === undefined && req.callerAgent === undefined
+  req.requestedBy === HUMAN &&
+  req.spawnedAs === undefined &&
+  req.callerAgent === undefined &&
+  req.humanUnproven === undefined
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -1183,6 +1257,8 @@ export class Supervisor implements TeleportHost {
   /** CC-1059: spawns recorded here for a requester on another host to launch. */
   private readonly remoteSpawns: RemoteSpawns
   private readonly hosts: LauncherSite | undefined
+  /** CC-1592: the one seam both a move and its dry run read, so they refuse alike. */
+  private readonly accountMoves: AccountMoves
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
   private readonly staleAtBoot: Map<string, number>
   private readonly profileBaseline: ProfileBaseline
@@ -1237,6 +1313,8 @@ export class Supervisor implements TeleportHost {
           reason: err instanceof Error ? err.message : String(err),
         }),
     })
+    this.accountMoves =
+      options.accountMoves ?? realAccountMoves(options.seatTeleport?.autonomyRoot ?? defaultAutonomyRoot())
     this.teleporter = new Teleport(
       core,
       this,
@@ -1244,7 +1322,7 @@ export class Supervisor implements TeleportHost {
       options.argvReader,
       options.seatTeleport,
       options.hosts,
-      options.accountMoves,
+      this.accountMoves,
     )
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
@@ -1678,7 +1756,11 @@ export class Supervisor implements TeleportHost {
     cause:
       | {
           code:
-            'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode | typeof REVIEWER_ACCOUNT_LIMIT
+            | 'spawn_rate_limit'
+            | MachineRefusalCode
+            | SeatBudgetRefusalCode
+            | typeof REVIEWER_ACCOUNT_LIMIT
+            | typeof ACCOUNT_EXHAUSTED
           retryable: boolean
         }
       | { code: 'broker_draining'; retryable: true; retryAfterMs: number }
@@ -2031,6 +2113,47 @@ export class Supervisor implements TeleportHost {
     }
   }
 
+  /**
+   * TP-4214: a requested account, picked here and then pinned as an explicit `config_dir`, so no
+   * pool route or rotation moves it. The spawn's own gates disqualify a candidate before the pick,
+   * as rotation's do, and a refusal carries every reading the pick compared.
+   */
+  private requestedAccount(req: SpawnRequest, profile: SpawnProfile): RequestedAccount | undefined {
+    const wanted = req.account
+    if (wanted === undefined) return undefined
+    if (req.configDir !== undefined) return { refused: this.refuse(req, ACCOUNT_TWICE) }
+    const readers = this.accountRotation
+    if (readers === undefined)
+      return { refused: this.refuse(req, `account ${wanted}: this broker reads no account usage`) }
+    const choice = this.pickRequested(req, profile, readers, wanted)
+    if ('error' in choice) return { refused: this.refuse(req, choice.error) }
+    if (choice.ok) return choice
+    const cause = choice.unknown ? {} : ({ code: ACCOUNT_EXHAUSTED, retryable: true } as const)
+    return { refused: { ...this.refuse(req, choice.reason, cause), account: choice.text } }
+  }
+
+  private pickRequested(
+    req: SpawnRequest,
+    profile: SpawnProfile,
+    readers: AccountRotationReaders,
+    wanted: string,
+  ): AccountChoice | { error: string } {
+    const refuses = (dir: string): boolean =>
+      this.seatBudgetRefusal(req, profile, dir) !== undefined ||
+      this.reviewerAccountRefusal(req, profile, dir) !== undefined
+    const preferDir = req.spawnerConfigDir ?? (req.spawnerIsSession === true ? defaultConfigDir() : undefined)
+    try {
+      return chooseAccount(readers.readings(), readers.config(), {
+        account: wanted,
+        refuses,
+        ...(preferDir === undefined ? {} : { preferDir }),
+        ...(readers.identify === undefined ? {} : { identify: readers.identify }),
+      })
+    } catch (err) {
+      return { error: `account ${wanted}: the readings could not be read (${(err as Error).message})` }
+    }
+  }
+
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
   private spawnEventOf(agentId: string) {
     return this.core.events.agentEvents().find(row => row.kind === 'agent_spawned' && row.msgId === agentId)
@@ -2056,6 +2179,7 @@ export class Supervisor implements TeleportHost {
     const row = req.lineageFrom === undefined ? undefined : this.spawnEventOf(req.lineageFrom)
     if (row === undefined || row.target !== req.name) return computed
     return {
+      ...computed,
       depth: raised(computed.depth, row.meta.depth),
       coordinatorDepth: raised(computed.coordinatorDepth, row.meta.coordinator_depth ?? row.meta.depth),
     }
@@ -2065,17 +2189,29 @@ export class Supervisor implements TeleportHost {
    * The requester's role and coordinator depth, read from its own spawn row so
    * both survive its spawner. No parent is a human-started root; a parent with
    * no row resolves to a worker, because a cap that opens on missing data is not one.
+   *
+   * CC-1615: the holder of a policy seat is a root coordinator whatever depth its row carried.
+   * The policy is read per request, so a revoke applies to the next one.
    */
-  private requesterOf(parentAgentId: string | undefined): Requester {
+  private requesterOf(parentAgentId: string | undefined, claim: SeatClaim = {}): Requester {
     if (!parentAgentId) return { role: 'coordinator', coordinatorDepth: 0, profile: '' }
-    const meta = this.spawnEventOf(parentAgentId)?.meta ?? {}
+    const row = this.spawnEventOf(parentAgentId)
+    const meta = row?.meta ?? {}
+    const profile = meta.profile ?? ''
+    const seat = seatRootOf(row, claim, loadSeatPolicy())
+    if (seat !== undefined) return { role: 'coordinator', coordinatorDepth: 0, profile, seat }
     // A row from before CC-163 has only `depth`, which counts every link and so never undercounts.
     const recorded = Number.parseInt(meta.coordinator_depth ?? meta.depth ?? '1', 10)
     return {
       role: recordedRole(meta),
       coordinatorDepth: Number.isFinite(recorded) ? recorded : 1,
-      profile: meta.profile ?? '',
+      profile,
     }
+  }
+
+  /** The requester of a spawn, with what its connection proved about the seat it holds. */
+  private requesterFor(req: SpawnRequest): Requester {
+    return this.requesterOf(req.parentAgentId, { binding: req.requesterBinding, name: req.requestedBy })
   }
 
   /**
@@ -2088,16 +2224,18 @@ export class Supervisor implements TeleportHost {
     name: string,
     by: string | undefined,
     human: boolean,
+    humanUnproven?: string,
   ): AgentProfile | { error: string } {
     const { profile, source } = loadProfileSource(name)
     if ('error' in profile) return profile
     const drift = this.profileBaseline.drift(profile.name, source)
     if (drift === undefined) return profile
     const refused = !human && this.profileDriftMode === 'refuse'
-    logEvent('profile_drift', { profile: profile.name, by, human, drift, refused })
+    logEvent('profile_drift', { profile: profile.name, by, human, drift, refused, humanUnproven })
+    const why = humanUnproven === undefined ? '' : ` (not proven human: ${humanUnproven})`
     if (refused)
       return {
-        error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it, from a shell outside Claude Code`,
+        error: `${drift}; profileDrift=refuse holds agent launches of it until a human spawns it, from a shell outside Claude Code${why}`,
       }
     if (human) this.profileBaseline.accept(profile.name, source)
     const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
@@ -2110,6 +2248,25 @@ export class Supervisor implements TeleportHost {
     if ('error' in profile) return profile
     const harness = harnessRefusal(profile)
     return harness === undefined ? profile : { error: harness }
+  }
+
+  /**
+   * CC-1615: a launch under a policy seat's name. With a listed launch profile it starts the seat's
+   * root holder, which the coordinator depth cap does not bound. With any other profile it is an
+   * ordinary agent, and the spawn result says so.
+   */
+  private seatLaunchOf(
+    req: SpawnRequest,
+    profile: AgentProfile,
+  ): { profile: AgentProfile; startsRoot: boolean } {
+    const policy = loadSeatPolicy()
+    if (policySeat(policy, req.name) === undefined) return { profile, startsRoot: false }
+    if (startsSeatRoot(policy, req.name, profile.name)) return { profile, startsRoot: true }
+    logEvent('seat_root_denied', { name: req.name, profile: profile.name, by: req.requestedBy })
+    const warning =
+      `"${req.name}" is a root seat in ${seatPolicyPath()}, but profile "${profile.name}" is not one ` +
+      'of its launch profiles, so this agent holds no seat authority'
+    return { profile: { ...profile, warnings: [...(profile.warnings ?? []), warning] }, startsRoot: false }
   }
 
   /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
@@ -2187,6 +2344,8 @@ export class Supervisor implements TeleportHost {
     profile: AgentProfile,
   ): { refusal: string } | { exempted: string[] } {
     if (req.requestedBy === HUMAN) return { exempted: [] }
+    const { seat } = this.requesterFor(req)
+    if (seat !== undefined) return this.checkCeiling(seat, profile)
 
     let exempted: string[] = []
     const granted = this.grantedTools(req.parentAgentId)
@@ -2220,12 +2379,24 @@ export class Supervisor implements TeleportHost {
     return { exempted }
   }
 
+  /**
+   * CC-1615: a root seat spawns exactly its ceiling, by profile name, in place of CC-39/40. Trusting a
+   * name means trusting its file, so a ceiling profile changed since broker start is refused under
+   * any `profileDrift` mode.
+   */
+  private checkCeiling(seat: string, profile: AgentProfile): { refusal: string } | { exempted: string[] } {
+    const entry = policySeat(loadSeatPolicy(), seat)
+    if (entry === undefined) return { refusal: `seat "${seat}" is no longer in ${seatPolicyPath()}` }
+    const outside = ceilingRefusal(seat, entry, profile.name)
+    if (outside !== undefined) return { refusal: outside }
+    const { source } = loadProfileSource(profile.name)
+    const drift = this.profileBaseline.drift(profile.name, source)
+    if (drift !== undefined) return { refusal: ceilingDriftRefusal(seat, profile.name, drift) }
+    return { exempted: [] }
+  }
+
   private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
-    return coordinatorExemption(
-      this.requesterOf(req.parentAgentId).role,
-      profile,
-      resolveCoordinatorGrantableTools(),
-    )
+    return coordinatorExemption(this.requesterFor(req).role, profile, resolveCoordinatorGrantableTools())
   }
 
   /**
@@ -2307,7 +2478,7 @@ export class Supervisor implements TeleportHost {
   }
 
   private async spawnUnguarded(req: SpawnRequest): Promise<SpawnOutcome> {
-    const requester = this.requesterOf(req.parentAgentId)
+    const requester = this.requesterFor(req)
     const blocked = this.preflight(req, requester)
     if (blocked) return this.refuse(req, blocked)
     const drained = this.drainRefusal()
@@ -2318,15 +2489,17 @@ export class Supervisor implements TeleportHost {
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
-    const profile = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req))
-    if ('error' in profile) return this.refuse(req, profile.error)
+    const loaded = this.loadCheckedProfile(req.profile, req.requestedBy, isHumanSpawn(req), req.humanUnproven)
+    if ('error' in loaded) return this.refuse(req, loaded.error)
+    const { profile, startsRoot } = this.seatLaunchOf(req, loaded)
     const harness = harnessRefusal(profile)
     if (harness) return this.refuse(req, harness, { code: HARNESS_UNSUPPORTED, retryable: false })
     const lineage = this.lineageOf(req, {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
+      ...(requester.seat === undefined ? {} : { seat: requester.seat }),
     })
-    const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
+    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
@@ -2413,8 +2586,13 @@ export class Supervisor implements TeleportHost {
     // CC-100. Resolved here rather than at launch time so a bad `config_dir`
     // refuses before anything is allocated, and so the WARNING from a missing
     // initiative profile dir reaches the requester with every other spawn warning.
+    // TP-4214: a requested account resolves first and is pinned, so billing never moves it.
+    const requested = this.requestedAccount(req, profile)
+    if (requested !== undefined && 'refused' in requested) return requested.refused
+    if (requested?.warning !== undefined) warnings.push(requested.warning)
+    const pinned = requested === undefined ? req : { ...req, configDir: requested.dir }
     const resolved = resolveConfigDir({
-      ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
+      ...(pinned.configDir === undefined ? {} : { explicit: pinned.configDir }),
       ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
       ...(req.spawnerIsSession === true ? { spawnerIsSession: true } : {}),
       ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
@@ -2422,7 +2600,7 @@ export class Supervisor implements TeleportHost {
     if ('error' in resolved) return this.refuse(req, resolved.error)
     if (resolved.warning !== undefined) warnings.push(resolved.warning)
     // A fork or a resumed session continues a transcript that lives under its account, so neither is routed.
-    const billed = this.billedAccount(req, profile, resolved, {
+    const billed = this.billedAccount(pinned, profile, resolved, {
       cwd,
       ...(injected === undefined ? {} : { initiative: injected.slug }),
       keepsAccount: fork !== undefined || req.resumeSession !== undefined,
@@ -2430,7 +2608,8 @@ export class Supervisor implements TeleportHost {
     })
     if ('refusal' in billed)
       return this.refuse(req, billed.refusal, { code: SEAT_BUDGET_STOP, retryable: true })
-    const { account } = billed
+    const account =
+      requested === undefined ? billed.account : requestedBilling(billed.account, requested.text)
     const limited = this.reviewerAccountRefusal(req, profile, account.dir)
     if (limited) return this.refuse(req, limited, { code: REVIEWER_ACCOUNT_LIMIT, retryable: true })
     const resumed = await this.resumeSource(req, isolationName, cwd, account.dir)
@@ -2567,8 +2746,10 @@ export class Supervisor implements TeleportHost {
     gated: RemoteGated,
     injected: { slug: string; profile?: string } | undefined,
   ): (Account & { warning?: string }) | { refusal: string; cause?: SeatRefusalCause } {
+    const named = remoteAccountRequest(req, gated)
+    if ('refusal' in named) return named
     const resolved = resolveConfigDir({
-      ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
+      ...(named.configDir === undefined ? {} : { explicit: named.configDir }),
       ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
       ...(req.spawnerIsSession === true ? { spawnerIsSession: true } : {}),
       ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
@@ -2577,7 +2758,7 @@ export class Supervisor implements TeleportHost {
       isDirectory: () => true,
     })
     if ('error' in resolved) return { refusal: resolved.error }
-    const billed = this.billedAccount(req, profile, resolved, {
+    const billed = this.billedAccount({ ...req, ...named }, profile, resolved, {
       cwd: gated.cwd,
       ...(injected === undefined ? {} : { initiative: injected.slug }),
       keepsAccount: false,
@@ -2820,6 +3001,7 @@ export class Supervisor implements TeleportHost {
         config_dir_source: account.source,
         ...(account.unset ? { config_dir_unset: 'true' } : {}),
         ...(account.rotation ? { account_rotation: JSON.stringify(account.rotation) } : {}),
+        ...(account.choice === undefined ? {} : { account_choice: account.choice }),
         allowed_tools: profile.allowedTools.join(','),
         // Recorded for symmetry with the allowlist the escalation check reads:
         // the deny list is the half that actually confines (see `profiles.ts`),
@@ -2835,6 +3017,7 @@ export class Supervisor implements TeleportHost {
         // CC-163: on the row so the agent's own spawns are judged by it after its spawner is gone.
         role: roleOf(profile),
         coordinator_depth: String(lineage.coordinatorDepth),
+        ...seatCeilingMeta(lineage),
         // Recorded because a fork carries content the profile's tool list says
         // nothing about: reading the row later is the only way to know this
         // agent started holding someone else's conversation, and whose.
@@ -2894,6 +3077,7 @@ export class Supervisor implements TeleportHost {
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
       ...(resumed ? { transcript: { path: resumed.path, found: true } } : {}),
       ...(account.rotation ? { account: rotationText(account.rotation) } : {}),
+      ...(account.choice === undefined ? {} : { account: account.choice }),
       ...branchBaseOf(allocation),
     }
   }
@@ -3476,7 +3660,7 @@ export class Supervisor implements TeleportHost {
   async park(name: string, req: ParkRequest = {}): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    const refused = this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'park')
+    const refused = this.checkOwnership(identity, req, 'park')
     if (refused) return { ok: false, reason: refused }
     if (this.parking.has(identity.agentId)) return { ok: false, reason: `${name} is already being parked` }
     const target = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
@@ -4157,7 +4341,7 @@ export class Supervisor implements TeleportHost {
    * relaunch a coordinator or a peer's agent on a message of its own choosing.
    */
   private checkResumer(identity: AgentIdentity, req: ResumeRequest): string | undefined {
-    return this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'resume')
+    return this.checkOwnership(identity, req, 'resume')
   }
 
   /** CC-408: only the newest session under a name is resumed; an older generation is stale. */
@@ -4175,7 +4359,7 @@ export class Supervisor implements TeleportHost {
   /** CC-225: surfacing stops the running process, so it takes resume's rule; surfacing yourself is always allowed. */
   private checkSurfacer(identity: AgentIdentity, req: SwitchRequest): string | undefined {
     if (identity.agentId === req.requesterAgentId) return undefined
-    return this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'surface')
+    return this.checkOwnership(identity, req, 'surface')
   }
 
   /**
@@ -4184,11 +4368,10 @@ export class Supervisor implements TeleportHost {
    */
   private checkOwnership(
     identity: AgentIdentity,
-    requesterAgentId: string | undefined,
-    requestedBy: string | undefined,
+    { requesterAgentId, requestedBy, requesterBinding }: OwnershipClaim,
     verb: 'resume' | 'surface' | 'park',
   ): string | undefined {
-    const requester = this.requesterOf(requesterAgentId)
+    const requester = this.requesterOf(requesterAgentId, { binding: requesterBinding, name: requestedBy })
     if (requester.role !== 'worker') return undefined
     if (this.spawnEventOf(identity.agentId)?.meta.parent === requesterAgentId) return undefined
     return (
@@ -4481,6 +4664,27 @@ export class Supervisor implements TeleportHost {
   /** Hand off to a successor and end this session. See `teleport.ts`. */
   async teleport(req: TeleportRequest): Promise<TeleportOutcome> {
     return this.teleporter.start(req)
+  }
+
+  /**
+   * CC-1592: an account move's dry run. Reads what `Teleport.accountMove` reads, so it records no
+   * handoff and ends nothing; the profile and surface checks a real move runs after it are not run.
+   */
+  checkAccountMove(subject: TeleportSubject, account: AccountMoveRequest): TeleportOutcome {
+    const identity = this.core.agents.get(subject.agentId)
+    if (identity === undefined) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
+    const reason = accountMoveRefusal(
+      this.accountMoves,
+      {
+        name: subject.name,
+        onBrokerHost: isLocalHost(subject.host),
+        configDir: subject.configDir ?? this.core.agents.spawnMeta(subject.agentId).config_dir,
+        cwd: this.inheritedIsolation(subject.agentId)?.allocation.cwd ?? subject.cwd,
+        sessionId: identity.sessionId ?? '',
+      },
+      account,
+    )
+    return reason === undefined ? { ok: true, name: subject.name } : { ok: false, reason }
   }
 
   /** CC-881: what a session teleporting from another host waits on: the launch to run there. */

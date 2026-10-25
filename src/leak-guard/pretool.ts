@@ -81,6 +81,7 @@ import {
   hasUnreadableOption,
 } from './git-unresolved.js'
 import { pushFlagMayForm } from './push-words.js'
+import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import {
   indirectFeed,
@@ -217,7 +218,7 @@ export const REASONS = {
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
   jobShell: `leak-guard: flock, script, unshare or sudo -s runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
-  jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
+  jobOption: `leak-guard: an exec wrapper (setsid, flock, taskset, chrt, script, unshare, prlimit, time, numactl, nsenter, chroot, setarch, enosys, uclampset, coresched, busybox or scriptlive) with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   privilegedHidden: `leak-guard: under sudo or another privilege wrapper, the command word is an expansion the guard cannot read, on a line that may reach git or gh. Privilege drops the agent's GIT_CONFIG_* hooks path and PATH shims, so nothing would catch a push or gh call at run time. Write the command out literally, or run it without the wrapper. ${DOCS}`,
@@ -236,6 +237,7 @@ export const REASONS = {
   parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
   aliasQuotedArgs: `leak-guard: this git ! alias takes an argument the guard cannot read (an expansion, or words xargs feeds it), or reads one with a modifier, or one that is not a plain word, or "$@" in quotes with other than one argument, so the guard cannot tell what the shell runs. Run the command the alias stands for directly. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
+  hiddenSubcommand: `leak-guard: this command may be git with a subcommand the guard cannot read, beside --no-verify or core.hooksPath, so it may be a push that skips the hook or a config write that drops it. Write git and its subcommand out literally. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
   ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
@@ -501,7 +503,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
       at++
-    } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
+    } else if (PREFIX_WORDS.has(head) && head !== 'time') at = dropOptions(rest, at + 1)
     else if (next !== undefined) {
       if (movesCommand(rest, at + 1, next, values, splits)) return { reason: REASONS.wrapperValue }
       at = next
@@ -562,6 +564,8 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         viaShellVar = true
       }
     } else if (JOB_WRAPPERS.has(name)) {
+      if (head === 'time')
+        siblings = [...(siblings ?? []), keywordTime(rest, at, { assigns, chdir, fed, privileged })]
       const run = jobRun(rest, at + 1, name, splits)
       if (run === undefined) return { reason: REASONS.jobOption }
       chdir ||= run.chdir === true
@@ -582,6 +586,17 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     } else return done()
   }
 }
+
+/**
+ * A bare `time` is the bash and zsh keyword or GNU time, by the shell that runs it (dash has no keyword),
+ * a quote or a pipe before it, so unwrap reads it both ways. The keyword takes only -p and --, and
+ * a later word such as `-o` is a command that may run the rest, so this reading skips every option word.
+ */
+const keywordTime = (rest: readonly string[], at: number, lead: Lead): Sibling => ({
+  ...lead,
+  assigns: [...lead.assigns],
+  words: rest.slice(dropOptions(rest, at + 1)),
+})
 
 /** The words xargs runs: unwrap has put its replace words in place, and here it appends the rest. */
 const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] => {
@@ -1025,10 +1040,7 @@ function checkEnvEdit(args: readonly string[]): string | undefined {
   return names.some(isGitConfigVar) ? REASONS.gitConfigEnv : undefined
 }
 
-function overridesGuard(kv: string | undefined): boolean {
-  const key = (kv ?? '').split('=')[0]?.toLowerCase() ?? ''
-  return key === 'core.hookspath' || key.startsWith('alias.')
-}
+const overridesGuard = (kv: string | undefined): boolean => GUARD_KEY.test((kv ?? '').split('=')[0] ?? '')
 
 function configValue(args: readonly string[], i: number): { kv: string | undefined; next: number } {
   const a = args[i] as string
@@ -1067,6 +1079,8 @@ interface GitRun {
   literal: boolean
   /** The command word is git, or an expansion the line ties to git. */
   tied: boolean
+  /** The expanded command word, marked, when it is not literal git. */
+  head?: string
 }
 
 function gitRun(
@@ -1119,8 +1133,29 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkTrustWrites(run, scope) ??
     checkFedPush(run, scope) ??
     checkPrivilegedPush(run, scope) ??
+    checkHiddenSubcommand(run, scope) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/**
+ * An expanded git whose subcommand the guard cannot read, beside a word that skips the hook: `$X $Y
+ * --no-verify` may be a push, `$X $Y core.hooksPath /dev/null` a config write or a `-c` (CC-1322).
+ * Literal git is left to the alias lookup, which already denies a subcommand it cannot read.
+ * A `--` ends nothing here: the unread word may be an option that takes it as its value. Each
+ * word is read as marked, so a key the shell finishes, as `core.hooks$K`, counts too.
+ */
+function checkHiddenSubcommand(run: GitRun, scope: Scope): string | undefined {
+  if (run.literal) return undefined
+  return wordsBesideHiddenSub(run, scope).some(mayDropHook) ? REASONS.hiddenSubcommand : undefined
+}
+
+/** The marked words after where git's subcommand may hide; a command word that may split may hold it (`${=X}`). */
+function wordsBesideHiddenSub(run: GitRun, scope: Scope): readonly string[] {
+  if (run.head !== undefined && expandsToWords(run.head, run.cmd.splits)) return run.marked
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (at >= 0 && run.resolved[at] !== undefined) return []
+  return run.marked.slice(Math.max(at, 0) + 1)
 }
 
 /** A push, or a git whose subcommand the guard cannot read, under a privilege wrapper (CC-1218). */
@@ -2283,7 +2318,7 @@ function checkHidden(
       checkSimple(suffixCommand(cmd, marked.slice(i)), ctx, unseen, depth, false),
     ) ??
     checkGitRun(
-      gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)),
+      { ...gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)), head },
       ctx,
       scope,
       depth,
@@ -3207,19 +3242,30 @@ function feeds(
 /** What the line holds that changes the stdin its nested commands inherit. */
 interface LineFeeds {
   processSubstitution: boolean
+  /** The commands a substitution runs inside a command with a stdin of its own. */
+  fedSubstitutions: ReadonlySet<SimpleCommand>
 }
+
+const ownsStdin = (cmd: SimpleCommand): boolean =>
+  cmd.before === '|' || cmd.stdin !== undefined || cmd.stdinLive
 
 const lineFeeds = (cmds: readonly SimpleCommand[]): LineFeeds => ({
   processSubstitution: cmds.some(cmd => cmd.marked.some(isProcessSubstitution)),
+  fedSubstitutions: new Set(
+    cmds.filter(ownsStdin).flatMap(cmd => cmd.substitutions.flatMap(sub => sub.commands)),
+  ),
 })
 
 /**
  * The stdin a command with no pipe or heredoc of its own inherits. A process substitution's stdin
  * is the output of the command that writes to it (`echo P > >(bash)`, CC-1416), and the splitter
- * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'.
+ * keeps no bounds for it, so on a line that holds one every nested command reads 'unknown'. A
+ * command substitution's is that of the command it sits in (`echo P | $(bash)`, CC-1412), which
+ * the splitter reads only after it, so a pipe, heredoc or redirect there makes it 'unknown' too.
  */
 function inheritedFeed(cmd: SimpleCommand, scope: Scope, line: LineFeeds): Feed {
-  return line.processSubstitution && cmd.nested ? 'unknown' : scope.stdin
+  if (line.processSubstitution && cmd.nested) return 'unknown'
+  return line.fedSubstitutions.has(cmd) ? 'unknown' : scope.stdin
 }
 
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {

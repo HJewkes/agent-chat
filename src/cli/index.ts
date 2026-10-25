@@ -2,7 +2,7 @@
 // below, which reach the event log transitively. See warnings.ts.
 import './warnings.js'
 
-import { Command } from 'commander'
+import { Command, Option } from 'commander'
 import { brokerCwd } from '../agents/stable-cwd.js'
 import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
@@ -14,6 +14,7 @@ import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentPark } from './verbs/agent-park.js'
 import { agentResume } from './verbs/agent-resume.js'
+import { agentMoveAccount } from './verbs/agent-move-account.js'
 import { agentSurfaceVerb } from './verbs/agent-surface.js'
 import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
 import { answersVerb } from './verbs/answers.js'
@@ -210,6 +211,12 @@ function addAgentCommands(program: Command): void {
     .option('--briefing <slug|auto>', "prepend an active-work initiative's orientation to the brief")
     .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
     .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
+    .addOption(
+      new Option(
+        '--account <name|least-used>',
+        "the account to run it on by name, or least-used: the broker host's logged-in account with the most fresh headroom",
+      ).conflicts('configDir'),
+    )
     .option('--task <id>', 'the task id the agent works on, recorded on its agent record')
     .option('--role <role>', 'implementer, reviewer, fix-round-<n>, shepherd-review, planner or other')
     .option(
@@ -237,6 +244,7 @@ function addAgentCommands(program: Command): void {
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)
   addVerb(agent, agentResume)
+  addVerb(agent, agentMoveAccount)
   addVerb(agent, agentWorktreesVerb)
   addVerb(agent, agentSurfaceVerb)
   addVerb(agent, agentBudgetVerb)

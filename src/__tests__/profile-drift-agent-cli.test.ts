@@ -42,20 +42,29 @@ function writeProfile(name: string, description = name): void {
   fs.writeFileSync(profileFile(name), JSON.stringify(profile))
 }
 
+type Terminals = Record<number, { session: number; ttyNr: number }>
+
 /** A peer pid and its ancestry, as `peer-locality.test.ts` builds them. */
-const tree = (procs: Record<number, [number, string]>, peer: number | undefined): PeerPorts => ({
+const tree = (
+  procs: Record<number, [number, string]>,
+  peer: number | undefined,
+  terminals?: Terminals,
+): PeerPorts => ({
   peerPid: vi.fn(() => peer),
   argv: pid => (procs[pid] === undefined ? undefined : `/usr/bin/${procs[pid]![1]} --flag`),
   process: pid => (procs[pid] === undefined ? undefined : { ppid: procs[pid]![0], comm: procs[pid]![1] }),
+  terminal: pid => (terminals ?? ON_PTS)[pid],
 })
 const UNDER_CLAUDE = { 700: [650, 'bash'], 650: [500, 'claude'], 500: [1, 'zsh'] } as Record<
   number,
   [number, string]
 >
-const PLAIN_TERMINAL = { 700: [650, 'zsh'], 650: [600, 'tmux'], 600: [1, 'systemd'] } as Record<
+/** CC-1246: the CLI under an interactive zsh that leads its session on a pty, in a tmux pane. */
+const PLAIN_TERMINAL = { 700: [650, 'node'], 650: [600, 'zsh'], 600: [1, 'tmux'] } as Record<
   number,
   [number, string]
 >
+const ON_PTS: Terminals = { 700: { session: 650, ttyNr: 34816 }, 650: { session: 650, ttyNr: 34816 } }
 
 function start(mode: ProfileDriftMode, ports: PeerPorts): (msg: ClientMessage) => Promise<SpawnResult> {
   server?.close()
@@ -221,15 +230,52 @@ describe('an unregistered spawn with an agent behind it (CC-1206 c)', () => {
     expect(spawnedRow('impl-a')?.meta).not.toHaveProperty('caller_agent')
     expect(ports.peerPid).not.toHaveBeenCalled()
   })
+})
 
-  it('stays human with no peer pid and no claim, as off Linux (plan risk 3)', async () => {
-    const send = start('refuse', tree(UNDER_CLAUDE, undefined))
+describe('an unregistered spawn with no positive proof of the human (CC-1246)', () => {
+  const DETACHED = { 700: [1, 'node'] } as Record<number, [number, string]>
+
+  it.each([
+    [
+      'no peer pid, as off Linux or through a forwarded socket',
+      tree(PLAIN_TERMINAL, undefined),
+      'no peer pid',
+    ],
+    [
+      'no controlling tty (setsid, systemd-run --user)',
+      tree(DETACHED, 700, { 700: { session: 700, ttyNr: 0 } }),
+      'no controlling tty',
+    ],
+    [
+      'the caller leading its own session (tmux new -d <cmd>)',
+      tree(DETACHED, 700, { 700: { session: 700, ttyNr: 34817 } }),
+      'not under its session leader',
+    ],
+    [
+      'an orphan reparented off its session (nohup … &)',
+      tree({ ...PLAIN_TERMINAL, 700: [1, 'node'] }, 700),
+      'not under its session leader',
+    ],
+  ])('refuses %s under refuse, naming the gap', async (_case, ports, gap) => {
+    const send = start('refuse', ports)
     writeProfile('bd-implementer', 'rewritten')
 
     const result = await send(spawnFrame('impl-a'))
 
-    expect(result.ok).toBe(true)
-    expect(driftWarnings(result)).toEqual([expect.stringContaining('taken as the new baseline')])
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain(`not proven human: ${gap}`)
+  })
+
+  it('warns under flag, records the gap on the row and never takes the profile as the baseline', async () => {
+    const send = start('flag', tree(PLAIN_TERMINAL, undefined))
+    writeProfile('bd-implementer', 'rewritten')
+
+    const first = await send(spawnFrame('impl-a'))
+    const second = await send(spawnFrame('impl-b'))
+
+    expect(first.ok).toBe(true)
+    expect(driftWarnings(second)).toEqual([expect.stringContaining('review it before trusting its denies')])
+    expect(spawnedRow('impl-a')?.meta).toMatchObject({ human_unproven: 'no peer pid' })
     expect(spawnedRow('impl-a')?.meta).not.toHaveProperty('caller_agent')
   })
 })
