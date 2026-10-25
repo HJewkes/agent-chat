@@ -274,6 +274,9 @@ function readOptions(grammar: Grammar, words: readonly string[]): Options {
 
 const HIDDEN_CALL: ShellCall = { script: { from: 'hidden' }, history: true }
 
+/** A name no grammar has: the call is hidden, so every word may be its script. */
+export const UNOBSERVED_SHELL = ''
+
 /**
  * `name` is the shell's base name, `marked` its marked words after the name, and `assigns` the
  * `NAME=value` words the command runs with.

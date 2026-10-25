@@ -31,10 +31,24 @@ export interface SimpleCommand {
   stdinLive: boolean
   /** The marked targets of its output redirects (`>`, `>>`, `&>`), including those of a bare redirect before it. */
   writes: string[]
+  /**
+   * Marked text the shell expands beside the words, where an assigning expansion sticks for a builtin:
+   * every redirect target, here-string and unquoted heredoc body, including those of a redirect-only
+   * command, which is kept as `)` wherever it stands (TP-2499).
+   */
+  expanded: string[]
+  /**
+   * The NAME of each `{NAME}>file` redirect, to which bash and zsh assign the descriptor they open.
+   * zsh assigns it before an external command starts, so the command sees it (CC-1630). Each also
+   * leads `words` and `marked` as a prefix assignment `NAME=$$`, which the guard cannot read.
+   */
+  fdNames: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
   /** The function name a `name ()` definition gives the body after it. */
   defines?: string | undefined
+  /** Its one word is the path a `<(…)` leaves, cut from the command it is an operand of, so it runs nothing. */
+  substitutionPath?: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
   before: string
   after: string
@@ -421,6 +435,8 @@ class ShellLexer {
       splits: [],
       substitutions: [],
       writes: [],
+      expanded: [],
+      fdNames: [],
       ...unsure,
       before: '',
       after: '',
@@ -699,6 +715,8 @@ class ShellLexer {
     const op = OPERATOR_TOKENS.find(token => ahead.startsWith(token)) ?? c
     // An `esac` touching the operator is taken first, so it cannot clear the pattern the operator makes due.
     this.endWord()
+    // A `|` between a case's patterns joins them and runs no pipe, so later commands read no pipe's output.
+    if (op === '|' && this.patternNext) return void (this.accept(op), this.advance(1))
     // zsh's `;|` ends a pattern's commands; bash reads `;` and `|`, so the two shells disagree.
     if (op === ';|' && this.closable()) this.budget.expansion = 'unreadable'
     if (CASE_ENDS.has(op) && this.cases.length > 0) this.patternNext = true
@@ -729,6 +747,7 @@ class ShellLexer {
     const opensCommand = this.word === null && !fed
     const kind = this.parenKind(opensCommand)
     if (fed) this.pending = null
+    if (fed && this.cur.marked.length === 0) this.cur.substitutionPath = true
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
     const defined = this.cur.marked.length - 1
@@ -846,7 +865,11 @@ class ShellLexer {
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
     if (this.emptyParens() || (word === null && this.opensCommand())) return false
     const end = this.groupEnd()
-    if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
+    const settled = end >= 0 && PLAIN_GROUP.test(this.src.slice(this.pos, end))
+    if (!settled) this.unsettled()
+    // zsh parses the group itself, past a line, a comment or a nested case pattern's `)`, so where a `)`
+    // can end the span, a close the splitter cannot be sure of could be the span's end (CC-1610).
+    if (!settled && this.closable()) this.budget.expansion = 'unreadable'
     if (end < 0) {
       this.split('(')
       this.pos++
@@ -888,12 +911,16 @@ class ShellLexer {
     return this.lastToken === 'for' && this.ahead(2) === '(('
   }
 
-  /** The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses a line. */
+  /**
+   * The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses
+   * a line. Where a `)` can end the span, any unquoted `#` also gives -1: zsh starts a comment after
+   * every character that ends a word, and one can hide the group's `)` (CC-1610).
+   */
   private groupEnd(): number {
     let depth = 0
     for (let i = this.pos; i < this.src.length; i++) {
       const c = this.src[i] as string
-      if (c === '\n') return -1
+      if (c === '\n' || (c === '#' && this.closable())) return -1
       if (c === '\\') i++
       else if (c === '$' && this.peek(i + 1) === "'") i = this.closeAnsi(this.unjoin(i + 1))
       else if (c === "'" || c === '"') i = this.closeQuote(i, c)
@@ -933,6 +960,7 @@ class ShellLexer {
     // In `2&>f` the 2 is an argument, not a descriptor.
     const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
     const aside = fd > 0
+    this.noteFdName()
     this.endWord()
     const ahead = this.ahead(3)
     if (ahead === '<<<') return this.expect(aside ? 'discard' : 'herestring', 3)
@@ -964,6 +992,34 @@ class ShellLexer {
     const fd = Number(this.word)
     this.word = null
     return fd
+  }
+
+  /**
+   * Records the NAME of a `{NAME}` word before a redirect operator and consumes the word, as
+   * descriptor() does the 3 of `3>` (CC-1630). Where bash and zsh read the word apart, the line is
+   * unreadable: in command position zsh runs NAME as a brace group, zsh globs a `{NAME[sub]}` that
+   * bash assigns, and before `&>` bash keeps the word as an argument.
+   */
+  private noteFdName(): void {
+    // zsh writes the file `{fd}` for `>{fd}>x`, which bash refuses to parse.
+    if (this.word === null || this.pending !== null) return
+    const subscript = FD_SUBSCRIPT.exec(this.word.slice(0, this.quoteStart))?.[1]
+    const plain = this.quoteStart === Infinity ? FD_NAME.exec(this.word)?.[1] : undefined
+    const name = subscript ?? plain
+    if (name === undefined) return
+    if (subscript !== undefined || this.assignmentAcceptable() || this.src[this.pos] === '&')
+      this.budget.expansion = 'unreadable'
+    this.cur.fdNames.push(name)
+    this.dropWord()
+  }
+
+  /** Forgets the word being read, which a redirect took as its descriptor. */
+  private dropWord(): void {
+    this.word = null
+    this.quoted = false
+    this.quoteStart = Infinity
+    this.splitting = false
+    this.localeAt = []
   }
 
   /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
@@ -1192,7 +1248,10 @@ class ShellLexer {
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
       this.afterWord(word, quoteStart)
-    } else if (pending === 'write') this.cur.writes.push(this.marked)
+      return
+    }
+    if (typeof pending === 'string') this.cur.expanded.push(this.marked)
+    if (pending === 'write') this.cur.writes.push(this.marked)
     else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') {
       const zshDelim = localeAt.length > 0 ? withDollars(word, localeAt) : undefined
@@ -1220,10 +1279,16 @@ class ShellLexer {
     this.endWord()
     if (this.caseOpening !== undefined) this.budget.expansion = 'unreadable'
     this.caseOpening = undefined
+    assignFdNames(this.cur)
     const bare = this.cur.words.length === 0
     if (bare) appendAll(this.carried, this.cur.writes)
-    if (!bare || this.readsStdin(this.cur)) this.keep(this.cur, bare)
+    if (!bare || this.readsStdin(this.cur) || this.expandsBeside(this.cur)) this.keep(this.cur, bare)
     this.cur = this.newCommand()
+  }
+
+  /** Text the shell expands beside the words: a redirect target, here-string, or an unquoted heredoc on any descriptor, whose body comes later. */
+  private expandsBeside(cmd: SimpleCommand): boolean {
+    return cmd.expanded.length > 0 || this.heredocs.some(doc => doc.target === cmd && !doc.quoted)
   }
 
   private keep(cmd: SimpleCommand, bare: boolean): void {
@@ -1241,7 +1306,10 @@ class ShellLexer {
       const body = this.heredocBody(doc)
       if (zshEnd !== undefined && zshEnd !== this.pos) this.readAsZsh(zshEnd)
       // The shell expands an unquoted body whatever the descriptor, so `3<<E` runs its substitutions too.
-      if (!doc.quoted) this.expandBody(body, doc.target)
+      if (!doc.quoted) {
+        this.expandBody(body, doc.target)
+        doc.target.expanded.push(body.replaceAll('$', `${LIVE}$`))
+      }
       if (doc.aside) continue
       const backslash = doc.quoted ? this.nested && JOINED.test(body) : body.includes('\\')
       doc.target.backslash ||= backslash
@@ -1397,6 +1465,18 @@ export function parseShell(src: string): SimpleCommand[] {
 }
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
+const FD_NAME = new RegExp(`^\\{(${NAME})\\}$`)
+const FD_SUBSCRIPT = new RegExp(`^\\{(${NAME})\\[`)
+
+/**
+ * Puts each `{NAME}>file` name in front of the command as `NAME=$$`, a prefix assignment of a value
+ * no one can read, so every rule that reads assignment words sees the write (CC-1630).
+ */
+function assignFdNames(cmd: SimpleCommand): void {
+  const assigns = cmd.fdNames.map(name => `${name}=$$`)
+  cmd.words.unshift(...assigns)
+  cmd.marked.unshift(...assigns.map(word => word.replaceAll('$', `${LIVE}$`)))
+}
 // zsh reads `$NAME:h` and `$NAME[1]` as a modifier and a subscript, even inside double quotes.
 const BARE = `\\$(${NAME})(?![A-Za-z0-9_]|${LIVE}?[:\\[])`
 const EXPANSION = new RegExp(`${LIVE}(?:\\$\\{(${NAME})\\}|${BARE}|~(?=/|$))`, 'g')

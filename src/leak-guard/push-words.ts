@@ -48,6 +48,26 @@ const takesValue = (word: string): boolean =>
   SHORT_VALUE.test(word) || (word.length > 2 && VALUE_OPTIONS.some(option => option.startsWith(word)))
 
 /**
+ * Where push's options end: the index of the first literal `--` that no option before it takes as
+ * its value, as `-o` takes the `--` of `git push -o -- --no-verify` (TP-4235), else the word count.
+ * `words[i]` is undefined where the guard cannot read the word, which may take a value too, as may
+ * any word `mayTakeValue` names. Each such word is read as taking one, so the end is never too early.
+ */
+export function pushOptionsEnd(
+  words: readonly (string | undefined)[],
+  from: number,
+  mayTakeValue: (i: number) => boolean = () => false,
+): number {
+  let swallows = false
+  for (let i = from; i < words.length; i++) {
+    const word = words[i]
+    if (word === '--' && !swallows) return i
+    swallows = word === undefined || takesValue(word) || mayTakeValue(i)
+  }
+  return words.length
+}
+
+/**
  * A word that may split into several, or whose literal text before its first expansion could begin
  * the flag or an option that takes the next word, such as a `--`, as its value. An `=` in that text
  * glues the value to the option, so `"--push-option=$X"` is safe.
@@ -70,14 +90,12 @@ const literalPrefix = (marked: string): string => unmark(marked.slice(0, Math.ma
  * (CC-1438), as in `"--no-${V:-verify}"` or `$"--no-$V"`. The guard cannot tell what the expansion
  * holds, so an unknown variable is not empty. A word that opens with an expansion, as in `"$BRANCH"`,
  * or whose literal start rules the flag out, as in `"--push-option=$X"`, is left readable. Only the
- * words before a literal `--` are options.
+ * words before the `--` that ends push's options are options.
  */
 export function pushFlagMayForm(marked: readonly string[], at: number): boolean {
-  for (const word of marked.slice(at + 1)) {
-    if (!word.includes(LIVE)) {
-      if (word === '--') return false
-      continue
-    }
+  const literal = marked.map(word => (word.includes(LIVE) ? undefined : word))
+  for (const word of marked.slice(at + 1, pushOptionsEnd(literal, at + 1))) {
+    if (!word.includes(LIVE)) continue
     const prefix = literalPrefix(word)
     if (substitutes(word) && prefix.startsWith('-') && '--no-verify'.startsWith(prefix)) return true
   }

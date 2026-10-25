@@ -23,6 +23,7 @@ import {
 import { crashCause, type FailOpen } from './failopen.js'
 import {
   configPrograms,
+  configWriteScript,
   extEnablerWrite,
   extPrograms,
   listsExt,
@@ -83,9 +84,10 @@ import {
   hasUnreadableConfig,
   hasUnreadableOption,
 } from './git-unresolved.js'
-import { pushFlagMayForm } from './push-words.js'
+import { pushFlagMayForm, pushOptionsEnd } from './push-words.js'
 import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
+import { globMayFormPush } from './glob-push.js'
 import {
   indirectFeed,
   isNothing,
@@ -98,7 +100,7 @@ import {
   type CommandHead,
   type Feed,
 } from './piped-shell.js'
-import { FOREIGN_SHELLS, readShellCall, SHELLS } from './shell-invocation.js'
+import { FOREIGN_SHELLS, readShellCall, SHELLS, UNOBSERVED_SHELL } from './shell-invocation.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -200,6 +202,7 @@ const MAX_FED_CHECKS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
+  globPush: `leak-guard: an unquoted glob or brace word here may expand to push or --no-verify, which the guard reads as written, so this may be a push that skips the pre-push leak scan. Write the word out, or quote it. ${DOCS}`,
   gitConfig: `leak-guard: git -c or --config-env on core.hooksPath or an alias would bypass the pre-push leak scan. ${DOCS}`,
   configWrite: `leak-guard: writing core.hooksPath, or an alias that skips hooks, is not allowed for agents. ${DOCS}`,
   assignmentSubscript: `leak-guard: a word that opens an assignment subscript, NAME[...], but is not a complete NAME[idx]=value, so the guard cannot tell where the command starts. Keep the subscript free of blanks, or run the command without a prefix assignment. ${DOCS}`,
@@ -213,7 +216,7 @@ export const REASONS = {
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- <gh args> --body-file <path>. ${HEREDOC_POST} ${DOCS}`,
   hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
-  hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
+  hiddenScript: `leak-guard: a script (eval, trap, mapfile -C, parallel) the guard cannot read, on a command line that may reach git or gh. Run the command directly. ${DOCS}`,
   pipedScript: `leak-guard: a shell reads its script from a pipe, expanded heredoc or redirect the guard cannot read, on a command line that may reach git or gh. Run the commands directly, or feed a quoted heredoc (<<'EOF'). ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
@@ -233,6 +236,7 @@ export const REASONS = {
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
   configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
+  configProgramWrite: `leak-guard: this git config write may store a value git later runs as a program (core.pager, core.editor, core.sshCommand, an alias and the like), and the guard cannot read the key or the value. Write them out literally. ${DOCS}`,
   programEnv: `leak-guard: this line runs git and uses an environment variable git, man or less runs as a program (GIT_PAGER, PAGER, MANPAGER, GIT_EDITOR, EDITOR, GIT_SSH_COMMAND, LESS and the like) other than by reading it or by a plain literal NAME=value, so the guard cannot tell what git runs. Write the assignment as a literal prefix or export, or put the command that names the variable on a line without git. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
   operatorExpansion: `leak-guard: this line holds a \${...} expansion with a quote, a nested expansion or a flag, or one with an operator beside a gh command, which the guard cannot read the way the shell will. Compute the value in an earlier Bash call, or write it out. ${DOCS}`,
@@ -1066,8 +1070,8 @@ export function checkGit(args: readonly string[]): string | undefined {
     i = next
   }
   const [sub, ...rest] = args.slice(i)
-  const opts = rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest
-  if (sub === 'push') return opts.some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
+  if (sub === 'push')
+    return rest.slice(0, pushOptionsEnd(rest, 0)).some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
   if (sub === 'config') return configWritesGuard(rest)
   return undefined
 }
@@ -1136,10 +1140,12 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkPrograms(run, ctx, scope, depth) ??
     checkExtEnablers(run, scope) ??
     checkTrustWrites(run, scope) ??
+    checkProgramWrites(run, ctx, scope, depth) ??
     checkFedPush(run, scope) ??
     checkPrivilegedPush(run, scope) ??
     checkHiddenSubcommand(run, scope) ??
-    checkAlias(run, ctx, scope, depth)
+    checkAlias(run, ctx, scope, depth) ??
+    checkGlobPush(run, scope)
   )
 }
 
@@ -1180,6 +1186,12 @@ function checkPushExpansion(run: GitRun, scope: Scope): string | undefined {
     ? REASONS.noVerify
     : undefined
 }
+
+/** A glob or brace word the guard reads as written that may expand to push or `--no-verify` (TP-4235). */
+const checkGlobPush = (run: GitRun, scope: Scope): string | undefined =>
+  globMayFormPush(run, subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams)))
+    ? REASONS.globPush
+    : undefined
 
 /** git push options that take no value, so a `--` after them ends the options. */
 const PUSH_FLAGS = new Set(
@@ -1262,6 +1274,21 @@ function checkTrustWrites(run: GitRun, scope: Scope): string | undefined {
   }
   // An unmatched option makes git itself refuse; an unread word naming a template stays the env gap TP-2444 accepts.
   return sub !== undefined && templateOption(sub, args) === true ? REASONS.templateDir : undefined
+}
+
+/**
+ * A `git config` write that persists a value a later git runs as a program (TP-4240), checked as
+ * the `-c` form is: the guard does not read that later git's config, so it judges the value here.
+ */
+function checkProgramWrites(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  if (!run.tied) return undefined
+  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
+  if (run.resolved[at] !== 'config') return undefined
+  const script = configWriteScript({ resolved: run.resolved.slice(at + 1), written: run.args.slice(at + 1) })
+  if (script === undefined) return REASONS.configProgramWrite
+  return script === null
+    ? undefined
+    : checkShellText(script, ctx, { ...scope, cwd: undefined, env: undefined }, depth)
 }
 
 const unresolvedReason = (run: GitRun): string =>
@@ -2270,7 +2297,9 @@ function checkShell(
  */
 function commandTexts({ name, marked, assigns }: ShellRun): string[] {
   const { script } = readShellCall(name, marked, assigns)
-  if (script.from === 'hidden') return marked.map(unmark)
+  // Each text is checked in the same scope, so a repeated word is checked once (CC-1411: a long run of
+  // operands to an expanded command word stays within the hook timeout).
+  if (script.from === 'hidden') return [...new Set(marked.map(unmark))]
   if (script.from !== 'command') return []
   return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
 }
@@ -2353,11 +2382,16 @@ function checkHidden(
   scope: Scope,
   depth: number,
   outermost: boolean,
+  fed?: Fed,
 ): string | undefined {
   const viaWrite = unmark(marked[0] ?? '') === 'gh-write' && postsText(ghWriteArgs(marked))
   if (postsText(marked) || viaWrite) return REASONS.hiddenCommand
   const unseen = { ...scope, cwd: undefined, env: undefined }
-  const starts = outermost ? marked.flatMap((word, i) => (mayStartCommand(word) ? [i] : [])) : []
+  // The words xargs adds in place of its input are checked by its own rules (CC-1219), never as a shell.
+  const xargsTail = fed?.append === true ? marked.length - 1 : -1
+  const starts = outermost
+    ? marked.flatMap((word, i) => (i !== xargsTail && mayStartCommand(word) ? [i] : []))
+    : []
   scope.hiddenStarts.left -= starts.length
   const spent = scope.hiddenStarts.left < 0
   if (spent && lineMayReachGit(scope, ctx)) return REASONS.hiddenStarts
@@ -2370,9 +2404,28 @@ function checkHidden(
       ctx,
       scope,
       depth,
-    )
+    ) ??
+    // The word may be any shell, which runs its `-c` string or the text it is fed (CC-1411), so its
+    // options are read as an unobserved shell's and every word may be its script.
+    (readsAsShell(cmd, fed)
+      ? checkShell(
+          { name: UNOBSERVED_SHELL, marked, assigns },
+          cmd,
+          ctx,
+          { ...scope, deferrable: false },
+          depth,
+        )
+      : undefined)
   return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
 }
+
+/**
+ * Whether an unresolved command word is read as a shell. Only where the word came from exempts it,
+ * never its text: the words xargs places, a `name()` definition, and the path a `<(…)` leaves.
+ * A missing provenance only over-denies.
+ */
+const readsAsShell = (cmd: SimpleCommand, fed: Fed | undefined): boolean =>
+  fed?.hidden !== true && cmd.defines === undefined && cmd.substitutionPath !== true
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
@@ -2425,20 +2478,95 @@ function firstReason<T>(items: readonly T[], check: (item: T) => string | undefi
 }
 
 /**
- * Checks the text `eval` runs; text the guard cannot resolve is a deny on a line that names git or gh,
- * or that may reach either while stdin is fed text the guard cannot read, which `read` may hand on (CC-1408).
+ * A script a builtin hands the current shell. `unread` marks a script read from words as written
+ * because some word the guard cannot resolve.
  */
-function checkEval(
+type ShellScript =
+  { kind: 'none' } | { kind: 'unreadable' } | { kind: 'script'; text: string; unread: boolean }
+
+const NO_SCRIPT: ShellScript = { kind: 'none' }
+const UNREADABLE: ShellScript = { kind: 'unreadable' }
+
+/** The script eval joins from its operands, past one `--` or zsh `-` (evalOperands). */
+function evalScript(args: readonly (string | undefined)[], marked: readonly string[]): ShellScript {
+  const operands = evalOperands(args.map((arg, i) => arg ?? unmark(marked[i] as string)))
+  if (operands === undefined) return UNREADABLE
+  return { kind: 'script', text: operands.join(' '), unread: args.includes(undefined) }
+}
+
+const TRAP_LISTS = new Set(['-p', '-l', '-P'])
+
+/** trap's action: none when it lists, or resets with `-` or a lone signal. */
+function trapScript(args: readonly (string | undefined)[]): ShellScript {
+  const operands = args[0] === '--' ? args.slice(1) : args
+  if (operands.length === 0) return NO_SCRIPT
+  const action = operands[0]
+  if (action === undefined) return UNREADABLE
+  if (TRAP_LISTS.has(action) || action === '-' || operands.length === 1) return NO_SCRIPT
+  if (/^-./.test(action)) return UNREADABLE
+  return { kind: 'script', text: action, unread: false }
+}
+
+const MAPFILE_VALUED = new Set('dnOsuCc'.split(''))
+
+/**
+ * The `-C` callback bash evaluates every quantum lines; the last one wins. A word it cannot resolve
+ * where an option may stand ends the options: envUse already denies any such word on a git line.
+ */
+function mapfileScript(args: readonly (string | undefined)[]): ShellScript {
+  let callback: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i]
+    if (word === undefined || word === '--' || !/^-./.test(word)) break
+    for (let j = 1; j < word.length; j++) {
+      if (!MAPFILE_VALUED.has(word[j] as string)) continue
+      const value = j + 1 < word.length ? word.slice(j + 1) : args[++i]
+      if (word[j] === 'C' && value === undefined) return UNREADABLE
+      if (word[j] === 'C') callback = value
+      break
+    }
+  }
+  // bash runs `<callback> <index> '<line>'`, so the script ends in two words the guard cannot read.
+  return callback === undefined ? NO_SCRIPT : { kind: 'script', text: `${callback} "$1" "$2"`, unread: false }
+}
+
+const CURRENT_SHELL_SCRIPTS = new Set(['eval', 'trap', 'mapfile', 'readarray'])
+
+/**
+ * The script a builtin of CURRENT_SHELL_SCRIPTS hands the current shell to run (TP-2499): the whole
+ * text the shell evaluates, words it adds included. eval's operands, trap's action, and mapfile's
+ * `-C` callback followed by the index and line bash adds.
+ */
+function currentShellScript(
+  name: string,
+  args: readonly (string | undefined)[],
   marked: readonly string[],
-  cmd: SimpleCommand,
+): ShellScript {
+  if (name === 'eval') return evalScript(args, marked)
+  return name === 'trap' ? trapScript(args) : mapfileScript(args)
+}
+
+/**
+ * Checks the script a builtin runs in the current shell. One the guard cannot read is a deny where it
+ * may reach git: for eval, on a line that names git or gh, or that may reach either while stdin is fed
+ * text the guard cannot read, which `read` may hand on (CC-1408); for trap and mapfile, on a line that
+ * may reach git or gh.
+ */
+function checkShellScript(
+  script: ShellScript,
+  name: string,
   ctx: GuardContext,
   scope: Scope,
   depth: number,
 ): string | undefined {
-  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  if (script.kind === 'none') return undefined
   const fedUnread = scope.stdin === 'unknown' && lineMayReachGit(scope, ctx)
-  if (args.includes(undefined) && (scope.namesGit || fedUnread)) return REASONS.hiddenScript
-  return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
+  const gated = name === 'eval' ? scope.namesGit || fedUnread : lineMayReachGit(scope, ctx)
+  if (script.kind === 'unreadable' || script.unread) {
+    if (gated) return REASONS.hiddenScript
+    if (script.kind === 'unreadable') return undefined
+  }
+  return checkAt(script.text, ctx, { ...scope, deferrable: false }, depth + 1)
 }
 
 /** The command `cmd` runs past its wrappers, or undefined where unwrap refuses it (checkSimple denies those). */
@@ -2652,7 +2780,7 @@ function checkSimple(
     if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
     // Privilege drops the shims and hooks path the hidden-word rules trust to catch it at run time (CC-1218).
     if (privileged && lineMayReachGit(at, ctx)) return REASONS.privilegedHidden
-    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
+    return checkHidden(words, unwrapped.assigns, cmd, ctx, at, depth, outermost, unwrapped.fed)
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
@@ -2661,7 +2789,10 @@ function checkSimple(
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
     return checkShell({ name, marked, assigns: unwrapped.assigns }, cmd, ctx, inner, depth)
   }
-  if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
+  if (CURRENT_SHELL_SCRIPTS.has(name)) {
+    const resolved = marked.map(word => resolveWord(word, cmd, ctx, at))
+    return checkShellScript(currentShellScript(name, resolved, marked), name, ctx, at, depth)
+  }
   const sourced = name === 'source' || name === '.' ? checkSourcedStdin(marked, ctx, at, depth) : undefined
   if (sourced !== undefined) return sourced
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
@@ -3002,6 +3133,50 @@ function printfHidesName(args: readonly string[]): boolean {
   return false
 }
 
+const DECLARE_BUILTINS = new Set(['declare', 'typeset', 'local'])
+// Attribute letters that leave each operand naming its own variable. Any other, `-n` above all,
+// may make an operand a nameref whose target is any program var (TP-2499).
+const PLAIN_DECLARE_OPTIONS = /^[-+][aAfFgilprtux]+$/
+
+/** Whether declare's words hide a variable name: an option outside the plain set, or an operand with a built name. */
+function declareHidesName(args: readonly string[]): boolean {
+  for (const [i, word] of args.entries()) {
+    const text = unmark(word)
+    if (text === '--') return args.slice(i + 1).some(hiddenName)
+    if (!/^[-+]./.test(text)) return args.slice(i).some(hiddenName)
+    if (word.includes(LIVE) || !PLAIN_DECLARE_OPTIONS.test(text)) return true
+  }
+  return false
+}
+
+// `${!A=x}` and `${!A:=x}` assign the variable A names, which may be any program var (TP-2499), where
+// the shell expands them: not inside single quotes. `${!A#=x}` strips a prefix and assigns nothing.
+const INDIRECT_ASSIGN = new RegExp(`${LIVE}\\$\\{!(?:${NAME}|\\d+|[@*#?$!-])(?:\\[[^\\]]*\\])?:?=`)
+
+/**
+ * Whether marked text the shell expands assigns a variable whose name it builds, or holds an
+ * assigning expansion of a program env var: `${!A:=x}` anywhere, or `${NAME:=x}` in a redirect,
+ * here-string or heredoc body, which the word rules never read.
+ */
+function expandedEvents(cmd: SimpleCommand): EnvEvent[] {
+  const indirect = [...cmd.marked, ...cmd.expanded].some(text => INDIRECT_ASSIGN.test(text))
+  const named = cmd.expanded.filter(liveExpandsProgramEnv).map(text => nameEvent(unmark(text), true))
+  const hidden: EnvEvent[] = indirect ? [NAME_HIDDEN] : []
+  return [...hidden, ...named]
+}
+
+/**
+ * The words `eval` joins and runs, read as the shells read them: bash skips one leading `--` and zsh
+ * `-` too. undefined when the first word left is an option or an expansion, so the guard cannot
+ * tell what eval runs (TP-2499).
+ */
+function evalOperands(words: readonly string[]): readonly string[] | undefined {
+  const first = unmark(words[0] ?? '')
+  const rest = first === '--' || first === '-' ? words.slice(1) : words
+  const head = rest[0] ?? ''
+  return head.includes(LIVE) || unmark(head).startsWith('-') ? undefined : rest
+}
+
 /** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
 // The word a `<(...)` or `>(...)` redirection leaves: the shell passes a `/dev/fd` path, never a variable name.
 const isProcessSubstitution = (word: string): boolean => word === LIVE
@@ -3009,6 +3184,7 @@ const isProcessSubstitution = (word: string): boolean => word === LIVE
 function operandsHideName(name: string, written: readonly string[]): boolean {
   const args = written.filter(word => !isProcessSubstitution(word))
   if (NAME_OPERAND_BUILTINS.has(name)) return args.some(word => word.includes(LIVE))
+  if (DECLARE_BUILTINS.has(name)) return declareHidesName(args)
   if (ENV_DECL.has(name)) return args.some(hiddenName)
   return name === 'printf' && printfHidesName(args)
 }
@@ -3181,7 +3357,7 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
   const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
   return {
-    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed],
+    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed, ...expandedEvents(cmd)],
     scan: [...written.scan, ...unwrapped.scan],
   }
 }
@@ -3191,7 +3367,8 @@ function envUse(cmd: SimpleCommand): EnvUse {
  * is used anywhere on a line that may reach git, by the same test the hidden-command budget uses
  * (CC-478), so a command word such as `${G}t` counts, a plain literal assignment's value is checked
  * as text git runs through a shell, where any expansion denies (TP-2496), and any other use denies. Both the uses and the git test read the unwrapped
- * command too, so a wrapper or an `env -S` split hides neither.
+ * command too, so a wrapper or an `env -S` split hides neither. A name the shell builds denies on
+ * any line, since no command after it is proven safe (TP-4231).
  */
 function checkProgramEnvLine(
   command: string,
@@ -3207,7 +3384,9 @@ function checkProgramEnvLine(
   if (events.length === 0) return undefined
   if (events.includes(EXT_LISTED)) return REASONS.extProtocol
   const scan = uses.flatMap(use => use.scan).join(' ')
-  if (!mayReachGit(scan, ctx.env)) return undefined
+  // A nested script cannot show the git its outer line runs, so it is judged by that line (TP-2499).
+  const reaches = mayReachGit(scan, ctx.env) || (depth > 0 && lineMayReachGit(scope, ctx))
+  if (!reaches) return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv

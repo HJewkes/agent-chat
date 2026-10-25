@@ -101,9 +101,16 @@ describe('an untied hidden command word whose directory or env is unknown (CC-13
     deny('x=git; env -C /x $x p', REASONS.aliasHidden)
   })
 
+  // env may read `$X` as NAME=value, hiding a name, and may run it as the command, which reaches git (TP-4231).
+  it.each(['env -C /x $X q', 'env -C /x $X status'])(
+    'denies an env word that may be a name or git: %s',
+    command => {
+      deny(command, REASONS.programEnv)
+    },
+  )
+
   it.each([
-    'env -C /x $X q',
-    'env -C /x $X status',
+    'sudo -u bob $X q',
     'sudo $EDITOR notes',
     'cd "$D" && $EDITOR notes',
     'source x; $PAGER README; git log',
@@ -139,6 +146,6 @@ describe('the hook-directory lookup through git config (CC-1315)', () => {
   )
 
   it('allows the same command where the hook directory has no such alias', () => {
-    expect(checkCommand('env -C /tmp $X pnv', at(plain))).toBeUndefined()
+    expect(checkCommand('sudo $X pnv', at(plain))).toBeUndefined()
   })
 })

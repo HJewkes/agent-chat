@@ -67,6 +67,8 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'echo `git push --no-verify`',
     "sh -c 'git push --no-verify'",
     'bash -lc "git push --no-verify origin x"',
+    "bash -c -- 'git push --no-verify'",
+    "bash -Ec 'git push --no-verify'",
     "eval 'git push --no-verify'",
     "env -S 'git push --no-verify'",
     'bash <<EOF\ngit push --no-verify\nEOF',
@@ -1340,7 +1342,8 @@ describe('a git alias already in config', () => {
         checkCommand(command, inAliased()),
       )
 
-      expect(reasons).toEqual([REASONS.aliasHidden, REASONS.noVerify])
+      // The word too deep to read may be push too, so the first command denies before the second (TP-4235).
+      expect(reasons).toEqual([REASONS.aliasHidden, REASONS.globPush])
       expect(performance.now() - started).toBeLessThan(2000)
     })
 
@@ -1621,7 +1624,7 @@ describe('a git alias already in config', () => {
   })
 
   describe('an alias the same command line writes (TP-607)', () => {
-    const writeAlias = `git config alias.pnvw '!git push --no-ve""rify'`
+    const writeAlias = `git config alias.pnvw '!git status'`
 
     it.each(['&&', ';', '||', '\n'])('denies git config alias then its use joined by %j', joiner => {
       expect(checkCommand(`${writeAlias} ${joiner} git pnvw`, at(plain))).toBe(REASONS.aliasWritten)

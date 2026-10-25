@@ -459,7 +459,8 @@ allowed.
 | a command word that is an expansion, followed by the words of one of those gh commands                                                                                                                                                                                                                                                    | `$G pr create` may run gh unscanned                         |
 | a command word that is an expansion, followed by a command that any row above denies                                                                                                                                                                                                                                                      | `$E gh pr create` runs gh when `E` is empty                 |
 | a command word that is an expansion, then an expansion where git's subcommand sits, or a command word that may split (`${=X}`, unquoted `$X`), with a word anywhere after, even past a `--`, that is or may expand to `--no-verify` or a `core.hooksPath`, `alias.*`, `include.path` or `includeIf.*.path` key (`core.hooks$K`) (CC-1322) | `$X $Y --no-verify` is a push that skips the hook           |
-| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                                                                                                                                                                                                                                                    | the text may be a push or a gh command                      |
+| a command word that is an expansion run as a shell, whose `-c` string or fed text a row above denies, or whose fed text the guard cannot read                                                                                                                                                                                             | `b=bash; echo '<push>' \| $b` runs it                       |
+| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`; a `trap` action or `mapfile -C` callback it cannot read, on a line that may reach either                                                                                                                                                          | the text may be a push or a gh command                      |
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                                                                                                                                                                                                                                      | `git rebase -x` runs a shell command unseen                 |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)                                                                                                                                                                                                                          | git passes it on to every git that command runs             |
 | `git -c` on a key whose value git runs as a program, when the value is a line a row above denies (below)                                                                                                                                                                                                                                  | `core.pager="git push --no-verify"` runs on `git log`       |
@@ -521,6 +522,16 @@ unreadable, so it is denied, whatever it runs:
   redirection included, is unreadable (CC-1609).
 
 A case at the top level, outside any such span, is read as before: there a pattern's `)` ends nothing.
+These rules hold for a case inside backticks, `$(( ))` and `$[ ]`, and in `select`, `repeat` and zsh's
+short `for`, `foreach`, `while` and `until` bodies (CC-1610).
+
+Inside such a span, an argument-position `(` group that is not plain makes the line unreadable
+(CC-1610). That covers a group with no close on its line, one holding any unquoted `#`, or one holding a
+quote, escape, blank, `$`, backtick or operator. zsh parses the group or short loop's list itself. It
+reads past a line (`for v (a` and a newline, then `)`), past a comment (`(a;# )`), and past a nested
+case pattern's `)` (`(a $(case x in x) …;; esac) b)`). So the `)` the splitter would take for the
+span's end may be the group's. Plain groups such as `*(.N)` are still read. One-line lists such as
+`for v (a b)` are refused there too; that is an accepted cost.
 
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
@@ -552,6 +563,24 @@ option name, before any `=`. A brace after a long option's `=` only copies the o
 `git log --grep={fix,feat}` and `git diff --color={always,never}` stay allowed, while
 `git fetch --{upload-pack=x,y}` is denied. A short option word with a brace, such as
 `git log -S{foo}`, is denied.
+
+A glob may match a file named `--no-verify`, so the guard does not read `?` or `*` as written in a
+`git push` argument either (TP-4235). An unquoted glob or brace word before a literal `--` that may
+match `--no-verify` or its abbreviations is denied, whatever the directory holds: `--no-verif?`,
+`--no-verif*`, `--*-verify`, `-*` and a bare `*`. A command word tied to git whose brace or zsh
+group may expand to `push` or `--no-verify`, as in `{git,push,--no-verify}`, is denied too. Both
+hold at the top level, under `sh -c` and in the scripts git hands a shell, such as
+`git rebase -x 'git push --no-verif*'`. A quoted glob, as in `"--no-verif?"`, and a glob that cannot
+match the whole flag, such as `feat/*`, `main:rel-*` or `--no-verif"y"?`, stay allowed. git reads a
+`--` after `-o`, `--push-option`, `--repo`, `--receive-pack` or `--exec` as that option's value and
+keeps reading options, so that `--` ends nothing: `git push -o -- --no-verif?` and
+`git push -o -- --no-verify` are denied. A word the guard cannot read, or a glob that may form such
+an option (`-?`), is read as taking the next word too, while `git push -o x -- --no-verif?` stays allowed.
+zsh's `EXTENDED_GLOB` operators count as glob marks in these words too, since the same line may run
+`setopt extendedglob` or `zsh -o extendedglob -c`: `--no-veri#fy` and `--no-verif~x` are denied, and
+so is `^x`, which matches every file but `x`. The splitter cannot tell a quoted `#`, `^` or `~` from
+an unquoted one, so either counts; a word they cannot turn into the flag, such as `fix#12`,
+`main~1` or `HEAD^:main`, stays allowed.
 
 Two inputs deny before any of this reading (CC-1427): a raw NUL anywhere in the line, which the
 splitter uses as its own mark while zsh ends the word there, so `--no-veri<NUL>x` runs as
@@ -668,6 +697,20 @@ them apart, and a sourced file can run `git push --no-verify` itself anyway. A w
 would not take as an alias name, one that starts with anything but a letter or holds anything
 but letters, digits and `-`, is never looked up. `echo pnv | xargs git` is denied: the
 subcommand comes from stdin, so the guard reads it as a word it cannot resolve (below).
+
+The guard reads every expanded command word as a shell (CC-1411, CC-1428): its `-c` string and
+the text it is fed are checked as a script, and a feed it cannot read denies on a line that may
+reach git or gh. The word may be any shell, so its options are read as an unknown shell's and
+every word may be its script: zsh, for one, takes `-O` as a plain flag where bash takes an
+operand. So `b=bash; $b -c '<push>'`, `X=bash; nice $X -c -- '<push>'`, `b=zsh; $b -c -O '<push>'
+x`, `${SHELL:-bash} -c '<push>'`, `b=bash; $b$@ -c '<push>'` and `echo '<push>' | $(echo bash)`
+deny, and so does `$X '<push>'`, since `$X` may be `eval`. `X=bash; $X -c 'echo hi'` and
+`x=git; $x status` stay allowed. Nothing in the word's text exempts it; only where the word came
+from does. The words xargs places for its input are left to the xargs rules, the name of a
+`name()` definition defines and runs nothing, and the path a `<(…)` leaves runs nothing, so
+`diff <(git show a) <(git show b)` stays allowed. Each is a field the parser or the xargs reader
+sets, so a missing one can only deny more. One false deny is accepted: `git diff | $PAGER` denies, since `$PAGER`
+may be a shell fed by the pipe, and quoting it does not help. Write the pager out instead.
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
@@ -894,6 +937,17 @@ git subcommand too, not only before one that runs a hook. So `git -c "$(cat k)" 
 is denied: the two files may set `core.pager` to a push and `core.hooksPath` for it. This replaces
 the TP-630 allowance for `git -c "$X" log`.
 
+A `git config` write to one of these keys persists the value for a later git, whose config the
+guard does not read, so the write is checked the same way (TP-4240). The written value is checked
+like a `-c` value: `git config core.pager '$X'`, ``git config core.editor '`x`'`` and
+`git config alias.p '!$X'` deny for the expansion, and a value the guard cannot read, as in
+`git config core.sshCommand "$S"`, denies as `configProgramWrite`. A section rename can turn a
+key the write check skipped into one git runs, so a rename out of an inert section, or out of one
+holding an inert key, into any section not inert as a whole denies too: `git config rename-section
+user core`, `rename-section credential alias` (`credential.username` becomes `alias.username`) and
+`rename-section merge pager` (`merge.log` becomes `pager.log`). `git config user.name "$N"`,
+`git config core.pager less` and `git config alias.st 'status -s'` stay allowed.
+
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or
 `protocol.allow=always`. A `-c`, `--config-env` or clone config word that sets either to anything
 but `never`, or to a value the guard cannot read, denies after the payloads below are checked,
@@ -979,10 +1033,59 @@ command head along the wrapper chain, and fails closed on any expansion there (T
 `env G$X=ext`, `env -- $A`), a `-u` or `-S` value or an option the guard cannot read; any operand
 of `read`, `getopts`, `mapfile`, `readarray` and `unset` that holds an expansion; the `printf -v`
 name, or an expanded operand before its format; and a name in the `declare`, `typeset`, `export`,
-`local` and `readonly` family. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
-line that may reach git it denies as `programEnv`, after the line's other checks so a more
-specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
-that `find -exec` adds are not read here.
+`local` and `readonly` family. `declare`, `typeset` and `local` pass only the attribute letters
+`aAfFgilprtux`, so any `-n` (alone or in a cluster such as `-gn`) or other option fails closed,
+since a nameref may point at any variable; so does any `${!X=}` or `${!X:=}`, which assigns the
+variable `X` names (TP-2499). These rules also read a command's redirect targets, here-strings
+and unquoted heredoc bodies on any descriptor, where a program var's `${NAME:=x}` denies too. The
+lexer drops none of that text: it keeps a redirect-only command that holds any, whose assignments
+bash keeps, as a `)` command wherever it stands, at the end of the line and before a heredoc body
+included. Such a name may be any program var or
+`GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the line's
+other checks so a more specific reason wins. Two rules carry this into the scripts a line runs:
+
+1. A hidden name in any script the line runs counts when the outer line may reach git. That
+   covers `eval`, `trap` and `mapfile -C` below, the text fed to `source /dev/stdin` or `.`, a
+   `sh -c` string, parallel's script, git's `-x` and alias scripts. A child shell cannot pass a
+   variable back, so `bash -c 'declare -n R=$A; R=x'; git fetch o` is a deny the guard accepts.
+2. The scripts a builtin hands the current shell are read as the shells read them, and checked
+   as nested scripts. Each is the whole text the shell evaluates, with the words the shell adds
+   read as unread words, so no caller sees a callback without them. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
+   that names git or gh, for `trap` and `mapfile` on a line that may reach git or gh.
+
+A `{NAME}>file` redirect writes the descriptor it opens to `NAME`, and zsh does so before an
+external command starts, so `gh {GH_PAGER}>/dev/null pr view 1` runs a pager named by a number.
+An unquoted `{NAME}` word after the command word and before a redirect operator leaves the
+argument list, as the `3` of `3>` does, and becomes a prefix assignment `NAME=$$` with a value the
+guard cannot read. Every rule that reads assignment words then sees the write, with no rule of its
+own (CC-1630). Three spellings the shells read differently make the line unreadable: a `{NAME}`
+word in command position, which zsh runs as a brace group, a `{NAME[sub]}` word, which bash
+assigns and zsh globs, and `{NAME}&>`, where bash keeps the word as an argument. A
+program var denies as `programEnv`, a search path as `searchPathEnv`, a shell startup variable as
+`shellStartupEnv`, a `GIT_CONFIG_*` name as `gitConfigEnv`, and gh's `HOME`, `XDG_CONFIG_HOME` or
+`GH_CONFIG_DIR` as `ghConfigHome`.
+`GIT_DIR` is no program var, so `exec {GIT_DIR}>/dev/null; git status` is allowed, as
+`GIT_DIR=x; git status` is.
+
+A double-quoted trap action that expands nothing, such as `trap "rm -f tmp" EXIT`, is read as
+written and allowed. One that expands a variable (`trap "rm -f $tmp" EXIT`) stays a `hiddenScript`
+deny on a line that may reach git. The shell splices the value into the action when the trap is
+set, so the value becomes script text, and the guard does not know the value the command will see.
+Single quotes (`trap 'rm -f "$tmp"' EXIT`) keep the expansion inside the script the guard reads.
+
+| builtin                | script                                                                                                             | not a script                                         | unreadable                               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------- |
+| `eval`                 | its operands joined, past one `--` (zsh's `-` too)                                                                 |                                                      | an option or expansion as the first word |
+| `trap`                 | its action, the first operand past one `--`                                                                        | `-p`, `-l`, zsh's `-P`; an action `-`; a lone signal | an expanded action or another option     |
+| `mapfile`, `readarray` | the `-C` callback followed by the index and line bash adds, read as unread words; bash runs it every quantum lines | no `-C`                                              | an expanded `-C` value                   |
+
+Not read by these rules, each a follow-up: assignments in arithmetic, `let`, `(( ))` and
+`declare -i` (TP-2507); zsh `print -v`, `set -A` and `vared` (TP-4224); `PS4` and `${x@P}`
+prompt expansion under `set -x` (TP-4227); zsh's `-` precommand modifier as a wrapper (TP-4225);
+ksh's `nameref` alias and zsh's `typeset -U` (TP-4226); a command word that is only an expansion
+counting as git (TP-4231; the `declare -n` and `${!A:=}` rows are TP-4234); and the contents of a file that `source` or `.` reads,
+unread by design. Words that `xargs` adds are read as unreadable (CC-1117, above); words that
+`find -exec` adds are not read here.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
@@ -1044,6 +1147,31 @@ as an assignment once, so `GIT_EDITOR='git push' ls`, which runs no git, stays a
 name uses and the git scan also read the command the guard's own unwrap says runs: its
 assignments and words, including those `env -S` splits out of one word, behind any wrapper. So
 `env -S "GIT_PAGER=less git log"` and `nice env -S "GIT_EDITOR=x git commit"` deny.
+
+A variable whose name the shell builds (`read $A`, `export $A=`, `printf -v "$A"`, `declare -n R=$A`
+then `R=`, `${!A:=…}`, `unset $A`, `mapfile "$A"`, `getopts … "$A"`) denies as `programEnv` wherever
+the guard parses it: the outer line, and eval, trap, `mapfile -C`, `sh -c` and fed-script text. It
+denies whether or not the line shows git, because the name may be any variable (a git program env, BASH_ENV,
+LD_PRELOAD) and its own operand may run code through an array subscript. No command is proven inert
+after it (TP-4231).
+
+Unchanged, and not findings against this rule:
+
+- eval or source of text the guard cannot read, with no visible hidden name (`eval "$A=ext"; $G …`,
+  `eval "$(cat f)"`, `. /dev/stdin <<< "$S"`). This is redesign-1 follow-up 1.
+- SEARCH_UNREAD (`PATH=$X make`, `hash -p "$X" make`).
+- Arithmetic or a subscript reading an env value with no hidden name on the line (`test -v "$C"`,
+  `echo $((x))`). This is CC-1249's `arithSubscriptNames`.
+- Files and programs run by path.
+- Lines that show git, where main's rules are unchanged.
+
+Accepted over-denies. Each needs a name the shell builds, on the same call:
+
+- `export $A=ext; echo hi` and any other command after one
+- the #1187 pins `declare -n R=$A; R=x; ls` and `trap 'declare -n R=$A; R=x' DEBUG; ls`
+- `env -C /x $X q` and `status`
+- `bash -c 'read $A'; $G x`
+- a lone `read $A <<< ext`
 
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of
@@ -1575,7 +1703,8 @@ Not covered, by design or by cost:
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
   fields, such as `--head`, `--label` and `--milestone`;
 - zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
-- a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`). The
+- a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`); a
+  `git push` argument they may turn into `--no-verify` is denied (TP-4235). The
   option is off by default, and the splitter reads `#` as a literal character, so `gi#t` resolves
   to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on a literal `PATH` (an unread one denies, CC-1236), `GIT_EXEC_PATH`, or `--exec-path`;
@@ -1643,10 +1772,10 @@ Not covered, by design or by cost:
 
   Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 tracks
   them, with a CC-1408 follow-up for the shells outside the list:
-  - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
-    word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
-    variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
-    `echo P | $(echo bash)`;
+  - a command word filled by `read`, which bash word-splits and runs as a command rather than
+    as a shell (`read -r l <<< TEXT; $l`). A command word the guard cannot resolve that is fed
+    text, such as `echo P | $b`, `echo P | ${SHELL:-bash}`, `echo P | $(echo bash)` or
+    `while read -r l; do $l; done < file`, is read as a shell and denies (CC-1411, above);
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside both of the guard's lists (follow-up to CC-1408): `echo P | rbash`,
     `echo P | rzsh`. A shell in `FOREIGN_SHELLS` (`echo P | tcsh`) denies by name (CC-1631);
