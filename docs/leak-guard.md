@@ -504,6 +504,16 @@ unreadable, so it is denied, whatever it runs:
   redirection included, is unreadable (CC-1609).
 
 A case at the top level, outside any such span, is read as before: there a pattern's `)` ends nothing.
+These rules hold for a case inside backticks, `$(( ))` and `$[ ]`, and in `select`, `repeat` and zsh's
+short `for`, `foreach`, `while` and `until` bodies (CC-1610).
+
+Inside such a span, an argument-position `(` group that is not plain makes the line unreadable
+(CC-1610). That covers a group with no close on its line, one holding any unquoted `#`, or one holding a
+quote, escape, blank, `$`, backtick or operator. zsh parses the group or short loop's list itself. It
+reads past a line (`for v (a` and a newline, then `)`), past a comment (`(a;# )`), and past a nested
+case pattern's `)` (`(a $(case x in x) …;; esac) b)`). So the `)` the splitter would take for the
+span's end may be the group's. Plain groups such as `*(.N)` are still read. One-line lists such as
+`for v (a b)` are refused there too; that is an accepted cost.
 
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in

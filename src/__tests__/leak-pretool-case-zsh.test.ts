@@ -24,6 +24,80 @@ const inSub = (body: string): string => `echo "$(${body}; ${PUSH})"`
 type Row = { line: string; zsh: boolean; bash: boolean; row: string }
 const zshOnly = (row: string, line: string): Row => ({ line, zsh: true, bash: false, row })
 
+const inTick = (body: string): string => `echo "\`${body}; ${PUSH}\`"`
+const inArith = (body: string): string => `echo "$(( $(${body}; ${PUSH}) ))"`
+
+/** The case forms of rows 1 to 10 in backticks, `$(( ))`, `$[ ]`, select, repeat and zsh short loops (CC-1610). */
+const LOOP_CASES: Row[] = [
+  zshOnly('14 tick T1', inTick('case x in x) :;| y) echo a;; esac')),
+  zshOnly('14 tick T2', inTick('case x { x) echo a;; }')),
+  zshOnly('14 tick T2', inTick('case x;in x) :;; y) echo a;; esac')),
+  zshOnly('14 tick T3', inTick('case x in x) {:;} ;; y) echo a;; esac')),
+  {
+    line: `echo "$(echo \`case x in x) :;| y) echo 1;; esac\`; ${PUSH})"`,
+    zsh: true,
+    bash: true,
+    row: '14 tick T1',
+  },
+  zshOnly('15 select T1', inSub('select v in a; do case x in x) :;| y) echo "a";; esac; break; done')),
+  zshOnly('15 select T2', inSub('select v in a; { case x { x) echo "a";; }; break }')),
+  zshOnly('15 select T3', inSub('select v (a) { case x in x) {:;} ;; y) echo "a";; esac; break }')),
+  zshOnly('16 repeat T1', inSub('repeat 1 do case x in x) :;| y) echo "a";; esac; done')),
+  zshOnly('16 repeat T4', inSub('repeat 1 { case x;in x) :;; y) echo "a";; esac }')),
+  zshOnly('16 repeat T4', inSub('repeat 1 { case x in x) echo "a";; esac }')),
+  zshOnly('17 for T4', inSub('for v (a) { case x in x) :;| y) echo "a";; esac }')),
+  zshOnly('17 for T2', inSub('for v in a; { case x { x) echo "a";; } }')),
+  zshOnly('17 for T4', inSub('for v (a) case x in x) echo "a";; esac')),
+  zshOnly('17 foreach T4', inSub('foreach v (a) case x in x) :;| y) echo "a";; esac; end')),
+  zshOnly('17 while', inSub('while (( 0 )) { case x in x) {:;} ;; y) echo "a";; esac }')),
+  zshOnly('17 until', inSub('until (( 1 )) { case x in x) :;| y) echo "a";; esac }')),
+  zshOnly('18 arith T1', inArith('case x in x) echo 1;| y) echo "a";; esac')),
+  zshOnly('18 arith T2', inArith('case x { x) echo 1;; }')),
+  zshOnly('18 arith T4', inArith('repeat 1 case x in x) echo 1;; esac')),
+  zshOnly('18 arith T1', inArith('select v in a; do case x in x) :;| y) echo 1;; esac; break; done')),
+  zshOnly('18 arith T2', `(( $(case x { x) echo 1;| y) echo 2;; }) + 1 )); ${PUSH}`),
+  zshOnly('18 arith T1', `echo "$(( \`case x in x) :;| y) echo 1;; esac; ${PUSH}\` ))"`),
+  zshOnly('18 bracket T1', `echo "$[ $(case x in x) echo 1;| y) echo "a";; esac; ${PUSH}) ]"`),
+]
+
+/** An argument `(` zsh reads on past its line or past a comment, so a later `)` is its own (CC-1610). */
+const GROUPS_PAST_LINE: Row[] = [
+  zshOnly('19 line', inSub('for v (a\n) echo "b"')),
+  zshOnly('19 line', inSub('for v (a\n\n) echo "b"')),
+  zshOnly('19 line', inSub('for v (a b\nc) echo "b"')),
+  zshOnly('19 line', inSub('select v (a\nb) break')),
+  zshOnly('19 line', inSub('repeat 1 (echo a\n)')),
+  zshOnly('19 line', inTick('for v (a\n) echo b')),
+  zshOnly('19 line', inTick('repeat 1 (echo a\n)')),
+  zshOnly('19 comment', inSub('for v (a # )\n) echo "b"')),
+  zshOnly('19 comment', inSub('for v (#a )\n) echo "b"')),
+  zshOnly('19 comment', inSub('for v (a # (\n) echo "b"')),
+  zshOnly('19 comment', inSub('repeat 1 (: # )\n)')),
+  zshOnly('19 comment', inTick('for v (a # )\n) echo b')),
+  zshOnly('19 comment', inSub('for v (a;# )\n) echo "b"')),
+  zshOnly('19 comment', inSub('for v (a;#)\n) echo "b"')),
+  zshOnly('19 comment', inSub('repeat 1 (:;# )\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (: ;#)\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (:&&# )\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (:&# )\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (:>/dev/null;# )\n)')),
+  zshOnly('19 comment', inSub('select v (a;# )\n) break')),
+  zshOnly('19 comment', inTick('for v (a;# )\n) echo b')),
+  zshOnly('19 nested', inSub('for v (a $(case x in x) echo;; esac) b) echo c')),
+  { line: inSub('echo *(a $(case x in x) echo;; esac) b) '), zsh: false, bash: false, row: '19 nested' },
+  zshOnly('19 nested', inSub('for v (a ${x:-)} b) echo c')),
+]
+
+/** Lines the guard may allow, as neither shell runs their push: a `)` hidden in a group's substitution. */
+const SAFE = [
+  inSub('for v (\\`echo )\\`) echo "b"'),
+  inTick('for v (a $(echo ))) echo b'),
+  inSub('for v (a $(: )\n)) echo "b"'),
+  inSub('echo (a\n)'),
+  inSub('echo *(.N\n)'),
+  inSub('echo a(b # )\n)'),
+]
+
 /**
  * Inside a `$( )` or subshell the splitter reads only the case grammar bash and zsh share; any other
  * case form there is unreadable, since a pattern's `)` could end the span and hide the push (CC-1324).
@@ -72,6 +146,8 @@ const BYPASSES: Row[] = [
   ),
   zshOnly('12', `echo $(case x in (x)) :;; z) echo "a";; esac; ${PUSH})`),
   zshOnly('12', `echo "\`case x in (x)) :;; z) echo a;; esac; ${PUSH}\`"`),
+  ...LOOP_CASES,
+  ...GROUPS_PAST_LINE,
 ]
 
 /** Case lines in the shared grammar, or outside any span a `)` can end, which stay readable. */
@@ -90,6 +166,8 @@ const ALLOWED = [
   'x="$(case "$a" in (foo) \\\n echo 1;; (*) "$b" # c\n;; esac)"',
   'echo "$(echo case)"',
   'echo "$(grep -c case f)"',
+  'x="$(print -l *(.N))"',
+  'for v (a\n) echo "$v"',
 ]
 
 /** Lines the shells read alike that the boundary still refuses: the accepted cost of not modelling zsh. */
@@ -99,6 +177,9 @@ const FALSE_DENIES = [
   'x=$(case $a\nin x) echo a;; esac)',
   'echo "$(case x in x) echo a;| y) echo b;; esac)"',
   'echo $(echo case x in y)',
+  'x="$(for v (a b) echo "$v")"',
+  'x="$(for v (a\nb) echo "$v")"',
+  'x="$(for v (a # list\n) echo "$v")"',
 ]
 
 /** Runs `line` in a real shell where `git` is a function that records its words in a file. */
@@ -109,7 +190,7 @@ function shellRuns(shell: string, flags: string[], line: string): boolean {
     const fake = `git(){ printf '%s\\n' "$*" >> "$M"; }\n`
     const env = { M: marker, PATH: '/usr/bin:/bin' }
     try {
-      execFileSync(shell, [...flags, '-c', fake + line], { env, stdio: 'ignore' })
+      execFileSync(shell, [...flags, '-c', fake + line], { env, stdio: 'ignore', timeout: 10_000 })
     } catch {
       // A parse error in one shell is the point of a row; only the marker matters.
     }
@@ -132,6 +213,12 @@ describe('a case form the shells read apart, inside a $( ) or subshell (CC-1324)
   for (const [name, shell, flags] of SHELLS) {
     it.skipIf(!fs.existsSync(shell)).each(BYPASSES)(`${name} runs the push as row $row says: $line`, row => {
       expect(shellRuns(shell, [...flags], row.line)).toBe(row[name])
+    })
+  }
+
+  for (const [name, shell, flags] of SHELLS) {
+    it.skipIf(!fs.existsSync(shell)).each(SAFE)(`${name} runs no push: %s`, line => {
+      expect(shellRuns(shell, [...flags], line)).toBe(false)
     })
   }
 
