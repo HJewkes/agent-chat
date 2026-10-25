@@ -27,7 +27,7 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
-import { type EntryView, type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
+import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
 import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
@@ -67,6 +67,7 @@ import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
 import { noticeWakeCapped } from './codex-wake-cap.js'
 import { DeclaredCallers, declaredIdOf, resolveDeclared, type Caller } from './declared-callers.js'
+import { class2RequesterOf, isRefusal, type Class2Asker, type Class2Requester } from './class2-requester.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -291,7 +292,7 @@ const optionalHost = (host: string | undefined): { host?: string } => (host === 
 const optionalCallerHost = (callerHost: string | undefined): { callerHost?: string } =>
   callerHost === undefined ? {} : { callerHost }
 /** CC-1614: read from the requester's own entry, never from a frame. */
-const requesterBindingOf = (entry: EntryView | undefined): { requesterBinding?: IdentityBinding } =>
+const requesterBindingOf = (entry: Class2Requester | undefined): { requesterBinding?: IdentityBinding } =>
   entry?.binding === undefined ? {} : { requesterBinding: entry.binding }
 /** CC-1059: a launch report's verdict, with only a string reason kept. */
 const reportOf = (msg: { ok: unknown; reason?: unknown }): { ok: boolean; reason?: string } => ({
@@ -533,8 +534,9 @@ export class SocketServer {
     // without being a session, and the socket is 0600, so reaching it at all
     // already means being the user. They hold no registry entry and therefore no
     // anchor, which §5.4 resolves as the new-window fallback rather than an error.
-    const requestedBy = this.core.registry.nameOf(conn) ?? HUMAN
-    const requester = this.core.registry.entryFor(conn)
+    const requester = this.class2RequesterOf(conn)
+    if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
+    const requestedBy = requester?.name ?? HUMAN
     const anchor = this.core.registry.anchorFor(conn)
     const cwd = resolveSpawnCwd(msg, this.core.registry.cwdFor(conn))
     const observed = this.core.registry.observedFor(conn)
@@ -1112,7 +1114,8 @@ export class SocketServer {
     // CC-1492: dropped, a garbled host would resume locally, against a transcript nobody asked about.
     if (msg.host !== undefined && typeof msg.host !== 'string')
       return reply(conn, { t: 'spawn_result', ok: false, reason: 'resume host must be a machine name' })
-    const requester = this.core.registry.entryFor(conn)
+    const requester = this.class2RequesterOf(conn)
+    if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
     const anchor = this.core.registry.anchorFor(conn)
     const source = wakeSource(msg.source)
     const host = nonBlank(msg.host)
@@ -1133,7 +1136,8 @@ export class SocketServer {
 
   private async handleSurface(conn: Conn, name: string): Promise<void> {
     const anchor = this.core.registry.anchorFor(conn)
-    const requester = this.core.registry.entryFor(conn)
+    const requester = this.class2RequesterOf(conn)
+    if (isRefusal(requester)) return replySwitch(conn, { ok: false, reason: requester.refusal })
     const outcome = await this.supervisor.switchSurface({
       name,
       to: 'interactive',
@@ -1145,9 +1149,16 @@ export class SocketServer {
     replySwitch(conn, outcome)
   }
 
-  /** CC-1138: a registered requester's id and binding, for the retire ownership rule. */
-  private ownershipOf(conn: Conn): { requesterAgentId?: string; requesterBinding?: IdentityBinding } {
-    const requester = this.core.registry.entryFor(conn)
+  /** CC-1138 e: who `conn`'s Class 2 frame asks as; see `class2RequesterOf`. */
+  private class2RequesterOf(conn: Conn): Class2Asker {
+    const claimable = (agentId: string, name: string) => this.core.claimable(agentId, name).ok
+    return class2RequesterOf(this.core.registry.entryFor(conn), this.callerOf(conn), claimable)
+  }
+
+  /** CC-1138: the requester's id and binding, for the ownership rule. */
+  private ownershipOf(
+    requester: Class2Requester | undefined,
+  ): { requesterAgentId?: string; requesterBinding?: IdentityBinding } {
     return {
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
       ...requesterBindingOf(requester),
@@ -2155,12 +2166,12 @@ export class SocketServer {
       case 'resume':
         return this.keyed(conn, msg, () => this.handleResume(conn, msg))
       case 'park': {
-        const requester = this.core.registry.entryFor(conn)
+        const requester = this.class2RequesterOf(conn)
+        if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
         void this.supervisor
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
-            ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
-            ...requesterBindingOf(requester),
+            ...this.ownershipOf(requester),
             ...(msg.noFixRoundCheck === true ? { noFixRoundCheck: true } : {}),
           })
           .then(result =>
@@ -2180,9 +2191,18 @@ export class SocketServer {
           requesterBinding: _binding,
           ...req
         } = msg as typeof msg & Record<'requesterAgentId' | 'requesterBinding', unknown>
-        const caller = this.core.registry.nameOf(conn)
+        const requester = this.class2RequesterOf(conn)
+        if (isRefusal(requester))
+          return reply(conn, {
+            t: 'retire_finished_result',
+            ok: false,
+            reason: requester.refusal,
+            plan: [],
+            results: [],
+          })
+        const caller = requester?.name
         void this.supervisor
-          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }), ...this.ownershipOf(conn) })
+          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }), ...this.ownershipOf(requester) })
           .then(outcome => reply(conn, { t: 'retire_finished_result', ...outcome }))
           .catch((err: Error) =>
             reply(conn, {
@@ -2196,9 +2216,11 @@ export class SocketServer {
         return
       }
       case 'retire': {
-        const actor = this.core.registry.nameOf(conn) ?? (msg.caller || undefined)
+        const requester = this.class2RequesterOf(conn)
+        if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
+        const actor = requester?.name ?? (msg.caller || undefined)
         const agentId = msg.agentId
-        const claim = { ...(actor === undefined ? {} : { requestedBy: actor }), ...this.ownershipOf(conn) }
+        const claim = { ...(actor === undefined ? {} : { requestedBy: actor }), ...this.ownershipOf(requester) }
         void (
           agentId === undefined
             ? this.supervisor.retire(msg.name, msg.force === true, actor, claim)
