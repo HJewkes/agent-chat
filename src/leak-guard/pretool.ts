@@ -2312,18 +2312,22 @@ function splitsUnreadHead(head: string, cmd: SimpleCommand, scope: Scope): boole
   if (NAMES_GIT.test(raw.replace(QUOTING, '')) || UNNAMED_SET.test(raw) || HIDDEN_NAME.test(raw)) return true
   // Like eval of text it cannot read, a substitution counts only on a line that names git or gh.
   if (scope.namesGit && cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
-  const names = [...raw.matchAll(VARIABLE)].map(match => match[1] as string)
-  // `${IFS}` adds a split, and a line that sets IFS splits even a plain value.
-  if (names.length > 0 && (names.includes('IFS') || mentions(unreferenced(scope.line), 'IFS'))) return true
-  return names.some(name => setUnreadably(name, scope.line))
+  return [...raw.matchAll(VARIABLE)].some(match => setUnreadably(match[1] as string, scope.line))
 }
+
+// Shell state that changes what a plain value expands to: IFS, which `${IFS}` itself adds, or an
+// attribute a declaration builtin sets, such as a nameref (`declare -n r=l`) or case folding.
+const EXPANSION_STATE =
+  /(?<![\w$./-])(?:IFS|declare|typeset|local|readonly|export|integer|float|nameref)(?![\w./-])/
 
 /**
  * Whether the line names a variable other than in a plain `NAME=word` of characters no shell
- * splits or expands, anywhere on it, since a loop may run a later `read NAME` first.
+ * splits or expands, anywhere on it, since a loop may run a later `read NAME` first. A plain
+ * value is readable only where the line sets no expansion state (CC-1411).
  */
 function setUnreadably(name: string, line: string): boolean {
   const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
+  if (name === 'IFS' || EXPANSION_STATE.test(said)) return true
   const named = said.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0
   const plain = line.match(new RegExp(`(?<![A-Za-z0-9_$])${name}=[\\w./:@%+,-]*(?=[\\s;&|)]|$)`, 'g'))
   return named > (plain?.length ?? 0)

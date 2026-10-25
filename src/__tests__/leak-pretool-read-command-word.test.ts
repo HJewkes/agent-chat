@@ -43,6 +43,11 @@ const BYPASSES: [string, string, string[]][] = [
   [`x=git_push; IFS=_; $x --no-verify`, REASONS.splitCommand, ['bash']],
   [`export IFS=_; x=git_push; $x --no-verify`, REASONS.splitCommand, ['bash']],
   [`l=git,push,--no-verify; IFS=,; $l`, REASONS.splitCommand, ['bash']],
+  // Read a plain value as one word whatever a declaration builtin sets: a nameref expands another name.
+  [`declare -n r=l; l=$(cat push.sh); $r`, REASONS.splitCommand, ['bash']],
+  [`declare -n r=l; l='${PUSH}'; $r`, REASONS.splitCommand, ['bash']],
+  [`f() { local -n r=l; l='${PUSH}'; $r; }; f`, REASONS.splitCommand, ['bash']],
+  [`typeset -n r=l; read -r l < push.sh; $r`, REASONS.splitCommand, ['bash']],
   // Drop the shell check of an expanded word: a shell behind it runs its -c string or its feed.
   [`while read -r l; do $l; done < push.sh`, REASONS.pipedScript, ['bash']],
   [`while read -r l; do $l; done <<'E'\n${PUSH}\nE`, REASONS.noVerify, ['bash']],
