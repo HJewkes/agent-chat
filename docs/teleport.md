@@ -1295,7 +1295,7 @@ heals itself, and a teleport while no launcher is connected is refused with
    confirm the account is logged in (Remote Control needs it). The launcher never
    seeds trust. An untrusted cwd or landing dir is refused at the probe with
    `workspace trust prompt: Claude Code on <mac host> has no accepted trust entry
-   for <dir> in <config>; the owner runs claude there once … and accepts it`.
+for <dir> in <config>; the owner runs claude there once … and accepts it`.
 6. **Mac: macOS prompts.** The first iTerm launch from the launchd job raises an
    Automation prompt, and reading `~/Downloads` raises a Files & Folders prompt for
    iTerm. Nobody answers these on a headless path, so the launch would time out at
@@ -1318,12 +1318,12 @@ hostname:
 
 The refusals, each followed by `; known machines: …`:
 
-| Reason | Meaning |
-| --- | --- |
-| `<host> is not one of the configured machines; add it to config machines or run host key-new` | not configured |
-| `the launcher on <host> has not proved its host key; provision its launcher key and restart it` | connected, unproved |
-| `no launcher connected on <host>` | configured, no launcher |
-| `unknown machine "<to>"` | not configured and not connected |
+| Reason                                                                                          | Meaning                          |
+| ----------------------------------------------------------------------------------------------- | -------------------------------- |
+| `<host> is not one of the configured machines; add it to config machines or run host key-new`   | not configured                   |
+| `the launcher on <host> has not proved its host key; provision its launcher key and restart it` | connected, unproved              |
+| `no launcher connected on <host>`                                                               | configured, no launcher          |
+| `unknown machine "<to>"`                                                                        | not configured and not connected |
 
 Known machines list only launchers that could be routed to. Isolation other than
 `none` is refused for any move off the predecessor's host, as before.
