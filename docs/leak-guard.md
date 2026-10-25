@@ -416,8 +416,14 @@ are read the same way, each from its own binary's getopt string (CC-1424). `nsen
 and `setarch` with no command run a shell, read as one reading stdin. `coresched` permutes, so its
 command is read only when it ends the line with no option among it, and a `chroot` command word
 starting with `-` denies, since uutils' chroot may read it as an option. `scriptlive`, which types a
-log file into what it runs, and `busybox` with any applet but `setsid`, deny on a line that may
+log file into what it runs, and `busybox` with an applet other than `setsid` and those below, deny on a line that may
 reach git or gh.
+
+`busybox` runs the applet its first word names, by basename, so `busybox /bin/sh` runs `sh`. Its
+`sh`, `ash`, `env`, `timeout` and `xargs` applets are checked as the command they name, each of
+which stops at its first operand and takes a subset of the GNU options: `busybox sh -c TEXT` and
+`busybox env git push` read as `sh -c TEXT` and `env git push` do. `ash`, busybox's shell and
+Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 
 | Denied                                                                                                                                                                                                                                                                                                                                    | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -1569,7 +1575,7 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - text fed to a shell as its script (CC-1393, CC-1408), in two parts.
 
-  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`; `SHELLS` in
+  Covered: a shell the guard knows (`bash`, `sh`, `zsh`, `dash`, `ksh`, `ash`; `SHELLS` in
   `src/leak-guard/pretool.ts`), or `source`/`.` of a stdin path, that reads its script from any
   stdin source in scope, on a line that may reach git or gh (as for command starts above). The
   guard reads the fed text as a script, or denies it (pipedScript) when it cannot read it:
@@ -1636,7 +1642,7 @@ Not covered, by design or by cost:
     `echo P | $(echo bash)`;
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
-    `echo P | busybox sh`, `echo P | mksh`, `echo P | fish`;
+    `echo P | mksh`, `echo P | fish`;
   - a pipe from a command whose output the guard cannot read (`curl … | bash`), on a line that
     cannot reach git or gh.
   - more generally: any shell the feed reaches through a command word, wrapper or shell name the

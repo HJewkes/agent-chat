@@ -123,7 +123,8 @@ const UNVERIFIED = [
 // Lines it cannot read, each of which still pushes: line, probe.
 const UNREAD: [string, string][] = [
   [`scriptlive -c '${P}' -t tm -I in`, 'scriptlive'],
-  [`busybox sh -c '${P}'`, 'busybox'],
+  [`busybox time ${P}`, 'busybox'],
+  [`busybox static-sh -c '${P}'`, 'busybox'],
   [`${USERNS} ${P}; kill $!`, 'userns'],
   [`X=-o; /usr/bin/time $X /dev/null ${P}`, 'time'],
   [`A='linux64 git'; setarch $A ${PUSHED}`, 'setarch'],
@@ -150,7 +151,7 @@ describe('exec wrappers run the command after their options (CC-1424)', () => {
     'enosys -z git push',
     'uclampset --frob git push',
     'coresched new git -v push',
-    'busybox env git push',
+    'busybox time git push',
     'scriptlive t ts && git status',
   ])('fails closed on a line that may reach git: %s', line => {
     expect(checkCommand(line, ctx)).toBe(REASONS.jobOption)
