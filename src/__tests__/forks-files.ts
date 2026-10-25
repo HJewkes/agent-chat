@@ -9,6 +9,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/gh-shim-gateway.test.ts',
   'src/__tests__/gh-shim-fallback.test.ts',
   'src/__tests__/gh-write-ticket.test.ts',
+  'src/__tests__/gh-shim-write-gate.test.ts',
   'src/__tests__/leak-git-shim.test.ts',
   'src/__tests__/leak-git-shim-stash.test.ts',
   'src/__tests__/leak-git-shim-locale.test.ts',

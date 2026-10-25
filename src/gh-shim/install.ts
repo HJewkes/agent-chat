@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { GH_GROUPS } from '../gh-write/gh-groups.js'
 import { posixShell } from '../leak-guard/posix-shell.js'
+import { READ_SUBCOMMANDS } from './rate-limit.js'
+import { AUTH_READS, DOWNLOAD_GROUPS } from './read-shape.js'
+import { GH_WRITE_TICKET_ENV } from './ticket.js'
 
 /** Set by the shim script so the shim can skip its own directory when it looks for the real gh. */
 export const GH_SHIM_DIR_ENV = 'AGENT_CHAT_GH_SHIM_DIR'
 
-/** `1` sends every command straight to the real gh, for when the shim itself is the suspect. */
+/** `1` sends every command the write gate lets through straight to the real gh, for when the shim itself is the suspect. */
 export const GH_SHIM_OFF_ENV = 'AGENT_CHAT_GH_SHIM_OFF'
 
 /** CC-1644: where the shim finds gh-write's launch keys; a literal on the exec line, so env cannot move it. */
@@ -34,7 +38,35 @@ const dropOwnDirFromPath = (dir: string): string[] => [
   'PATH=$kept',
 ]
 
-/** Falls back to the real gh when the node or the build it was written against has gone. */
+const patterns = (words: Iterable<string>): string => [...words].map(quote).join('|')
+
+/**
+ * CC-1644: the fallback's read list, a subset of `isKnownRead`. It cannot check a ticket or
+ * classify `gh api`, so with the build gone every write and every api call is refused.
+ */
+const knownReadFunction = (): string[] => [
+  'known_read() {',
+  '  [ "$#" -eq 0 ] && return 0',
+  '  case "$1" in',
+  '    search|help) return 0 ;;',
+  `    version|--version) [ "$#" -eq 1 ] && return 0 ;;`,
+  `    auth) case "$2" in ${patterns(AUTH_READS)}) return 0 ;; esac ;;`,
+  `    ${patterns(DOWNLOAD_GROUPS)}) [ "$2" = download ] && return 0 ;;`,
+  '  esac',
+  '  case "$1" in',
+  `    ${patterns([...GH_GROUPS].filter(group => group !== 'api'))})`,
+  `      case "$2" in ${patterns(READ_SUBCOMMANDS)}) return 0 ;; esac ;;`,
+  '  esac',
+  '  return 1',
+  '}',
+  'if ! known_read "$@"; then',
+  `  echo 'gh-shim: refused (write): the shim build is gone, so only known reads run. Post a write with: agent-chat gh-write -- <args>.' >&2`,
+  '  exit 1',
+  'fi',
+  `unset ${GH_WRITE_TICKET_ENV}`,
+]
+
+/** Falls back to the real gh for a known read when the node or the build it was written against has gone. */
 export const ghShimScript = (
   dir: string,
   node: string,
@@ -48,6 +80,7 @@ export const ghShimScript = (
     `if [ -x ${quote(node)} ] && [ -f ${quote(main)} ]; then`,
     `  ${GH_SHIM_DIR_ENV}=${quote(dir)} ${GH_KEY_ROOT_ENV}=${quote(keyRoot)} exec ${quote(node)} ${quote(main)} "$@"`,
     'fi',
+    ...knownReadFunction(),
     ...dropOwnDirFromPath(dir),
     'export PATH',
     'exec gh "$@"',

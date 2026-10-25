@@ -1,3 +1,4 @@
+import { leakGuardLogPath } from '../paths.js'
 import { parseRequest, type ShimRequest } from './argv.js'
 import { fileCallLogger } from './call-log.js'
 import { runRequest } from './commands.js'
@@ -6,13 +7,17 @@ import { gatewayApi } from './gateway.js'
 import { findOnPath, processIo } from './io.js'
 import { passThrough } from './passthrough.js'
 import { shimBudget, type ShimBudget } from './rate-limit.js'
+import { gateWrite } from './write-gate.js'
+
+const errOut = (text: string): void => void process.stderr.write(text)
 
 /**
  * Entry point of the `gh` on a spawned agent's PATH (CC-395).
  *
  * gh's `pr view/list/checks` read through GraphQL, whose hourly points budget every agent on the
  * machine shares; REST has its own, far larger, quota. This answers the read-only shapes agents use
- * from REST and hands every other command, writes included, to the real gh unchanged. Every real-gh
+ * from REST and hands every other known read, and every write gh-write sent with its ticket
+ * (CC-1644), to the real gh unchanged; any other command is refused before it starts. Every real-gh
  * call, answered or passed through, gets one gh-calls line (TP-1172 b), and a call a rate limit
  * refused starts the shared cooldown that later reads respect (CC-1162). Answers read through
  * Shepherd serve's gateway first (CC-1178), so they are not gated up front: the gateway serves
@@ -38,6 +43,9 @@ async function answer(
 }
 
 async function main(argv: readonly string[]): Promise<number> {
+  const io = { env: process.env, now: Date.now(), logFile: leakGuardLogPath(), stderr: errOut }
+  const refused = gateWrite(argv, io)
+  if (refused !== undefined) return refused
   const realGh = findOnPath('gh', process.env.PATH, process.env[GH_SHIM_DIR_ENV])
   if (realGh === undefined) {
     process.stderr.write('agent-chat gh shim: no gh on PATH besides the shim\n')

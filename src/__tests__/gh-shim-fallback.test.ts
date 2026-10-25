@@ -43,9 +43,9 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-function runShim(shell: string, shimEntry: string) {
+function runShim(shell: string, shimEntry: string, args = ['pr', 'view', '7']) {
   const env = { PATH: [shimEntry, fakeDir, '/usr/bin', '/bin'].join(':'), FAKE_GH_LOG: logFile }
-  return spawnSync(shell, [path.join(shimDir, 'gh'), 'pr', 'view', '7'], {
+  return spawnSync(shell, [path.join(shimDir, 'gh'), ...args], {
     cwd: dir,
     env,
     encoding: 'utf8',
@@ -84,4 +84,27 @@ describe.each(SHELLS)('the gh shim fallback under %s, its build gone', shell => 
     // Kills: a filter that drops or reorders entries other than the shim's own.
     expect(result.stdout).toContain(`path ${[fakeDir, '/usr/bin', '/bin'].join(':')}\n`)
   })
+
+  it.each([
+    ['a write', ['issue', 'comment', '3', '--body', 'x']],
+    ['an api call, which it cannot classify', ['api', 'repos/acme/widgets/pulls']],
+    ['a leading repo flag', ['-R', 'acme/widgets', 'pr', 'view', '7']],
+    ['a verb that is a read only in another group', ['ext-name', 'view']],
+  ])('refuses %s without starting the real gh (CC-1644)', (_, args) => {
+    const result = runShim(shell, shimDir, args)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(/^gh-shim: refused \(write\)/)
+    expect(realGhRuns()).toEqual([])
+  })
+
+  it.each([['auth', 'git-credential', 'get'], ['run', 'download', '9'], ['search', 'prs'], ['--version']])(
+    'runs the known read %s',
+    (...args) => {
+      const result = runShim(shell, shimDir, args)
+
+      expect(result.status).toBe(0)
+      expect(realGhRuns()).toEqual([args.join(' ')])
+    },
+  )
 })

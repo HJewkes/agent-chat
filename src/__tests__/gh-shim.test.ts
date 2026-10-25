@@ -410,11 +410,11 @@ describe('gh shim answering run view and run watch from REST', () => {
 })
 
 describe('gh shim passing commands through to the real gh', () => {
-  it('hands an unhandled command to the real gh untouched, writes included', () => {
-    const result = gh({}, 'pr', 'merge', '7', '--squash', '--repo', 'acme/widgets')
+  it('hands a read it does not answer to the real gh untouched', () => {
+    const result = gh({}, 'run', 'download', '99', '--repo', 'acme/widgets')
 
-    expect(result.stdout).toBe('real-gh pr merge 7 --squash --repo acme/widgets\n')
-    expect(calls()).toEqual([['pr', 'merge', '7', '--squash', '--repo', 'acme/widgets']])
+    expect(result.stdout).toBe('real-gh run download 99 --repo acme/widgets\n')
+    expect(calls()).toEqual([['run', 'download', '99', '--repo', 'acme/widgets']])
   })
 
   it('passes through a field it cannot answer from REST without spending any API call', () => {
