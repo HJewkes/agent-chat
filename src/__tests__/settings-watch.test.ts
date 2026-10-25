@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -170,4 +171,49 @@ describe('settings-watch edge cases', () => {
 
     expect(() => server.settingsWatch.register('e'.repeat(64), [plan, settings])).toThrow(/unreadable/)
   })
+
+  it('refuses an empty list of files', () => {
+    const { server } = setup()
+
+    expect(() => server.settingsWatch.register('e'.repeat(64), [])).toThrow(/no files/)
+  })
+})
+
+describe('settings-watch reads only the same bounded regular file', () => {
+  const swaps: [string, boolean, (file: string) => void][] = [
+    ['a FIFO', process.platform !== 'win32', file => execFileSync('mkfifo', [file])],
+    ['a symlink to /dev/zero', fs.existsSync('/dev/zero'), file => fs.symlinkSync('/dev/zero', file)],
+    ['a directory', true, file => fs.mkdirSync(file)],
+  ]
+
+  for (const [name, runs, swap] of swaps)
+    it.runIf(runs)(`latches state when a launch file is swapped for ${name}`, () => {
+      const { settings, notices } = setup()
+      fs.rmSync(settings)
+      swap(settings)
+
+      vi.advanceTimersByTime(TICK_MS)
+
+      expect(notices()).toHaveLength(1)
+      expect(notices()[0]).toMatchObject({ meta: { file: settings, field: 'state' } })
+    }, 5_000)
+
+  it('latches state when a launch file is replaced by another regular file with the same bytes', () => {
+    const { settings, notices } = setup()
+    const copy = `${settings}.new`
+    fs.copyFileSync(settings, copy)
+    fs.renameSync(copy, settings)
+
+    vi.advanceTimersByTime(TICK_MS)
+
+    expect(notices()[0]).toMatchObject({ meta: { file: settings, field: 'state' } })
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses to register a FIFO', () => {
+    const { server } = setup()
+    const fifo = path.join(dirs.at(-1) ?? '', 'pipe')
+    execFileSync('mkfifo', [fifo])
+
+    expect(() => server.settingsWatch.register('e'.repeat(64), [fifo])).toThrow(/unreadable/)
+  }, 5_000)
 })
