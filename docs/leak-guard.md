@@ -997,12 +997,7 @@ name, are allowed too.
 
 "Runs git anywhere" is the guard's own may-reach-git test (CC-478), the one the hidden-command
 budget uses, not a search for the word `git`: a command word that may expand to git counts, such as
-`${G}t` after `G=gi`, `g{i,}t` or `$'g\x69t'`. For this rule any expansion in a command word counts
-too (TP-4231): `$G`, `${G:-x}` or `./$G`, any word of a wrapper chain such as `sudo $G`, `xargs $G`
-or `env $A=x $G`, and a command word in the text `eval` or `sh -c` runs. So
-`read $A <<< ext; $G fetch o`, `export $A=ext; sh -c '$G fetch o'` and `LESS=-R $P f` deny, as
-does `env -C /x $X q`, where env may read `$X` as a name or run it. So
-does any `$(…)` substitution or a variable
+`${G}t` after `G=gi`, `g{i,}t` or `$'g\x69t'`, and so does any `$(…)` substitution or a variable
 the line or the hook ties to git or gh. It includes a nested `sh -c`/`bash -c`/`eval` that runs
 git, and a prefix env on such a shell (`GIT_EDITOR=… sh -c 'git commit'`) counts as reaching git. So
 `G=gi; GIT_PAGER='git push --no-verify' ${G}t log` is denied, as are
@@ -1016,6 +1011,18 @@ as an assignment once, so `GIT_EDITOR='git push' ls`, which runs no git, stays a
 name uses and the git scan also read the command the guard's own unwrap says runs: its
 assignments and words, including those `env -S` splits out of one word, behind any wrapper. So
 `env -S "GIT_PAGER=less git log"` and `nice env -S "GIT_EDITOR=x git commit"` deny.
+
+A hidden variable name also denies, as `programEnv` or `searchPathEnv`, when anything the call
+runs is a command the guard cannot name, which may be git though no git shows (TP-4231). The
+guard records that while it walks the call, in the same places it would check git: a command
+word it cannot resolve (`$G`, `${G:-x}`, `./$G`, behind `sudo`, `env` or `xargs` too), a wrapper
+whose options it cannot read (`setsid $G`), and a shell or `source /dev/stdin` fed a script it
+cannot read. That covers the text `eval` joins, `sh -c` strings and fed scripts, and the hidden
+name may sit in any script the call runs. So `read $A <<< ext; $G fetch o`,
+`export $A=ext; sh <<< '$G fetch o'` and `eval 'read $A <<< ext'; $G fetch o` deny, while
+`$G status` and `read $A <<< ext; echo hi` stay allowed. A child shell cannot pass a name back,
+so `bash -c 'read $A'; $G x` is a false deny the guard accepts, as is `env -C /x $X q`, where env
+may read `$X` as a name or run it.
 
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of

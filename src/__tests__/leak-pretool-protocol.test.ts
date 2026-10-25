@@ -598,7 +598,10 @@ describe('a hidden variable name on a line whose command word is only an expansi
     `export $A=ext; sh <<< '$G fetch o'`,
     `export $A=ext; echo '$G fetch o' | bash`,
     'export $A=ext; cat f | bash',
+    'export $A=ext; cat f | source /dev/stdin',
     `eval 'read $A <<< ext'; $G fetch o`,
+    // A child shell cannot pass the name back; the guard accepts this false deny.
+    `bash -c 'read $A'; $G x`,
   ])('denies a command word it cannot name in a script the line runs: %j', command => {
     expect(hookReason(command)).toBe(REASONS.programEnv)
   })
