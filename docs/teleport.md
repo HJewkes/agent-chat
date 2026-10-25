@@ -1240,3 +1240,144 @@ directory showing does not use up the name's, because two seats can share one
 directory and the handoff belongs to the name. `agent-chat handoff last <name>` prints the
 newest stored handoff for a name and what became of its teleport. It reads
 `events.db` directly, so it works while the broker is down.
+
+---
+
+## 17. Teleport to a Mac (CC-1646)
+
+`agent_teleport(to: "mac")` from a session on the broker's machine (basement) lands
+the successor on the owner's Mac, and `agent_teleport(to: "basement")` brings it
+back. This section is what the merged code does (slices A to E, ac#1248, #1251,
+#1256, #1259, #1260, #1247), checked against source. The live round trip is not
+recorded here. `<mac host>` is the one machine name used everywhere below, for
+example `<host>.<tailnet>.ts.net`.
+
+### 17.1 How the Mac reaches basement
+
+Nothing is synced and the broker gains no listener. The Mac holds an ssh forward
+of basement's broker socket to its own `~/.agent-chat/chat.sock`, so
+`agent-chat host serve` and the Mac successor's MCP server dial what they take to
+be a local broker. The trust boundary stays the OS account plus the ssh key. The
+same forward carries `-L 7400`, basement's active-work MCP, because workspaces are
+reached through MCP only: the single-writer rule means a session that needs raw
+files from a workspace teleports back. Mac-local files are read on the Mac and
+what matters is written back through active-work (`source add`) or carried in
+the return handoff.
+
+The forward is the owner's own supervised job on the Mac, for example
+`ssh -N -o StreamLocalBindUnlink=yes -L "$HOME/.agent-chat/chat.sock:<basement home>/.agent-chat/chat.sock" -L 7400:127.0.0.1:7400 <basement host>.<tailnet>.ts.net`
+kept alive by launchd. `host serve` reconnects every 5s, so a dropped forward
+heals itself, and a teleport while no launcher is connected is refused with
+`no launcher connected on <mac host>` before anything is ended. Check with
+`agent-chat host list` on basement first.
+
+### 17.2 One-time setup
+
+1. **Mac: update agent-chat** to a build with slices A, D1 and E. A launcher from
+   before D1 still works but never announces a landing dir.
+2. **Basement: `agent-chat host key-new <mac host> --alias mac`.** It mints the
+   broker-side launcher key (idempotent) under `~/.agent-chat/launcher-keys/` and
+   records `mac → <mac host>` in `launcher-keys/aliases.json`. It prints the key
+   path and the pull command, never the key. On the Mac run that command, which has
+   the form `scp <basement host>:.agent-chat/launcher-keys/<mac host>.key ~/.agent-chat/launcher.key`,
+   then `chmod 600 ~/.agent-chat/launcher.key`. A key that is loose, a symlink
+   or missing leaves the alias unlisted.
+3. **Mac: `agent-chat host install --host <mac host>`.** It prints the launchd
+   plist and the `mkdir` and `launchctl bootstrap gui/<uid> …` commands; the owner
+   writes and runs them. Pass the same `--host` that `key-new` used: the default
+   is `os.hostname()`, which on macOS may be `<name>.local`, and a name that
+   differs from the registered one is not configured. `host serve` also takes
+   `--landing <dir>`.
+4. **Basement: `agent-chat host list`** shows `<mac host>  darwin  headless,iterm-…`.
+5. **Mac: make the landing dir** (`mkdir ~/agent-landing`) and trust it once per
+   profile. For each `CLAUDE_CONFIG_DIR` a teleporting session uses, run `claude`
+   in `~/agent-landing` with that variable set, accept the trust prompt, and
+   confirm the account is logged in (Remote Control needs it). The launcher never
+   seeds trust. An untrusted cwd or landing dir is refused at the probe with
+   `workspace trust prompt: Claude Code on <mac host> has no accepted trust entry
+for <dir> in <config>; the owner runs claude there once … and accepts it`.
+6. **Mac: macOS prompts.** The first iTerm launch from the launchd job raises an
+   Automation prompt, and reading `~/Downloads` raises a Files & Folders prompt for
+   iTerm. Nobody answers these on a headless path, so the launch would time out at
+   45s and the predecessor is kept. Accept both on a first, attended teleport.
+
+### 17.3 "Configured" and "proved"
+
+A launcher is chosen only when both hold, whether `to` named the alias or the raw
+hostname:
+
+- **Configured.** The host is a value in `knownMachineAliases()`
+  (`agents/machine-registry.ts`): the `machines` config, laid over the machines
+  `key-new` registered. Config wins on a clash. A registered machine counts only
+  while its broker key file is usable.
+- **Proved.** Its `host_hello` carried a valid proof of its launcher key over the
+  connection's single-use nonce. The broker records the verdict under both
+  `hostProof` modes (`off` accepts an unproved launcher but does not route to it),
+  and every frame to the launcher looks the host up again, so a launcher that took
+  the machine after the route was chosen is refused unless it proved too.
+
+The refusals, each followed by `; known machines: …`:
+
+| Reason                                                                                          | Meaning                          |
+| ----------------------------------------------------------------------------------------------- | -------------------------------- |
+| `<host> is not one of the configured machines; add it to config machines or run host key-new`   | not configured                   |
+| `the launcher on <host> has not proved its host key; provision its launcher key and restart it` | connected, unproved              |
+| `no launcher connected on <host>`                                                               | configured, no launcher          |
+| `unknown machine "<to>"`                                                                        | not configured and not connected |
+
+Known machines list only launchers that could be routed to. Isolation other than
+`none` is refused for any move off the predecessor's host, as before.
+
+### 17.4 Where the successor lands, and the way back
+
+When the predecessor's cwd is not on the Mac, the probe answers
+`missing: 'cwd'` and teleport probes again at the landing dir the launcher
+announced. That dir is `host serve --landing`, default `~/agent-landing`, announced
+by its real path only while it exists under home and outside a credential
+directory, and checked on every connect. If the second probe passes:
+
+- the successor launches in the landing dir;
+- the `agent_handoff` row's meta gets `origin_cwd` (the workspace) and
+  `landed_cwd`;
+- the successor's first message says it was launched in the landing dir and
+  that `origin_cwd` is on the handoff;
+- the handoff body is stored verbatim.
+
+If the cwd exists and is trusted on the Mac it is kept and no origin is recorded.
+If the launcher announced no landing dir, the refusal is the launcher's own. If the
+landing dir is refused too, the reason reads `<reason>, and its landing dir <dir>:
+<reason>`. A `missing: 'configDir'` answer has no fallback: the config dir must
+exist on the Mac.
+
+**The return leg.** A Mac session in the landing dir teleports to `basement`, where
+that dir does not exist. `routeFor` then walks the `teleport_from` chain to the
+nearest handoff that recorded `origin_cwd` and launches there if it exists on
+basement; the successor is told so. Only this chain is read, never another agent's
+handoffs. The return row records `landed_cwd` only, because its own cwd was a
+landing dir and not a workspace. If neither exists the refusal reads `<cwd> does
+not exist on <host>, nor does <origin>, where its chain began before landing in
+<landing>`; with no recorded origin it is the plain `does not exist` refusal.
+
+When the Mac predecessor uses the caller site, its landing helper
+(`caller-teleport.ts`, `armHelper`) runs in the session's cwd. If that cwd was
+removed it falls back to home and writes a line to `land.log` saying so, and a
+missing node binary or CLI entry throws a reason naming the file, instead of the
+spawn ENOENT that named neither.
+
+### 17.5 Remote Control
+
+A coordinator's Remote Control crosses a launcher teleport. The broker decides
+`remoteControl` from the profile, the seat file, or the predecessor's argv
+(`--remote-control`), and puts it in the `host_launch` spec. The launcher checks
+the role again from the profile it loads, so a worker never gets it whatever the
+spec says. For a predecessor on another machine the broker cannot read the argv, so
+it relies on the flag its MCP process reported. The Mac successor's argv showing
+`--remote-control` is the observation that proves it, and it is not recorded yet.
+
+### 17.6 Going live
+
+Slices B, C, D1 and D2 change broker code, so they take effect at a broker restart,
+which no agent does. Before the window, finish steps 1 to 4 above: once C is live a
+Mac launcher without its key is refused. After it, `agent-chat host list` must show
+the Mac and no `proof-invalid` rows in the broker log. The CLI-only (A) and
+MCP-side (E) changes need no restart; the Mac needs the new build for D1 and E.
