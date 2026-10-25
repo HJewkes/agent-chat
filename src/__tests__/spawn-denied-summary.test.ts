@@ -14,7 +14,10 @@ function bdImplementerDenies(): string[] {
   return profile.disallowedTools ?? []
 }
 
-const WARNINGS = ['predecessor old-scout is not retired', 'brief names a tool the profile denies: Bash(gh api:*)']
+const WARNINGS = [
+  'predecessor old-scout is not retired',
+  'brief names a tool the profile denies: Bash(gh api:*)',
+]
 
 const spawned = (disallowedTools: string[]): SpawnResult => ({
   t: 'spawn_result',
