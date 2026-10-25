@@ -1,7 +1,7 @@
 {
   "description": "Headless Sonnet worker that repairs ONE explainer custom-layer TSX module so it passes the compile gate.",
   "model": "sonnet",
-  "allowedTools": ["Read", "Write", "Edit"],
+  "allowedTools": ["Read(./**)", "Write(./**)", "Edit(./**)"],
   "disallowedTools": [
     "Bash",
     "Glob",

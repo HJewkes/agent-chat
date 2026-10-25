@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { buildLaunchPlan } from '../agents/launch-plan.js'
 import { loadProfile } from '../agents/profiles.js'
 import type { AgentProfile } from '../agents/types.js'
 
@@ -80,8 +81,29 @@ describe('the beat-builder-tsx profile (TP-2608)', () => {
   })
 
   // Mutation caught: granting Bash or a search tool, which lets the worker build, fetch or roam.
-  it('allows Read, Write and Edit and nothing else', () => {
-    expect(beatBuilderTsx().allowedTools).toEqual(['Read', 'Write', 'Edit'])
+  it('allows Read, Write and Edit inside its cwd and nothing else', () => {
+    expect(beatBuilderTsx().allowedTools).toEqual(['Read(./**)', 'Write(./**)', 'Edit(./**)'])
+  })
+
+  // Mutation caught: a bare grant, which a headless call outside the scratch cwd matches instead of being refused.
+  it('grants no file tool without a path scope', () => {
+    for (const tool of ['Read', 'Write', 'Edit']) expect(beatBuilderTsx().allowedTools).not.toContain(tool)
+  })
+
+  it('still launches with exactly Read, Write and Edit as its tool set', () => {
+    const { args } = buildLaunchPlan({
+      agentId: 'ag000001',
+      sessionId: '00000000-0000-4000-8000-000000000001',
+      name: 'layer-repair',
+      profile: beatBuilderTsx(),
+      brief: 'repair the module',
+      cwd: '/scratch',
+      cwdHoldsUserSettings: false,
+      adopted: false,
+      mcpConfigPath: '/state/agents/ag000001/mcp.json',
+    })
+
+    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Write,Edit')
   })
 
   // Mutation caught: dropping ToolSearch from the denies, which reaches every deferred MCP tool.
