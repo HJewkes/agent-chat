@@ -435,6 +435,41 @@ export const ghWritesCredentialHelper = (
   unsure: boolean,
 ): boolean => verb === 'auth' && (unsure || (sub !== undefined && WRITES_CREDENTIAL_HELPER.has(sub)))
 
+/** Flags of `gh auth login` and `refresh` that `gcloud auth login` and its kin do not take. */
+const GH_AUTH_FLAGS = new Set([
+  '--git-protocol',
+  '--with-token',
+  '--insecure-storage',
+  '--skip-ssh-key',
+  '--clipboard',
+])
+
+/**
+ * Builtins whose words are data, so `auth setup-git` among them runs nothing. Only builtins and only
+ * by bare name: a gh copied to `./grep`, or to a `grep` earlier on PATH, runs as that name.
+ */
+const DATA_BUILTINS = new Set(['echo', 'printf'])
+
+/** Whether the command word runs a builtin that takes its words as data, never a renamed gh. */
+export const ghDataProgram = (head: string): boolean => DATA_BUILTINS.has(head)
+
+/**
+ * Whether a program not named gh may be a renamed copy of it writing its own path as git's credential
+ * helper (TP-4232), as `./x auth setup-git` does after `cp "$(command -v gh)" ./x`. `auth` with
+ * `setup-git`, an unresolved subcommand, or a gh-only flag counts; a bare `auth login` or `refresh` does not,
+ * since other CLIs take it and it waits on a browser a headless agent cannot open.
+ */
+export function renamedGhWritesHelper(head: string, args: readonly (string | undefined)[]): boolean {
+  if (ghDataProgram(head)) return false
+  const at = ghCommandWords(args, 2)
+  const [verb, sub] = at.map(i => args[i])
+  if (verb !== 'auth') return false
+  // A boolean flag such as `--with-token` reads, to ghCommandWords, as taking the subcommand after it.
+  return (
+    at[1] === HIDDEN || sub === 'setup-git' || args.some(arg => GH_AUTH_FLAGS.has(arg?.split('=')[0] ?? ''))
+  )
+}
+
 /** `gh help <word>` runs extension `<word>` with the other words when it is no gh command (probed on gh 2.102). */
 export const ghHelpRunsExtension = (topic: string | undefined): boolean =>
   topic === undefined || !GH_BUILTINS.has(topic)

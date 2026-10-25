@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { SAFE_GIT_PROTOCOLS } from '../git.js'
 import { ALIAS_NAME } from './git-alias.js'
+import { probeGit, writeGitMirror } from './git-mirror.js'
 import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
 
 /** Names the dir holding the agent's `git` shim in the launch plan; `run-agent` puts it first on PATH. */
@@ -162,6 +162,11 @@ const HIDE_GIT_CONFIG = `unset caller_git_config
 case \${GIT_CONFIG+set} in set) caller_git_config=$GIT_CONFIG; unset GIT_CONFIG ;; esac`
 const RESTORE_GIT_CONFIG = `[ -z "\${caller_git_config+set}" ] || export GIT_CONFIG="$caller_git_config"`
 
+// TP-4249: git puts its exec-path first on the PATH of every shell it starts, so pinning the mirror
+// on every run makes such a shell's git the shim, even after an unset; a dashed name is the subcommand.
+const PIN_MIRROR = `[ -z "$mirror" ] || export GIT_EXEC_PATH="$mirror"
+case \${0##*/} in git-?*) set -- "\${0##*/git-}" "$@" ;; esac`
+
 // agentEnv and launch-agent still export this exact list (CC-1587), so the shim reads it as unset.
 const LEGACY_PIN = 'file:git:http:https:ssh'
 
@@ -221,6 +226,11 @@ const SHADOWED_FN = `shadowed() {
   [ "$body" != "$alias" ]
 }`
 
+// TP-4249: a bare --exec-path only prints; a dir other than the mirror would undo the pin for git's child shells.
+const FOREIGN_EXEC_PATH_FN = `foreign_exec_path() {
+  case $1 in --exec-path=*) [ -z "$mirror" ] || [ "\${1#--exec-path=}" != "$mirror" ] ;; *) return 1 ;; esac
+}`
+
 // Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
   globals= fileglobals= cmdglobals= depth=0
@@ -232,6 +242,8 @@ const RESOLVE_FN = `resolve() {
       case $1 in -c | --config-env) cmdglobals="$cmdglobals $option $q" ;; *) fileglobals="$fileglobals $option $q" ;; esac
       shift 2; continue ;;
     -*)
+      foreign_exec_path "$1" &&
+        refuse_pin exec-path "--exec-path=<dir> makes git run its helpers, and the git its shells find, from a dir other than the shim's mirror."
       quote "$1"; globals="$globals $q"
       case $1 in -c?* | --config-env=*) cmdglobals="$cmdglobals $q" ;; *) fileglobals="$fileglobals $q" ;; esac
       shift; continue ;;
@@ -485,10 +497,13 @@ export const gitShimScript = (
   shell = posixShell(),
   shellAliases: readonly string[] = [],
   spawnHome: SpawnConfigHome = {},
+  mirror = '',
 ): string =>
   `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
-${ENVIRONMENT_SCRUB}${HIDE_GIT_CONFIG}
+${ENVIRONMENT_SCRUB}mirror=${shQuote(mirror)}
+${PIN_MIRROR}
+${HIDE_GIT_CONFIG}
 ${PIN_PROTOCOLS}
 real=${shQuote(real)}
 guard=${shQuote(guard)}
@@ -509,6 +524,7 @@ ${EXTERNAL_FN}
 ${MENTIONS_PUSH_FN}
 ${ARGS_PUSH_FN}
 ${SHADOWED_FN}
+${FOREIGN_EXEC_PATH_FN}
 ${RESOLVE_FN}
 ${CFG_FN}
 ${VALUES_FN}
@@ -557,18 +573,19 @@ export function findRealGit(pathValue: string, shimDir: string): string | undefi
   return undefined
 }
 
-/** Empty on failure; the shim then reads the list itself on each call, and `push` is matched by name first. */
+/** Read with GIT_EXEC_PATH unset, so it stays the real core under a nested launch; empty on failure. */
 const gitExecPath = (real: string): string => {
   try {
-    return execFileSync(real, ['--exec-path'], { encoding: 'utf8', timeout: 5000 }).trim()
+    return probeGit(real, ['--exec-path']).trim()
   } catch {
     return ''
   }
 }
 
+/** Empty on failure; the shim then reads the list itself on each call, and `push` is matched by name first. */
 function gitBuiltins(real: string): string[] {
   try {
-    return execFileSync(real, ['--list-cmds=builtins'], { encoding: 'utf8', timeout: 5000 })
+    return probeGit(real, ['--list-cmds=builtins'])
       .split('\n')
       .filter(name => /^[a-z0-9-]+$/.test(name))
   } catch {
@@ -587,11 +604,14 @@ export function writeGitShim(
   const real = findRealGit(pathValue, dir)
   if (real === undefined) return false
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const builtins = gitBuiltins(real)
+  const execPath = gitExecPath(real)
+  const mirror = writeGitMirror(dir, real, execPath, builtins)
   const target = path.join(dir, 'git')
   const temp = `${target}.${process.pid}.tmp`
   fs.writeFileSync(
     temp,
-    gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real), posixShell(), shellAliases, spawnHome),
+    gitShimScript(real, guard, builtins, execPath, posixShell(), shellAliases, spawnHome, mirror),
     { mode: 0o755 },
   )
   fs.chmodSync(temp, 0o755)

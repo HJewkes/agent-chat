@@ -72,11 +72,14 @@ import {
   GH_HELPER_VARS,
   ghWritesCredentialHelper,
   unsafeHelperEnv,
+  renamedGhWritesHelper,
+  ghDataProgram,
   HIDDEN,
   type GhAlias,
   type GhAliasSet,
   type ReadGhAliases,
 } from './gh-runs.js'
+import { editsEnvFile } from './env-files.js'
 import {
   expandsToWords,
   hasOptionAlternation,
@@ -261,6 +264,8 @@ export const REASONS = {
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
   ghCredentialHelper: `leak-guard: gh auth setup-git, login or refresh writes the gh path it finds from GH_PATH or PATH into git config as the credential helper, a program git runs on every later fetch and push, and this line sets GH_PATH or PATH, one of them holds a quote or relative entry, or the guard cannot tell. Run gh auth setup-git without changing GH_PATH or PATH. ${DOCS}`,
+  ghHelperEnvFileEdit: `leak-guard: the Edit and Write tools may not change a file a later shell sources (startup file, CLAUDE_ENV_FILE, Claude session-env or shell snapshot, or the hook's BASH_ENV or ENV file), matched by its real path; only the owner changes these files. ${DOCS}`,
+  ghRenamed: `leak-guard: this runs auth setup-git, an auth subcommand the guard cannot read, or auth login or refresh with a gh flag through a program not named gh, which may be a renamed copy of gh that writes its own path as git's credential helper. Run gh by its name. ${DOCS}`,
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
   xargsPush: `leak-guard: git push run by xargs may take --no-verify from the words xargs reads, which the guard cannot see. Write the push out, or put -- before the words xargs adds, as in xargs git push origin --. ${DOCS}`,
@@ -2078,12 +2083,15 @@ function writesGhConfig(ctx: GuardContext, scope: Scope): boolean {
  * Whether gh may read its aliases from a config other than the one the hook reads, judged from the
  * scope's environment as `aliasEnv` judges git's: an environment the guard lost track of (after
  * `. file`, `source` or `eval`), an earlier export or unset that differs from the hook's value, a
- * setting it cannot tell, or a use of the name it does not model all count.
+ * setting it cannot tell, or a use of the name it does not model all count. The use counts even
+ * when the exports hold the name, as in changesHelperPath (TP-4232): a prefix assignment on an
+ * enclosing `bash -c`, function call or `eval` reaches gh without passing through the exports.
  */
 function changesGhHome(assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean {
   if (scope.env === undefined || setsGhHome(assigns, ctx.env)) return true
-  return [...GH_HOME_VARS].some(name =>
-    scope.exports.has(name) ? scope.exports.get(name) !== ctx.env[name] : mentions(scope.said, name),
+  return [...GH_HOME_VARS].some(
+    name =>
+      (scope.exports.has(name) && scope.exports.get(name) !== ctx.env[name]) || mentions(scope.said, name),
   )
 }
 
@@ -2462,7 +2470,10 @@ const mayStartCommand = (word: string): boolean =>
   word.includes(LIVE) ||
   PREFIX_WORDS.has(word) ||
   ASSIGNMENT.test(word) ||
-  CHECKED_NAMES.has(path.basename(word))
+  CHECKED_NAMES.has(path.basename(word)) ||
+  DASHED_GIT.test(path.basename(word))
+
+const DASHED_GIT = /^git-(.+)$/
 
 const suffixCommand = (cmd: SimpleCommand, marked: readonly string[]): SimpleCommand => ({
   ...cmd,
@@ -2807,6 +2818,10 @@ function checkSimple(
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
+  // git runs its builtin when called by its dashed name (`$(git --exec-path)/git-push`), so read it as `git push` (CC-1633).
+  const dashed = DASHED_GIT.exec(name)?.[1]
+  if (dashed !== undefined)
+    return checkGitRun(gitRun([dashed, ...marked], unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if ((name === 'gh' || (name === 'agent-chat' && args[0] === 'gh-write')) && privileged)
     return REASONS.privilegedGh
   if (name === 'gh')
@@ -2825,7 +2840,38 @@ function checkSimple(
   if (SSH_PROGRAMS.has(name))
     return sshRunsLocalProgram(name, marked, cmd.splits) ? REASONS.sshProgram : undefined
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
-  return undefined
+  const resolved = marked.map(word => (word.includes(LIVE) ? undefined : unmark(word)))
+  if (renamedGhWritesHelper(head, resolved)) return REASONS.ghRenamed
+  return renamedGhRunsAlias(head, resolved, unwrapped.assigns, ctx, at) ? REASONS.ghRenamed : undefined
+}
+
+// HOME is left out: a prefix HOME is common on build lines, and an accepted gap here.
+const ALIAS_HOME_VARS: readonly string[] = ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME']
+
+/** Whether the command or an earlier export points gh at a config other than the hook's. */
+function movesGhConfig(assigns: readonly string[], ctx: GuardContext, scope: Scope): boolean {
+  const prefix = assigns.some(word => ALIAS_HOME_VARS.includes(ASSIGNMENT.exec(word)?.[1] ?? ''))
+  return prefix || ALIAS_HOME_VARS.some(v => scope.exports.has(v) && scope.exports.get(v) !== ctx.env[v])
+}
+
+/**
+ * Whether a program not named gh may be a renamed copy running a gh alias (TP-4232), as
+ * `./x a setup-git` does after `gh alias set a auth`: its words name an alias in the hook's gh
+ * config, or the line points gh at another config whose aliases the guard does not read.
+ */
+function renamedGhRunsAlias(
+  head: string,
+  args: readonly (string | undefined)[],
+  assigns: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+): boolean {
+  // A bare assignment has no program to run.
+  if (head === '' || ghDataProgram(head)) return false
+  if (movesGhConfig(assigns, ctx, scope)) return true
+  if (ctx.readGhAliases === undefined) return false
+  const found = ghAliasAt(args, ghCommandWords(args, 3), ctx.readGhAliases)
+  return found !== undefined && typeof found !== 'string' && found.aliases.length > 0
 }
 
 const CD_WORDS = new Set(['cd', 'chdir', 'pushd', 'popd'])
@@ -3415,6 +3461,13 @@ const DEFERRED_REASONS: ReadonlyMap<DeferredEnv, string> = new Map<DeferredEnv, 
   [SEARCH_UNREAD, REASONS.searchPathEnv],
 ])
 
+/**
+ * The hidden-name reason when it caused `reason`: a name the shell builds may export GH_CONFIG_DIR,
+ * so the renamed-gh rule then fires on every program after it, where the name is what to fix.
+ */
+const outranked = (reason: string, envReason: DeferredEnv | undefined): string | undefined =>
+  reason === REASONS.ghRenamed && envReason === NAME_HIDDEN ? DEFERRED_REASONS.get(envReason) : undefined
+
 /** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */
 function deniesExpansion(command: string): boolean {
   const risk = expansionRisk(command)
@@ -3485,7 +3538,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     const fed = feeds(cmd, prev, at, line)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
-    if (reason !== undefined) return reason
+    if (reason !== undefined) return outranked(reason, envReason) ?? reason
     prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)
   }
@@ -3531,7 +3584,8 @@ export function checkToolCall(toolName: string, toolInput: unknown, ctx: GuardCo
   const file = input.file_path ?? input.notebook_path
   if (typeof file !== 'string') return undefined
   const resolved = path.resolve(ctx.cwd, file)
-  return ctx.protectedPaths.some(p => resolved.includes(p)) ? REASONS.protectedPath : undefined
+  if (ctx.protectedPaths.some(p => resolved.includes(p))) return REASONS.protectedPath
+  return editsEnvFile(resolved, ctx.env) ? REASONS.ghHelperEnvFileEdit : undefined
 }
 
 export const termsFile = (env: NodeJS.ProcessEnv, home: string): string =>

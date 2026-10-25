@@ -660,6 +660,13 @@ describe('the matcher mirror on backslashes in a rule', () => {
   })
 })
 
+// CC-1633. Mutation caught: dropping pushPolicy from any bd worker file.
+describe.each(WORKER_PROFILES)('%s push policy', name => {
+  it('opts into the leak guard no-rewrite push policy', () => {
+    expect(loadBdProfile(name).pushPolicy).toBe('no-rewrite')
+  })
+})
+
 describe('the bd-reviewer profile', () => {
   const profile = loadBdProfile('bd-reviewer')
 

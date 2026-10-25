@@ -7,7 +7,7 @@ import { type GitShimFixture, gitShimHarness, NO_VERIFY } from './helpers/git-sh
 /**
  * CC-613, against real git, temp repos and a local bare remote: a shell (!) alias runs only when
  * its name is on the baked allowlist. Each reproduction builds push in a way the push and argument
- * checks cannot see, so only the allowlist gate stops it; the controls list it and watch it push.
+ * checks cannot see. Listed, each now reaches the shim through its mirror (TP-4249).
  */
 
 const { realGit, git, fixture, runScript, remoteHasMain } = gitShimHarness()
@@ -38,17 +38,18 @@ describe('the agent git shim refusing a shell alias that is not on the allowlist
     expect(fs.existsSync(fx.marker)).toBe(false)
   })
 
-  // Control: proves the reproductions are real bypasses, so the refusals above are not vacuous.
+  // TP-4249: a listed alias's body finds the shim's mirror first on PATH, so its git by name is the shim.
+  // leak-git-mirror.test.ts runs the same shapes with no shim, where they push.
   it.each(REPRODUCTIONS)(
-    'lets the listed %s reproduction push with the hook skipped',
+    'refuses the listed %s reproduction at the git its body runs',
     (_form, alias, command) => {
       const fx = fixture(['rv'])
       git(fx.work, 'config', 'alias.rv', alias)
 
       const run = runScript(fx, command)
 
-      expect(run.stderr).not.toContain('git-shim:')
-      expect(pushedWithoutHook(fx)).toBe(true)
+      expect(run.stderr).toContain('git-shim: push refused (no-verify)')
+      expect(pushedWithoutHook(fx)).toBe(false)
     },
   )
 
