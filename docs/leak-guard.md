@@ -823,11 +823,16 @@ included: their values come from `.gitmodules`, commit data or the script itself
 cannot see. git puts its exec-path first on PATH for that shell, so a git it runs is the real git,
 not the push shim (observed: `command -v git` inside `submodule foreach` prints git's exec-path
 copy). So the shell's own script files are denied too (TP-4236): `.` or `source` with any operand,
-and a shell given a script file (`sh ./f`, `bash -e ./f`) or options the guard cannot read. At top
+and a shell given a script file (`sh ./f`, `bash -e ./f`) or options the guard cannot read. A shell
+that may read a startup file counts the same: `-i` or `-l` in any spelling, `--login`, `--rcfile` or
+`--init-file`. A startup variable (`BASH_ENV`, `ENV`, `ZDOTDIR`) denies by the `BASH_ENV` row of
+the table above, which judges a nested script by its outer git line (TP-2499), and a `trap` action is read as
+text the same shell runs, so `trap ". ./f" EXIT` denies like `. ./f`. At top
 level the same file is left to the push shim, which is on that shell's PATH. An `alias` that defines
 anything denies as well (TP-4237), since `alias p=git` turns a later `p push --no-verify` into a push
-the guard never reads; a bare `alias` or `alias l`, which only prints, is allowed. A script file run
-by its path (`./f`) and programs such as `npm test` or `make` are not read. git passes its `-c` and `--config-env`
+the guard never reads; a bare `alias` or `alias l`, which only prints, is allowed. Not read: a script
+file run by its path (`./f`), programs such as `npm test` or `make`, and shells the guard does not
+know by name (`mksh`, `yash`). git passes its `-c` and `--config-env`
 options on to every git the command runs, and the command may write an include file before git
 reads it. So an `include.path` or `includeIf.<cond>.path` on the outer git is a deny, whatever the
 file holds, and so is a `-c` or `--config-env` word the guard cannot read. A command word the guard

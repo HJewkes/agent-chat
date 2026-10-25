@@ -2170,9 +2170,12 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git submodule foreach 'env BASH_ENV=./f bash -c true'",
     "git submodule foreach 'ENV=./f sh -i'",
     "git submodule foreach 'ZDOTDIR=. zsh -c true'",
-  ])('denies a startup variable in a shell git starts, which reaches git by itself (TP-4236): %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.shellStartupEnv)
-  })
+  ])(
+    'denies a startup variable in a shell git starts, which reaches git by itself (TP-4236): %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.shellStartupEnv)
+    },
+  )
 
   it.each([
     "git submodule foreach 'bash --init-file ./f -c true'",
@@ -2190,9 +2193,12 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   it.each([
     ['git submodule foreach \'trap "git push --no-verify" EXIT\'', REASONS.noVerify],
     ['git submodule foreach \'trap "alias p=git" EXIT\'', REASONS.gitShellAlias],
-  ])('checks a trap action in a shell git starts as text that shell runs (TP-4236): %s', (command, reason) => {
-    expect(checkCommand(command, ctx())).toBe(reason)
-  })
+  ])(
+    'checks a trap action in a shell git starts as text that shell runs (TP-4236): %s',
+    (command, reason) => {
+      expect(checkCommand(command, ctx())).toBe(reason)
+    },
+  )
 
   it.each([
     'git submodule foreach \'trap "echo done" EXIT; git status\'',
@@ -2200,9 +2206,12 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git submodule foreach 'bash -e -c true'",
     "bash -ic 'echo hi'; git status",
     "trap 'echo hi' EXIT; git status",
-  ])('allows a plain trap or non-interactive shell git starts, and either at top level (TP-4236): %s', command => {
-    expect(checkCommand(command, ctx())).toBeUndefined()
-  })
+  ])(
+    'allows a plain trap or non-interactive shell git starts, and either at top level (TP-4236): %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
 
   it.each([
     "git difftool -x '$X --no-verify' HEAD",

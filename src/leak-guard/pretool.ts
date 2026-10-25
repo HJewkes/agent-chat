@@ -20,7 +20,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
-import { aliasDefinitions, trapActions } from './deferred-scripts.js'
+import { aliasDefinitions } from './deferred-scripts.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import {
   configPrograms,
@@ -1346,24 +1346,15 @@ function checkShellText(script: string, ctx: GuardContext, scope: Scope, depth: 
  * In a shell git starts, a sourced or shell-run script file runs text the guard never reads, and an
  * alias turns a later command word into words it does not see (`alias p=git` then `p push`). git's
  * exec-path leaves the push shim off PATH there, so nothing catches either at run time (TP-4236, TP-4237).
- * A shell's startup file counts as a script file, and a `trap` action is text the same shell runs later.
+ * A shell's startup file counts as a script file.
  */
-function checkGitShellCommand(
-  { name, marked, assigns }: ShellRun,
-  ctx: GuardContext,
-  scope: Scope,
-  depth: number,
-): string | undefined {
+function checkGitShellCommand({ name, marked, assigns }: ShellRun): string | undefined {
   if (name === 'source' || name === '.') return marked.length > 0 ? REASONS.gitShellFile : undefined
   if (SHELLS.has(name)) {
     const { from } = readShellCall(name, marked, assigns).script
     const file = from === 'file' || from === 'hidden' || readsStartupFile(name, marked)
     return file ? REASONS.gitShellFile : undefined
   }
-  if (name === 'trap')
-    return firstReason(trapActions(['trap', ...marked]), action =>
-      action.includes(LIVE) ? REASONS.shellExpansion : checkShellText(unmark(action), ctx, scope, depth),
-    )
   return name === 'alias' && aliasDefinitions(['alias', ...marked]).length > 0
     ? REASONS.gitShellAlias
     : undefined
@@ -2761,7 +2752,7 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
-  const nested = at.gitShell && checkGitShellCommand({ name, marked, assigns: unwrapped.assigns }, ctx, at, depth)
+  const nested = at.gitShell && checkGitShellCommand({ name, marked, assigns: unwrapped.assigns })
   if (nested) return nested
   if (SHELLS.has(name)) {
     const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }

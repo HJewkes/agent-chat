@@ -215,8 +215,7 @@ function apply(effect: Effect | undefined, opts: Options): void {
   else if (effect === 'startup') {
     opts.history = true
     opts.startup = true
-  }
-  else if (effect === 'end') opts.ended = true
+  } else if (effect === 'end') opts.ended = true
   else if (effect === 'hidden') opts.hidden = true
 }
 
