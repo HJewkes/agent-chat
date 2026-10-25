@@ -1,7 +1,7 @@
 import { parseTerms } from '@titan-design/egress-scan'
 import { describe, expect, it } from 'vitest'
 import { pretoolDecision, REASONS, type GuardContext } from '../leak-guard/pretool.js'
-import { LIVE, parseShell, unmark } from '../leak-guard/shell-words.js'
+import { expansionRisk, LIVE, parseShell, unmark } from '../leak-guard/shell-words.js'
 
 // The `<n-m>` glob probe once copied the rest of the line at every `<` and `>`, so carried redirects took quadratic time (CC-1379).
 const ctx = (): GuardContext => ({
@@ -122,5 +122,44 @@ describe('a redirect-only command keeps the text the shell expands where it stan
     const expanded = parseShell(line).flatMap(command => command.expanded.map(unmark))
 
     expect(expanded.some(text => text.includes('${!A:=ext}'))).toBe(true)
+  })
+})
+
+describe('a {NAME} word before a redirect operator names the variable the shell assigns (CC-1630)', () => {
+  it.each([
+    ['exec {GH_PAGER}>/dev/null', ['GH_PAGER']],
+    ['gh pr view 1 {fd}>&-', ['fd']],
+    [': {a[1]}<f {b}>>g', ['a', 'b']],
+    ['gh pr view 1 "{GH_PAGER}">/dev/null', []],
+    ['echo {GH_PAGER} >/dev/null', []],
+    ['echo x{GH_PAGER}>/dev/null', []],
+  ])('reads %j as assigning %j', (line, names) => {
+    expect(parseShell(line).flatMap(command => command.fdNames)).toEqual(names)
+  })
+
+  it('reads a {NAME[sub]} word, which zsh globs and bash assigns, as unreadable', () => {
+    expect(expansionRisk(': {a[1]}<f {b}>>g')).toBe('unreadable')
+  })
+
+  it.each(['printf %s a {fd}>/dev/null b', 'printf %s a {fd}<&0 b'])(
+    'takes the {fd} word of %j out of the arguments',
+    line => {
+      expect(parseShell(line)[0]?.words).toEqual(['fd=$$', 'printf', '%s', 'a', 'b'])
+    },
+  )
+
+  it('reads the same arguments for a 3> redirect, with no prefix', () => {
+    expect(parseShell('printf %s a 3>/dev/null b')[0]?.words).toEqual(['printf', '%s', 'a', 'b'])
+  })
+
+  it('keeps the target of a {fd}> redirect in its writes', () => {
+    expect(parseShell(': {fd}>out')[0]?.writes).toEqual(['out'])
+  })
+
+  it('leads the command with each name as a prefix assignment it cannot read', () => {
+    const [cmd] = parseShell('gh pr view 1 {GH_PAGER}>/dev/null {fd}<f')
+
+    expect(cmd?.words.slice(0, 3)).toEqual(['GH_PAGER=$$', 'fd=$$', 'gh'])
+    expect(cmd?.marked[0]).toBe(`GH_PAGER=${LIVE}$${LIVE}$`)
   })
 })

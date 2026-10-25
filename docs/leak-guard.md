@@ -442,6 +442,7 @@ Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 | a command word that is an expansion, followed by the words of one of those gh commands                                                                                                                                                                                                                                                    | `$G pr create` may run gh unscanned                         |
 | a command word that is an expansion, followed by a command that any row above denies                                                                                                                                                                                                                                                      | `$E gh pr create` runs gh when `E` is empty                 |
 | a command word that is an expansion, then an expansion where git's subcommand sits, or a command word that may split (`${=X}`, unquoted `$X`), with a word anywhere after, even past a `--`, that is or may expand to `--no-verify` or a `core.hooksPath`, `alias.*`, `include.path` or `includeIf.*.path` key (`core.hooks$K`) (CC-1322) | `$X $Y --no-verify` is a push that skips the hook           |
+| a command word that is an expansion run as a shell, whose `-c` string or fed text a row above denies, or whose fed text the guard cannot read                                                                                                                                                                                             | `b=bash; echo '<push>' \| $b` runs it                       |
 | `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`; a `trap` action or `mapfile -C` callback it cannot read, on a line that may reach either                                                                                                                                                          | the text may be a push or a gh command                      |
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                                                                                                                                                                                                                                      | `git rebase -x` runs a shell command unseen                 |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)                                                                                                                                                                                                                          | git passes it on to every git that command runs             |
@@ -679,6 +680,20 @@ them apart, and a sourced file can run `git push --no-verify` itself anyway. A w
 would not take as an alias name, one that starts with anything but a letter or holds anything
 but letters, digits and `-`, is never looked up. `echo pnv | xargs git` is denied: the
 subcommand comes from stdin, so the guard reads it as a word it cannot resolve (below).
+
+The guard reads every expanded command word as a shell (CC-1411, CC-1428): its `-c` string and
+the text it is fed are checked as a script, and a feed it cannot read denies on a line that may
+reach git or gh. The word may be any shell, so its options are read as an unknown shell's and
+every word may be its script: zsh, for one, takes `-O` as a plain flag where bash takes an
+operand. So `b=bash; $b -c '<push>'`, `X=bash; nice $X -c -- '<push>'`, `b=zsh; $b -c -O '<push>'
+x`, `${SHELL:-bash} -c '<push>'`, `b=bash; $b$@ -c '<push>'` and `echo '<push>' | $(echo bash)`
+deny, and so does `$X '<push>'`, since `$X` may be `eval`. `X=bash; $X -c 'echo hi'` and
+`x=git; $x status` stay allowed. Nothing in the word's text exempts it; only where the word came
+from does. The words xargs places for its input are left to the xargs rules, the name of a
+`name()` definition defines and runs nothing, and the path a `<(…)` leaves runs nothing, so
+`diff <(git show a) <(git show b)` stays allowed. Each is a field the parser or the xargs reader
+sets, so a missing one can only deny more. One false deny is accepted: `git diff | $PAGER` denies, since `$PAGER`
+may be a shell fed by the pipe, and quoting it does not help. Write the pager out instead.
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
@@ -1044,6 +1059,26 @@ other checks so a more specific reason wins. Two rules carry this into the scrip
    as nested scripts. Each is the whole text the shell evaluates, with the words the shell adds
    read as unread words, so no caller sees a callback without them. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
    that names git or gh, for `trap` and `mapfile` on a line that may reach git or gh.
+
+A `{NAME}>file` redirect writes the descriptor it opens to `NAME`, and zsh does so before an
+external command starts, so `gh {GH_PAGER}>/dev/null pr view 1` runs a pager named by a number.
+An unquoted `{NAME}` word after the command word and before a redirect operator leaves the
+argument list, as the `3` of `3>` does, and becomes a prefix assignment `NAME=$$` with a value the
+guard cannot read. Every rule that reads assignment words then sees the write, with no rule of its
+own (CC-1630). Three spellings the shells read differently make the line unreadable: a `{NAME}`
+word in command position, which zsh runs as a brace group, a `{NAME[sub]}` word, which bash
+assigns and zsh globs, and `{NAME}&>`, where bash keeps the word as an argument. A
+program var denies as `programEnv`, a search path as `searchPathEnv`, a shell startup variable as
+`shellStartupEnv`, a `GIT_CONFIG_*` name as `gitConfigEnv`, and gh's `HOME`, `XDG_CONFIG_HOME` or
+`GH_CONFIG_DIR` as `ghConfigHome`.
+`GIT_DIR` is no program var, so `exec {GIT_DIR}>/dev/null; git status` is allowed, as
+`GIT_DIR=x; git status` is.
+
+A double-quoted trap action that expands nothing, such as `trap "rm -f tmp" EXIT`, is read as
+written and allowed. One that expands a variable (`trap "rm -f $tmp" EXIT`) stays a `hiddenScript`
+deny on a line that may reach git. The shell splices the value into the action when the trap is
+set, so the value becomes script text, and the guard does not know the value the command will see.
+Single quotes (`trap 'rm -f "$tmp"' EXIT`) keep the expansion inside the script the guard reads.
 
 | builtin                | script                                                                                                             | not a script                                         | unreadable                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------- |
@@ -1744,10 +1779,10 @@ Not covered, by design or by cost:
 
   Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 tracks
   them, with a CC-1408 follow-up for the shells outside the list:
-  - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
-    word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
-    variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
-    `echo P | $(echo bash)`;
+  - a command word filled by `read`, which bash word-splits and runs as a command rather than
+    as a shell (`read -r l <<< TEXT; $l`). A command word the guard cannot resolve that is fed
+    text, such as `echo P | $b`, `echo P | ${SHELL:-bash}`, `echo P | $(echo bash)` or
+    `while read -r l; do $l; done < file`, is read as a shell and denies (CC-1411, above);
   - a wrapper the guard does not know, such as `echo P | busybox setsid bash`;
   - a shell outside the guard's list (follow-up to CC-1408): `echo P | rbash`,
     `echo P | mksh`, `echo P | fish`;
