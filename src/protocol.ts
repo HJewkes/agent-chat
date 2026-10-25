@@ -3,6 +3,7 @@ import {
   type SurfaceName as PackageSurfaceName,
 } from '@titan-design/agent-surface'
 import type { AgentProfile } from './agents/types.js'
+import type { Records } from './leak-guard/integrity/record.js'
 
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
@@ -1052,6 +1053,12 @@ export type ClientMessage =
    * so only an answer from the human queue can close it.
    */
   | ({ t: 'service_ask'; as: string; text: string } & ItemShape)
+  /**
+   * TP-4256: a spawned agent's tool hook reports the files a later shell sources. `nonce` is the
+   * one the launcher registered at spawn; the broker compares `records` with what it holds and
+   * answers `integrity_result`. No frame sets or clears a baseline or a quarantine.
+   */
+  | { t: 'integrity_check'; nonce: string; session: string; records: Records }
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
   | {
@@ -1472,6 +1479,9 @@ export type ServerMessage =
   | { t: 'end_self'; agentId: string; reason: string }
   /** The immediate answer to `permission_hook`: the queue id it was filed under, or why not. */
   | { t: 'permission_hook_result'; ok: boolean; msgId?: string; reason?: string }
+  /** The answer to `integrity_check`; a deny names the first changed file and the field that shows it. */
+  | { t: 'integrity_result'; ok: true }
+  | { t: 'integrity_result'; ok: false; reason: string; file?: string; field?: string }
   /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
   | { t: 'service_ask_result'; ok: boolean; msgId?: string; reason?: string }
   /**
