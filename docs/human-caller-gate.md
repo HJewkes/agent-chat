@@ -30,10 +30,10 @@ frames by caller.
 This inventory comes from the `switch (msg.t)` dispatcher in `handleMessage`
 (`src/broker/socket.ts`), read with `git show origin/main:src/broker/socket.ts` at
 origin/main `d173e6c` (2026-10-12), and recounted at origin/main `907fed5` (2026-10-25).
-It lists all 56 cases there, and each case appears in exactly one class: 8 refused, 6
+It lists all 57 cases there, and each case appears in exactly one class: 9 refused, 6
 requester mapped, 3 session bound and 39 out of scope. The recount added `account_move`
 (Class 1), `codex_wake_capped` (Class 3), and `message_by_id` and `host_challenge`
-(Class 4).
+(Class 4). CC-1592 then added `account_move_check` (Class 1).
 
 The same classes live in code as `FRAME_CLASSES` (`src/broker/frame-classes.ts`), typed
 over the whole `ClientMessage` union. `src/__tests__/frame-classes.test.ts` fails when a
@@ -54,9 +54,11 @@ These frames are guarded by `isHuman`, and they mean "the human decided".
 | `teleport_abort`     | `handleTeleportAbort`                                           |
 | `service_ask`        | `handleServiceAsk`                                              |
 | `account_move`       | `handleAccountMove`                                             |
+| `account_move_check` | `handleAccountMove`                                             |
 
 `account_move` moves a session to another account, which spends the human's quota on
 that account. Its handler already refuses a registered connection as the human's call.
+`account_move_check` (CC-1592) is its dry run, gated the same way in the same handler.
 
 `service_ask` is here because it asks the human under a service label that nothing
 vouches for. Profiles already deny agents `agent-chat ask` (CC-169, landed), and leaving
