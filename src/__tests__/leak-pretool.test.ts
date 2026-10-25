@@ -2019,6 +2019,52 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     },
   )
 
+  it.each([
+    "git rebase --exec '$X' main",
+    "git rebase -x '$X' main",
+    "git rebase --exec='npm test; $X' main",
+    "git rebase -x 'git push $F' main",
+    "git rebase -x '`cat s`' main",
+    "git rebase -x '$name' main",
+    "git submodule foreach '$CMD'",
+    "git submodule foreach '$CMD --no-verify'",
+    "git submodule foreach 'git push ${F:-x}'",
+    "git bisect run sh -c '$S'",
+    "git bisect run '$S'",
+  ])('denies a shell expansion in the command (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+  })
+
+  it.each([
+    "git submodule foreach '$names'",
+    "git submodule foreach '$sm_paths'",
+    "git submodule foreach '$name2 push'",
+    "git submodule foreach '${name}x'",
+    "git submodule foreach '$toplevelx'",
+  ])('denies a near-miss of a variable foreach sets (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+  })
+
+  it.each([
+    "git submodule foreach 'echo $name'",
+    "git submodule foreach 'echo $sm_path $sha1 $toplevel $displaypath'",
+    "git submodule foreach 'echo \"${name}: $sm_path\"'",
+    "git submodule foreach '$name'",
+    "git submodule foreach '$sm_path push'",
+    "git submodule foreach 'git push $sm_path'",
+  ])('allows the variables foreach sets (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    "git rebase --exec 'npm test' main",
+    "git rebase -x 'npm test && npm run lint' main",
+    "git submodule foreach 'git status'",
+    "git bisect run sh -c 'npm test'",
+  ])('allows an ordinary quoted command (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
   it('denies a plain alias that expands to a rebase exec', () => {
     const readAlias = (word: string) =>
       word === 'rx' ? { value: 'rebase -x "git push --no-verify"', runsIn: '/work' } : undefined
