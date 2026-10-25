@@ -1064,18 +1064,16 @@ call is proven inert (TP-4231). A command is proven inert when its head, after t
 unwrap and read with no env value (the hidden name may have changed any of them), is in a closed
 allowlist of commands that never run a word or their stdin as a program or shell text: the
 declaration and name-operand builtins, `echo`, `printf`, `test`, `[`, `cd`, `ls`, `cat`, `grep`,
-`tee`, `cp` and a few more. Literal `eval`, `trap` and plain `sh -c` text is inert when every
-command parsed from it is, checked recursively, and so are the commands of each substitution.
-A function definition is never inert. Once the call may export the hidden name (any use of
-`export`, `declare`, `typeset`, `local`, `readonly`, `env` or `set`, nested text included), no
-shell it starts is inert, even behind a wrapper or with literal `sh -c` text: the name may be
-`BASH_ENV`, `ENV` or `ZDOTDIR`, and the shell then runs a file. So
-`export $A=/x.sh; sh -c 'echo hi'` denies while `read $A <<< ext; sh -c 'echo hi'` stays allowed.
-The rule asks which commands are known safe, not where a
-command may start, so a command missing from the allowlist over-denies and never lets a line
-through. So `read $A <<< ext; $G fetch o`, `watch $G fetch o`, `parallel ::: $G`,
+`tee`, `cp` and a few more. Literal `eval` and `trap` text is inert when every command parsed
+from it is, checked recursively, and so are the commands of each substitution. A function
+definition is never inert. No new shell is inert, whatever text it is given and behind any
+wrapper: the hidden name may be `BASH_ENV`, `ENV` or `ZDOTDIR`, exported on the line or already
+exported in the environment, and the shell then runs a file. So `export $A=/x.sh; sh -c 'echo hi'`
+and `read $A <<< /x.sh; sh -c 'echo hi'` deny. The rule asks which commands are known safe, not
+where a command may start, so a command missing from the allowlist over-denies and never lets a
+line through. So `read $A <<< ext; $G fetch o`, `watch $G fetch o`, `parallel ::: $G`,
 `trap '$G fetch o' EXIT`, `sort --compress-program=$G f` and `declare -n R=$A; R=ext; $G fetch o`
-deny, while `read $A <<< ext; ls $D`, `sh -c 'echo hi'` and `trap 'echo bye' EXIT` stay allowed.
+deny, while `read $A <<< ext; ls $D`, `eval 'echo hi'` and `trap 'echo bye' EXIT` stay allowed.
 A nested script is judged against every command of the outer call, so `eval 'read $A <<< ext';
 $G fetch o` denies too.
 
@@ -1092,13 +1090,14 @@ change:
   allowed, and the pinned `eval "$(ssh-agent -s)"; npm test` allow constrains a fix.
 - `SEARCH_UNREAD` (the CC-1236 pins `PATH=$X make` and `hash -p "$X" make`).
 - Programs that run git from a file's content (`./x.sh`, `. ./x.sh`, a PATH-hijacked `ls` after
-  `read $A $B`).
+  `read $A $B`). The one exception is a new shell after a hidden name, which denies because the
+  name may be `BASH_ENV`, `ENV` or `ZDOTDIR`.
 - Any line where git already shows. The rules above are unchanged there.
 
 These over-denies are accepted, and each one needs a hidden-name write on the same call:
-`read $A; python x.py`, `make` and any other command not on the allowlist; `env -C /x $X q`,
-where env may read `$X` as a name or run it; `bash -c 'read $A'; $G x`, since a child shell
-cannot pass a name back; and `trap - EXIT`.
+`read $A; python x.py`, `make` and any other command not on the allowlist; any new shell, even
+`read $A <<< ext; sh -c 'echo hi'`; `env -C /x $X q`, where env may read `$X` as a name or run
+it; `bash -c 'read $A'; $G x`, since a child shell cannot pass a name back; and `trap - EXIT`.
 
 `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, set inline before git can set the same config keys. They need no rule of

@@ -762,14 +762,12 @@ describe('a hidden variable name on a line whose command word is only an expansi
     expect(hookReason(command)).toBe(REASONS.programEnv)
   })
 
-  it.each([
-    'read $A <<< ext; echo hi',
-    '$G status',
-    'export EDITOR=vim; "$EDITOR" notes.txt',
-    `read $A <<< ext; sh -c 'echo hi'`,
-  ])('allows %j', command => {
-    expect(hookReason(command)).toBeUndefined()
-  })
+  it.each(['read $A <<< ext; echo hi', '$G status', 'export EDITOR=vim; "$EDITOR" notes.txt'])(
+    'allows %j',
+    command => {
+      expect(hookReason(command)).toBeUndefined()
+    },
+  )
 })
 
 describe('a hidden variable name on a line with no git denies unless every command is proven inert (TP-4231)', () => {
@@ -800,7 +798,17 @@ describe('a hidden variable name on a line with no git denies unless every comma
     expect(hookReason(command)).toBe(REASONS.programEnv)
   })
 
-  // An exported hidden name may be BASH_ENV, ENV or ZDOTDIR, so a new shell runs a file.
+  // A hidden name may be BASH_ENV, ENV or ZDOTDIR, exported on the line or already, so a new shell runs a file.
+  it.each([
+    `read $A <<< /x.sh; sh -c 'echo hi'`,
+    `printf -v "$A" /x.sh; bash -c 'echo hi'`,
+    `read $A <<< /x.sh; zsh -c 'echo hi'`,
+    // The accepted over-deny: a shell after any hidden name, though this one may be harmless.
+    `read $A <<< ext; sh -c 'echo hi'`,
+  ])('denies a shell started after a hidden name, which may already be exported: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
   it.each([
     `export $A=/x.sh; bash -c 'echo hi'`,
     `export $A=/x.sh; sh -c 'echo hi'`,
@@ -819,7 +827,6 @@ describe('a hidden variable name on a line with no git denies unless every comma
     'printf -v "$A" ext; cat f',
     'read $A <<< ext; ls $D',
     'read $A <<< ext; [ -n "$B" ] && echo y',
-    `read $A <<< ext; sh -c 'echo hi'`,
     `read $A <<< ext; eval 'echo hi'`,
     `read $A <<< ext; trap 'echo bye' EXIT`,
     'declare -n R=$A; R=x; ls',

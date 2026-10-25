@@ -3360,7 +3360,11 @@ const INERT_COMMANDS: ReadonlySet<string> = new Set([
   ...['mkdir', 'touch', 'rm', 'cp', 'mv', 'tee', 'stat', 'realpath'],
 ])
 
-/** The text eval, a trap action or a plain `sh -c` runs, when the guard reads every word of it. */
+/**
+ * The text eval or a trap action runs in this shell, when the guard reads every word of it. A new
+ * shell is left out: the hidden name may be BASH_ENV, ENV or ZDOTDIR, exported now or already, so
+ * the shell may run a file whatever text it is given.
+ */
 function runsText(
   words: readonly string[],
   cmd: SimpleCommand,
@@ -3371,12 +3375,8 @@ function runsText(
   if (rest.some(word => word === undefined)) return undefined
   if (head === 'eval') return rest.join(' ')
   if (head === 'trap' && rest.length > 1) return rest[0]
-  if (head !== undefined && PLAIN_SHELLS.has(head) && rest.length === 2 && rest[0] === '-c') return rest[1]
   return undefined
 }
-
-// Commands that may export a name, or make later assignments exported (`set -a`); any use counts.
-const EXPORTING: ReadonlySet<string> = new Set([...ENV_DECL, 'env', 'set'])
 
 /** The words that run after the guard's own unwrap, or undefined where it cannot read a wrapper. */
 function runWords(cmd: SimpleCommand): readonly string[] | undefined {
@@ -3384,7 +3384,7 @@ function runWords(cmd: SimpleCommand): readonly string[] | undefined {
   return 'reason' in unwrapped ? undefined : unwrapped.words
 }
 
-/** `cmd` and every command it runs: those of its substitutions and of any eval, trap or `sh -c` text. */
+/** `cmd` and every command it runs: those of its substitutions and of any eval or trap text. */
 function ranCommands(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): SimpleCommand[] {
   const words = runWords(cmd)
   const text = words === undefined ? undefined : runsText(words, cmd, ctx, scope)
@@ -3395,19 +3395,15 @@ function ranCommands(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Simpl
   return [cmd, ...inner.flatMap(c => ranCommands(c, ctx, scope))]
 }
 
-/**
- * One command, read alone, runs nothing but itself: its head is allowlisted, or it runs eval, trap or
- * `sh -c` text, whose commands `ranCommands` lists. Once a hidden name may be exported it may be
- * BASH_ENV, ENV or ZDOTDIR, so a new shell runs a file and is never inert.
- */
-function provenInert(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, exported: boolean): boolean {
+/** One command, read alone, is allowlisted or runs eval or trap text, whose commands `ranCommands` lists. */
+function provenInert(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
   if (cmd.defines !== undefined) return false
   const words = runWords(cmd)
   if (words === undefined) return false
   const [first] = words
   if (first === undefined) return true
   const head = testHead(words) ?? resolveWord(first, cmd, ctx, scope)
-  if (head === undefined || (exported && SHELLS.has(head))) return false
+  if (head === undefined) return false
   return INERT_COMMANDS.has(head) || runsText(words, cmd, ctx, scope) !== undefined
 }
 
@@ -3424,8 +3420,7 @@ function hiddenUnlessInert(
   if (!events.includes(NAME_HIDDEN)) return undefined
   const blind: Scope = { ...scope, env: undefined }
   const ran = (scope.call ?? []).flatMap(cmd => ranCommands(cmd, ctx, blind))
-  const exported = ran.some(cmd => functionBody(cmd.marked).some(word => EXPORTING.has(word)))
-  return ran.every(cmd => provenInert(cmd, ctx, blind, exported)) ? undefined : NAME_HIDDEN
+  return ran.every(cmd => provenInert(cmd, ctx, blind)) ? undefined : NAME_HIDDEN
 }
 
 /** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */
