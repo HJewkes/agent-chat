@@ -69,8 +69,11 @@ interface Arith {
   text: string
 }
 
-/** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
-type Pending = 'discard' | 'write' | 'herestring' | { strip: boolean; aside: boolean }
+/**
+ * `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin.
+ * `duplicate` is a `>&` target: a copy of a descriptor when it is a number or `-`, else a write.
+ */
+type Pending = 'discard' | 'write' | 'duplicate' | 'herestring' | { strip: boolean; aside: boolean }
 
 interface Heredoc {
   delim: string
@@ -83,7 +86,14 @@ interface Heredoc {
 }
 
 const OPERATORS = new Set([';', '&', '|'])
-const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>', '&>', '&>>'])
+// Each also takes zsh's clobbering `|` or `!` after it; see `redirectKind`.
+const WRITE_OPERATORS = new Set(['>', '>>', '<>', '&>', '&>>'])
+const DUPLICATE_OPERATORS = new Set(['>&', '>>&'])
+// printf -v, test -v, `[[`, read and the declare family evaluate a NAME[subscript] operand as arithmetic.
+// `]]` stands for a `[[` an `&&` or `||` inside the test cut off.
+const SUBSCRIPT_EVALUATORS = new Set(
+  'printf print test [ [[ ]] read vared let unset declare typeset local export readonly integer'.split(' '),
+)
 const GLOB = '*?[{'
 // A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
 const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
@@ -334,6 +344,27 @@ export function ansiCEscape(src: string, at: number): { text: string; width: num
   if (code === null || point < 2 || point > 0x10ffff) return { text: next, width: 2, live: true }
   return { text: String.fromCodePoint(point), width: code[0].length + 1, live: false }
 }
+
+/** What a redirect does with its target, once zsh's clobbering `|` or `!` is taken off the operator. */
+function redirectKind(op: string): Pending {
+  const base = op.endsWith('|') || op.endsWith('!') ? op.slice(0, -1) : op
+  if (DUPLICATE_OPERATORS.has(base)) return 'duplicate'
+  return WRITE_OPERATORS.has(base) ? 'write' : 'discard'
+}
+
+/**
+ * A `>&` target copies a descriptor only when it is a number or `-` as written; anything else, an
+ * expansion included, may name a file, which bash writes for `>&` and `1>&` and zsh for every form
+ * on any descriptor (TP-4257).
+ */
+function duplicateKind(word: string, marked: string): Pending {
+  const descriptor = word === '-' || (word !== '' && [...word].every(c => c >= '0' && c <= '9'))
+  return descriptor && !marked.includes(LIVE) ? 'discard' : 'write'
+}
+
+/** A `$(...)` or backtick the shell expands in the marked text, whose output it would read again. */
+const expandsCommand = (marked: string): boolean =>
+  marked.includes(`${LIVE}$(`) || marked.includes(`${LIVE}\``)
 
 class ShellLexer {
   pos: number
@@ -968,15 +999,22 @@ class ShellLexer {
     }
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
     if (fd === 0 || (fd < 0 && ahead[0] === '<')) this.cur.stdinLive = true
-    this.pending = WRITE_OPERATORS.has(this.redirectOperator()) ? 'write' : 'discard'
+    this.pending = redirectKind(this.redirectOperator())
   }
 
-  /** Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`. */
+  /**
+   * Reads the redirect operator at the cursor, such as `>`, `>>`, `>&`, `&>>` or `>|`, and zsh's
+   * clobbering `!` after a `>` or `&`, as in `>!` and `>&!`, where bash reads a file named `!`.
+   */
   private redirectOperator(): string {
     let op = this.peek(this.pos) ?? ''
     this.advance(1)
     for (let c = this.peek(this.pos); c !== undefined && '>&|'.includes(c); c = this.peek(this.pos)) {
       op += c
+      this.advance(1)
+    }
+    if (this.peek(this.pos) === '!' && (op.endsWith('>') || op.endsWith('>&'))) {
+      op += '!'
       this.advance(1)
     }
     return op
@@ -1239,7 +1277,7 @@ class ShellLexer {
     this.quoteStart = Infinity
     const localeAt = this.localeAt
     this.localeAt = []
-    const pending = this.pending
+    const pending = this.pending === 'duplicate' ? duplicateKind(word, this.marked) : this.pending
     this.pending = null
     if (pending === null) {
       this.cur.words.push(word)
@@ -1278,9 +1316,27 @@ class ShellLexer {
     if (this.caseOpening !== undefined) this.budget.expansion = 'unreadable'
     this.caseOpening = undefined
     assignFdNames(this.cur)
+    this.readSubscripts(this.cur)
     const bare = this.cur.words.length === 0
     if (!bare || this.readsStdin(this.cur) || this.expandsBeside(this.cur)) this.keep(this.cur, bare)
     this.cur = this.newCommand()
+  }
+
+  /**
+   * A NAME[subscript] operand of printf -v, test -v, `[[`, read, declare and the like is evaluated as
+   * arithmetic, which runs a `$(...)` or backtick in the subscript even when it is quoted (TP-4257).
+   * Those are read as commands. The shell evaluates the output of one it expanded first, which the
+   * splitter cannot read, so that makes the line unreadable.
+   */
+  private readSubscripts(cmd: SimpleCommand): void {
+    if (!cmd.words.some(word => SUBSCRIPT_EVALUATORS.has(word))) return
+    for (const marked of cmd.marked) {
+      const open = SUBSCRIPT_OPEN.exec(marked)
+      if (open === null) continue
+      const subscript = marked.slice(open.index + open[0].length - 1)
+      if (expandsCommand(subscript)) this.budget.expansion = 'unreadable'
+      else this.expandBody(unmark(subscript), cmd)
+    }
   }
 
   /** Text the shell expands beside the words: a redirect target, here-string, or an unquoted heredoc on any descriptor, whose body comes later. */
@@ -1467,6 +1523,8 @@ export function parseShell(src: string): SimpleCommand[] {
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
 const FD_NAME = new RegExp(`^\\{(${NAME})\\}$`)
 const FD_SUBSCRIPT = new RegExp(`^\\{(${NAME})\\[`)
+// The first NAME[ in a marked word, quoted or not.
+const SUBSCRIPT_OPEN = new RegExp(`${NAME}${LIVE}?\\[`)
 
 /**
  * Puts each `{NAME}>file` name in front of the command as `NAME=$$`, a prefix assignment of a value
