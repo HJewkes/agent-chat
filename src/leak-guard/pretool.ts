@@ -3565,7 +3565,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
 // Matched on the real path of the target, never on command text.
 function isAgentSettings(resolved: string): boolean {
   const real = realTarget(resolved)
-  if (path.basename(real) !== 'settings.json') return false
+  if (path.basename(real).toLowerCase() !== 'settings.json') return false
   return path.dirname(path.dirname(real)) === realTarget(agentsDir())
 }
 
@@ -3667,6 +3667,19 @@ const ownerOnlyPaths = (env: NodeJS.ProcessEnv): string[] => {
   return relocated ? [...fragments, ...OWNER_ONLY_FILES.map(file => path.join(relocated, file))] : fragments
 }
 
+// The Bash route matches protectedPaths against command text, so list each agent's settings.json
+// that exists now, plus the caller's own; the Edit/Write route matches any agent by real path.
+function agentSettingsPaths(env: NodeJS.ProcessEnv): string[] {
+  const names = new Set<string>()
+  if (env.AGENT_CHAT_AGENT_ID) names.add(env.AGENT_CHAT_AGENT_ID)
+  try {
+    for (const entry of fs.readdirSync(agentsDir())) names.add(entry)
+  } catch {
+    // no agents dir yet
+  }
+  return [...names].map(name => path.join(agentsDir(), name, 'settings.json'))
+}
+
 export function guardContext(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -3688,6 +3701,7 @@ export function guardContext(
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
       ...ownerOnlyPaths(env),
+      ...agentSettingsPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),

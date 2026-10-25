@@ -61,7 +61,7 @@ function setup() {
     return frames.at(-1)
   }
   const notices = () => core.events.since(0, 500).filter(row => row.kind === 'notice')
-  return { settings, check, notices }
+  return { settings, check, notices, server }
 }
 
 describe('settings-watch', () => {
@@ -114,5 +114,28 @@ describe('settings-watch', () => {
     vi.advanceTimersByTime(TICK_MS * 2)
 
     expect(notices()).toEqual([])
+  })
+})
+
+describe('settings-watch edge cases', () => {
+  it('keeps watching a change whose nonce the ledger does not know yet', () => {
+    const { settings, notices, server } = setup()
+    const late = 'd'.repeat(64)
+    server.settingsWatch.register(late, settings)
+    fs.writeFileSync(settings, JSON.stringify({ hooks: {} }))
+
+    vi.advanceTimersByTime(TICK_MS)
+    server.integrity.registerLaunch(late, 'a1', { [ZSHRC]: zshrc })
+    vi.advanceTimersByTime(TICK_MS)
+
+    expect(notices()).toHaveLength(2)
+    expect(server.integrity.check(late, 's1', { [ZSHRC]: zshrc })).toMatchObject({ reason: 'quarantined' })
+  })
+
+  it('refuses a baseline for a file that is missing', () => {
+    const { settings, server } = setup()
+    fs.rmSync(settings)
+
+    expect(() => server.settingsWatch.register('e'.repeat(64), settings)).toThrow(/unreadable/)
   })
 })

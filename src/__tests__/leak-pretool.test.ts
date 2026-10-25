@@ -3091,6 +3091,21 @@ describe("no agent may rewrite any agent's hook settings (TP-4256 A5)", () => {
   })
 
   it.each([
+    (file: string) => `printf '{}' > ${file}`,
+    (file: string) => `sed -i s/a/b/ ${file}`,
+    (file: string) => `rm ${file}`,
+    (file: string) => `mv /tmp/x ${file}`,
+  ])("denies a Bash command writing an agent's settings.json (%#)", build => {
+    const own = path.join(agentDir('a1-synthetic'), 'settings.json')
+    expect(checkCommand(build(own), guard())).toBe(REASONS.protectedPath)
+  })
+
+  it('denies a case variant of the file name', () => {
+    const file = path.join(agentDir('a2-synthetic'), 'Settings.json')
+    expect(checkToolCall('Write', { file_path: file }, guard())).toBe(REASONS.protectedPath)
+  })
+
+  it.each([
     ['another file in an agent dir', () => path.join(agentDir('a2-synthetic'), 'notes.txt')],
     ['a settings.json elsewhere', () => '/work/project/settings.json'],
     ['a settings.json one level too deep', () => path.join(agentDir('a2-synthetic'), 'sub', 'settings.json')],

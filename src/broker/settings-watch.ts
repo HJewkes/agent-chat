@@ -21,7 +21,7 @@ const hashOf = (file: string): string | undefined => {
 }
 
 export class SettingsWatch {
-  private readonly watched = new Map<string, { file: string; sha256: string | undefined }>()
+  private readonly watched = new Map<string, { file: string; sha256: string }>()
   private timer: NodeJS.Timeout | undefined
 
   constructor(
@@ -31,7 +31,9 @@ export class SettingsWatch {
 
   /** Called by the launcher, in the broker, right after it writes `file`. */
   register(nonce: string, file: string): void {
-    this.watched.set(nonce, { file, sha256: hashOf(file) })
+    const sha256 = hashOf(file)
+    if (sha256 === undefined) throw new Error(`settings-watch: ${file} is unreadable at registration`)
+    this.watched.set(nonce, { file, sha256 })
   }
 
   sweep(): void {
@@ -39,8 +41,9 @@ export class SettingsWatch {
       const now = hashOf(file)
       if (now === sha256) continue
       const mismatch = { file, field: now === undefined ? 'state' : 'sha256' }
-      if (this.ledger.latch(nonce, mismatch)) this.onQuarantine(nonce, mismatch)
-      this.watched.delete(nonce)
+      const outcome = this.ledger.latch(nonce, mismatch)
+      if (outcome === 'latched') this.onQuarantine(nonce, mismatch)
+      if (outcome !== 'unknown') this.watched.delete(nonce)
     }
   }
 
