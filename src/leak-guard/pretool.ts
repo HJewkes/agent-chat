@@ -2272,10 +2272,18 @@ function checkShell(
 function commandTexts({ name, marked, assigns }: ShellRun): string[] {
   const { script } = readShellCall(name, marked, assigns)
   if (script.from === 'hidden' || !observedShell(name)) return marked.map(unmark)
-  if (script.from === 'file' && script.missingRuns === true)
-    return [marked.slice(script.at).map(unmark).join(' ')]
+  if (script.from === 'file' && script.missingRuns === true) return [missingFileRun(marked, script.at)]
   if (script.from !== 'command') return []
   return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
+}
+
+/**
+ * ksh93 runs a script operand no file has as `sh -c 'name "$@"'`: only that operand is shell text,
+ * and the later operands are literal words, so `ksh 'git -C' '#' push` pushes in a directory `#`.
+ */
+function missingFileRun(marked: readonly string[], at: number): string {
+  const literals = marked.slice(at + 1).map(word => singleQuote(unmark(word)))
+  return [unmark(marked[at] as string), ...literals].join(' ')
 }
 
 /** csh substitutes `!` history in its `-c` string and stdin (observed: `!#:1` repeats a word), which the guard never replays. */

@@ -433,8 +433,9 @@ Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 observed in mksh 59c, ksh93u+m 1.0.10, bsd-csh 20240808 and tcsh 6.24 (CC-1631), so the guard
 checks the `-c` string where the shell finds it: `mksh -T - -c TEXT` and `ksh -o errexit -c TEXT`
 run `TEXT`, and `ksh -c 'echo hi' TEXT` does not. `ksh` may be ksh93, which runs a script operand no
-file has as a command line (`ksh 'git push' --no-verify` pushes), so the operands are checked as
-one. `-o -c` hides the call, since mksh reads it as the letter `c` and ksh93 as the next option.
+file has as `name "$@"` (`ksh 'git push' --no-verify` pushes), so that operand is checked as text
+with each later operand appended as one quoted word: `ksh 'git -C' '#' push` runs `git -C '#' push`,
+not a comment. `-o -c` hides the call, since mksh reads it as the letter `c` and ksh93 as the next option.
 csh runs the word after the one holding `c`, whatever it starts with, and a letter neither csh
 knows hides the call, since bsd-csh ignores it (`csh --c TEXT` runs `TEXT`). A hidden call has every
 word checked as its `-c` string. csh rewrites `!` history in the text it reads (`!#:1` repeats a

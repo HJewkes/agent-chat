@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -51,6 +52,14 @@ const PUSHES: Record<'ksh' | 'mksh' | 'csh', string[]> = {
   ],
 }
 
+// ksh93 runs `'git -C' '#' push` as `git -C "$@"`, so a later operand is a literal word, never syntax.
+const KSH93_LITERAL_OPERANDS = [
+  `ksh 'git --work-tree' '#' ${PUSHED}`,
+  `ksh 'git -C' '#' ${PUSHED}`,
+  `ksh 'git -C' ';' ${PUSHED}`,
+  `ksh 'git -C' "'" ${PUSHED}`,
+]
+
 // Rows one implementation runs: mksh's -T forks a detached copy, ksh93 runs a script operand no file
 // has as a command line with the later operands appended, and bsd-csh ignores the letters it does not know.
 const ONE_SHELL_PUSHES = [
@@ -60,6 +69,7 @@ const ONE_SHELL_PUSHES = [
   `ksh '${P}'`,
   `ksh +c '${P}'`,
   `ksh 'git push' --no-verify origin HEAD:main`,
+  ...KSH93_LITERAL_OPERANDS,
   `csh --c '${P}'`,
   `csh -Z -c '${P}'`,
   `/bin/mksh -c '${P}'`,
@@ -133,6 +143,20 @@ describe.each(Object.entries(PUSHES))('real %s', (name, lines) => {
   const quiet = NOT_PUSHED.filter(line => line.startsWith(`${name} `))
   it.skipIf(!has).each(quiet)('%s pushes nothing', line => {
     expect(run(line)).toBe('')
+  })
+})
+
+const isKsh93 = (): boolean => {
+  try {
+    return execFileSync('ksh', ['-c', 'echo ${.sh.version}'], { encoding: 'utf8' }).includes('93')
+  } catch {
+    return false
+  }
+}
+
+describe.skipIf(found.ksh === undefined || SH === undefined || !isKsh93())('real ksh93', () => {
+  it.each(KSH93_LITERAL_OPERANDS)('%s pushes with --no-verify', line => {
+    expect(run(line)).toMatch(/ push --no-verify origin HEAD:main$/)
   })
 })
 
