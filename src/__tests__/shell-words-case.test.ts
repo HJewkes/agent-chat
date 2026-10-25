@@ -26,6 +26,11 @@ const BODIES = [
   `case q;in q) :;; r) echo "a" ;; esac; ${PUSH}`,
   `case q\nin q) :;; r) echo "a" ;; esac; ${PUSH}`,
   `case q { q) :;; }; case r { r) echo "a";; }; ${PUSH}`,
+  ...[';;', ';&', ';;&', ';|'].flatMap(op => [
+    `case q in q) { :; }${op} r) echo "a";; esac; ${PUSH}`,
+    `case q { q) { :; }${op} r) echo "a";; }; ${PUSH}`,
+  ]),
+  `case q in q) case r in r) :;; esac;; s) echo "a";; esac; ${PUSH}`,
 ]
 
 describe('a zsh case keeps its $( ) whole', () => {
@@ -73,6 +78,28 @@ describe('a } where a pattern is due, before ) or |', () => {
     'case q in q) :;; }|r) :;; esac',
     'echo "${ case q in q) :;; }) :;; esac; }"',
   ])('is read the one way that runs: %s', line => {
+    expect(expansionRisk(line)).toBeUndefined()
+  })
+})
+
+describe('a case word the splitter reads as an argument', () => {
+  it.each([
+    'echo "$(repeat 1 case q in q) :;; esac)"',
+    'echo "$(repeat 1 case q { q) :;; })"',
+    'echo "$(repeat 1 case q {q) :;; })"',
+    'echo "$(() { case q in q) :;; esac })"',
+    'echo "$(() { case q\nin q) :;; esac })"',
+    '(repeat 1 case q;in q) :;; esac)',
+  ])('is unreadable in a $( ) or subshell when in or { follows its subject: %s', line => {
+    expect(expansionRisk(line)).toBe('unreadable')
+  })
+
+  it.each([
+    'echo "$(echo case q)"',
+    'echo "$(echo case q info)"',
+    'echo "$(echo "case" q in)"',
+    'echo case q in r',
+  ])('is plain text elsewhere: %s', line => {
     expect(expansionRisk(line)).toBeUndefined()
   })
 })

@@ -44,7 +44,33 @@ const SPLIT: [string, string, string[]][] = [
   ['/bin/bash', `echo "$(case } in x) :;; }|y) echo "b";; esac; ${PUSH})"`, ['--noprofile', '--norc']],
 ]
 
+const ZSH = ['/bin/zsh', ['-f']] as const
+const BASH = ['/bin/bash', ['--noprofile', '--norc']] as const
+
+/** A `}` or `esac` touching a terminator, which once updated the case frames after the terminator read them. */
+const TOUCHING: [string, readonly string[], string][] = [
+  // zsh has no `;;&`, and bash no `;|`.
+  ...[';;', ';&', ';;&'].map(
+    op => [...BASH, `echo "$(case x in x) { :; }${op} y) echo "a";; esac; ${PUSH})"`] as const,
+  ),
+  ...[';;', ';&', ';|'].map(
+    op => [...ZSH, `echo "$(case x { x) { :; }${op} y) echo "a";; }; ${PUSH})"`] as const,
+  ),
+  [...BASH, `echo "$(case x in x) case y in y) :;; esac;; z) echo "a";; esac; ${PUSH})"`],
+]
+
+/** A `case` zsh reads as a command where the splitter reads an argument: after `repeat N` and in `() {`. */
+const STRAY: [string, readonly string[], string][] = [
+  [...ZSH, `echo "$(repeat 1 case x in x) echo "a";; esac; ${PUSH})"`],
+  [...ZSH, `echo "$(repeat 1 case x { x) echo "a";; }; ${PUSH})"`],
+  [...ZSH, `echo "$(repeat 1 { case x { x) echo "a";; } }; ${PUSH})"`],
+  [...ZSH, `echo "$(() { case x in x) echo "a";; esac }; ${PUSH})"`],
+  [...ZSH, `echo "$(() { case x { x) echo "a";; } }; ${PUSH})"`],
+]
+
 const BENIGN = [
+  'echo "$(echo case x)"',
+  'echo "$(grep -c case f)"',
   'echo "$(case x in x) echo a;| y) echo b;; esac)"',
   'case x { x) echo a;; }',
   'echo "$(case x { x) { echo a; } ;; })"',
@@ -85,6 +111,16 @@ describe('a zsh case pattern does not end a quoted $( ) (CC-1324)', () => {
   it.each(SPLIT)('denies a } that the shells read apart, which %s runs: %s', (shell, line, flags) => {
     expect(checkCommand(line, ctx)).toBeDefined()
     if (fs.existsSync(shell)) expect(shellRuns(shell, flags, line)).toBe('push --no-verify\n')
+  })
+
+  it.each(TOUCHING)('denies the push after a touching close, which %s runs: %s', (shell, flags, line) => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+    if (fs.existsSync(shell)) expect(shellRuns(shell, [...flags], line)).toBe('push --no-verify\n')
+  })
+
+  it.each(STRAY)('denies a case only zsh reads as a command, which %s runs: %s', (shell, flags, line) => {
+    expect(checkCommand(line, ctx)).toBeDefined()
+    if (fs.existsSync(shell)) expect(shellRuns(shell, [...flags], line)).toBe('push --no-verify\n')
   })
 
   it.each(BENIGN)('allows a case with no git: %s', line => {

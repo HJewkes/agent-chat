@@ -340,6 +340,8 @@ class ShellLexer {
   private closed = false
   /** Open `case` statements and the `{ }` groups inside them, and whether a pattern, whose `)` ends no group, comes next. */
   private cases: CaseFrame[] = []
+  /** The last word was an unreserved `case` inside a `$( )` or subshell; see `opensStrayCase`. */
+  private strayCase = false
   private patternNext = false
   /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
   mark: Mark | undefined
@@ -563,7 +565,9 @@ class ShellLexer {
     const quoted = quoteStart !== Infinity
     const before = this.lastToken
     const header = this.expectIn
+    const stray = this.strayCase
     this.expectIn = undefined
+    this.strayCase = false
     if (!quoted && this.reservedWord(word, header)) return this.takeReserved(word, header)
     const named = !quoted && this.wordStartNames && !word.includes('=')
     const token = this.wordToken(word, quoted, quoteStart)
@@ -572,6 +576,21 @@ class ShellLexer {
     this.lastPlain = true
     this.named = named
     if (isHeader(before)) this.expectIn = before
+    if (stray && this.opensStrayCase()) this.budget.expansion = 'unreadable'
+    this.strayCase = !quoted && word === 'case' && (this.nested || this.depth > 0)
+  }
+
+  /**
+   * zsh reads a `case` the splitter takes for an argument as a command after `repeat N` and in `() {`.
+   * Inside a `$( )` or subshell its first pattern's `)` would end that, so `in` or `{` after the subject
+   * makes the line unreadable.
+   */
+  private opensStrayCase(): boolean {
+    let at = this.unjoin(this.pos)
+    while (/[ \t\n;]/.test(this.src[at] ?? '')) at = this.unjoin(at + 1)
+    let text = ''
+    for (let i = at; i < this.src.length && text.length < 3; i = this.unjoin(i + 1)) text += this.src[i]
+    return text.startsWith('{') || /^in(?:[ \t\n;&|()<>]|$)/.test(text)
   }
 
   /** The token bash's read_token_word gives a word that is not reserved: parse.y 3471-3481 and 5784-5847. */
@@ -681,8 +700,9 @@ class ShellLexer {
   private operator(c: string): void {
     const ahead = this.ahead(3)
     const op = OPERATOR_TOKENS.find(token => ahead.startsWith(token)) ?? c
-    if (CASE_ENDS.has(op) && isCase(this.cases.at(-1))) this.patternNext = true
+    // A `}` or `esac` touching the operator updates the case frames before the operator reads them.
     this.endWord()
+    if (CASE_ENDS.has(op) && isCase(this.cases.at(-1))) this.patternNext = true
     // zsh takes `case w;in` and `case w;{`; bash fails on them, so reading the case open is safe.
     const header = op === ';' && this.expectIn === 'case' ? 'case' : undefined
     this.endCommand()
