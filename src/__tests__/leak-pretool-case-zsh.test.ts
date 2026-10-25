@@ -74,6 +74,15 @@ const GROUPS_PAST_LINE: Row[] = [
   zshOnly('19 comment', inSub('for v (a # (\n) echo "b"')),
   zshOnly('19 comment', inSub('repeat 1 (: # )\n)')),
   zshOnly('19 comment', inTick('for v (a # )\n) echo b')),
+  zshOnly('19 comment', inSub('for v (a;# )\n) echo "b"')),
+  zshOnly('19 comment', inSub('for v (a;#)\n) echo "b"')),
+  zshOnly('19 comment', inSub('repeat 1 (:;# )\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (: ;#)\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (:&&# )\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (:&# )\n)')),
+  zshOnly('19 comment', inSub('repeat 1 (:>/dev/null;# )\n)')),
+  zshOnly('19 comment', inSub('select v (a;# )\n) break')),
+  zshOnly('19 comment', inTick('for v (a;# )\n) echo b')),
 ]
 
 /** Lines the guard may allow, as neither shell runs their push: a `)` hidden in a group's substitution. */
