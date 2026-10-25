@@ -83,7 +83,7 @@ fix-round spawns keep their account, since a resumed transcript lives under it. 
 result's `account:` line names the choice and the readings compared. Pass `config_dir` only
 to bill an account deliberately; it must exist and be
 under your home directory, and a bad value is refused rather than quietly replaced. The
-resolved account shows up on `agent_list` and `chat_list` rows (`account: <name>`), and
+resolved account shows up on `agent_list verbose` and `chat_list` rows (`account: <name>`), and
 that is also how a peer's transcript and budget stay findable when it is not on your
 account. A teleport keeps the account: the successor spends the same `CLAUDE_CONFIG_DIR`,
 and `agent_teleport` cannot change it. To move to another account, ask your human to move

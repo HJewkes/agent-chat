@@ -70,11 +70,30 @@ const WORKER_NEEDS = [
  * - runs of whitespace collapse to one space on both the rule and the command;
  * - a rule whose only `*` is a trailing ` *` makes that tail optional, `( .*)?`;
  * - deny also tries the rule as `xargs <rule>`;
- * - deny checks the whole compound string and each sub-command split on `&&`, `||`, `;` and `|`.
+ * - deny checks the whole compound string and each sub-command split on `&&`, `||`, `;` and `|`;
+ * - the command is matched as typed: quotes, backslashes and expansions are not stripped;
+ * - `\\` in a rule reads as one backslash, and then `\*` is a literal star and `\\` a literal
+ *   backslash, so a rule needs `\\\\` to match one backslash in the command (CC-1425, observed
+ *   live in 2.1.310).
  * Because `*` spans `&&`, `;` and `|`, a push rule with a `*` also denies a compound such as
  * `git push origin x && rm -f f`; agents push as their own Bash call.
  */
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
+
+const unescapeRule = (body: string): string => body.replace(/\\\\/g, '\\')
+
+const GLOB_TOKEN = /(\\\*|\\\\|\*)/
+const REGEX_OF_GLOB_TOKEN = new Map([
+  ['*', '.*'],
+  ['\\*', '\\*'],
+  ['\\\\', '\\\\'],
+])
+
+const globToRegex = (source: string): string =>
+  source
+    .split(GLOB_TOKEN)
+    .map(part => REGEX_OF_GLOB_TOKEN.get(part) ?? part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+    .join('')
 
 function matchesPattern(body: string, command: string): boolean {
   if (body.endsWith(':*')) {
@@ -83,14 +102,13 @@ function matchesPattern(body: string, command: string): boolean {
   }
   const lonelyTail = body.endsWith(' *') && body.indexOf('*') === body.length - 1
   const source = lonelyTail ? body.slice(0, -2) : body
-  const glob = source.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-  return new RegExp(`^${glob.join('.*')}${lonelyTail ? '( .*)?' : ''}$`, 's').test(command)
+  return new RegExp(`^${globToRegex(source)}${lonelyTail ? '( .*)?' : ''}$`, 's').test(command)
 }
 
 function ruleMatches(rule: string, command: string): boolean {
   const body = /^Bash\((.*)\)$/.exec(rule)?.[1]
   if (body === undefined) return false
-  const pattern = collapse(body)
+  const pattern = unescapeRule(collapse(body))
   return matchesPattern(pattern, command) || matchesPattern(`xargs ${pattern}`, command)
 }
 
@@ -266,6 +284,57 @@ const QUOTED_GLOBAL_OPTION_PUSHES = [
   "git '-c' k=v push --force origin x",
   'git \\-C x push --force origin x',
   'git $G push --force origin x',
+  // CC-1425: a git whose first word is quoted, escaped, expanded or a glob is denied any push.
+  'git "-C" x push origin "--de" y',
+  "git '-C' x push origin --d\\e y",
+  'git \\-C x push origin "-f" y',
+  'git $G push origin "--de" y',
+  'git `echo -C` x push origin "--de" y',
+  'git {-C,x} push origin "--de" y',
+  'git [-]C x push origin ?-de y',
+  'git ?C x push origin [-]-de y',
+]
+
+// CC-1425: bash strips each quote, backslash, expansion and glob before git reads the option or
+// ref, and the quote may sit anywhere inside the word, so a push holding any of `"`, `'`, `\`,
+// `$`, a backtick, `{`, `[` or `?` is denied outright. Each form below printed [deleted] or
+// pushed in a scratch repo.
+const QUOTED_PUSHES = [
+  'origin "--de" x',
+  "origin '--de' x",
+  'origin --d\\e x',
+  "$'--de' origin x",
+  '"-f" origin x',
+  '"--force" origin x',
+  'origin "--force-w" x',
+  "'-d' origin x",
+  'origin "--m"',
+  "origin '--m'",
+  'origin "--pru"',
+  "origin '--pru'",
+  'origin --"de" x',
+  'origin -"-de" x',
+  "origin --d''e x",
+  'origin $"--de" x',
+  'origin `cat f` x',
+  'origin $(cat f) x',
+  'origin $D x',
+  'origin {--de,x}',
+  'origin [-]-de x',
+  'origin ?-de x',
+  'origin "+x"',
+  'origin "main"',
+  "origin 'HEAD:main'",
+  'origin ma\\in',
+]
+
+// The quote rules have no word boundary, so a quoted branch, an expansion, or a later command in
+// the same call is denied too. Agents push a literal branch name as their own Bash call.
+const QUOTED_OVERMATCHES = [
+  'git push -u origin "$(git branch --show-current)"',
+  'git push -u origin "agent-chat/x"',
+  'git push -u origin agent-chat/x && gh pr create --title "t"',
+  'git push -u origin agent-chat/x; echo $?',
 ]
 
 const LEGITIMATE_PUSHES = [
@@ -310,6 +379,14 @@ const LEGITIMATE_COMMANDS = [
   'git commit -m "a push b main c"',
   'git log --grep "push main"',
   'git log --grep "push origin HEAD:main --force"',
+  'git push -u origin agent-chat/x && gh pr create',
+  'git push -u origin agent-chat/x && npm run verify',
+  'git push -u origin agent-chat/x 2>&1 | tail -5',
+  'git -C /tmp/work push -u origin agent-chat/x',
+  'git commit -m "a push \'b\' c"',
+  'git -C "$dir" log --oneline',
+  // The quote rules for a global option look only after `push`, so the prelude's quoted -C works.
+  'git -C "$dir" push -u origin agent-chat/x',
 ]
 
 // The older `git * push` rules read any later ` push ` as the subcommand, and a global option
@@ -370,6 +447,14 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
     expect(isDenied(command, denied)).toBe(true)
   })
 
+  it.each(QUOTED_PUSHES)('denies the quoted `git push %s` under every global option', tail => {
+    for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
+  })
+
+  it.each(QUOTED_OVERMATCHES)('knowingly denies the quoted `%s`', command => {
+    expect(isDenied(command, denied)).toBe(true)
+  })
+
   it.each(MAIN_DESTINATION_PUSHES)('denies `git push %s`, whose destination is protected', tail => {
     for (const git of GIT_FORMS) expect(isDenied(`${git} ${tail}`, denied)).toBe(true)
   })
@@ -404,6 +489,23 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
     // worker's own `git push -u origin agent-chat/*`.
     expect(denied).not.toContain('Bash(git push:*)')
   })
+})
+
+// CC-1425: Claude Code 2.1.310's decision on `git push o --d\e y` for each rule, run headless with
+// the rule in --disallowed-tools and `Bash(git push:*)` allowed.
+describe('the matcher mirror on backslashes in a rule', () => {
+  const command = 'git push o --d\\e y'
+
+  it.each(['Bash(git push o *\\*)', 'Bash(git push o *\\\\*)'])('lets %s through, as live', rule => {
+    expect(isDenied(command, [rule])).toBe(false)
+  })
+
+  it.each(['Bash(git push o *\\\\\\*)', 'Bash(git push o *\\\\\\\\*)', 'Bash(git push o *\\e*)'])(
+    'denies with %s, as live',
+    rule => {
+      expect(isDenied(command, [rule])).toBe(true)
+    },
+  )
 })
 
 describe('the bd-reviewer profile', () => {

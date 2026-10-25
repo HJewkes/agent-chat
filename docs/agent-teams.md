@@ -1498,6 +1498,24 @@ matches the whole name recorded as `spawnedBy` when the agent was spawned, so `b
 does not match an agent spawned by `boss2`. A rename since then does not move an
 agent to the new name; a successor that reuses the name does match.
 
+`agent spawn --account <name|least-used>` (TP-4214) picks the account for any role, and
+cannot be combined with `--config-dir`. The broker reads every account's usage the way
+`agent budget --accounts` does, one row per login, and pins the pick as the explicit config
+dir, so no seat pool route or CC-1546 rotation moves it. `least-used` takes the logged-in
+account with the lowest fresh max(five_hour, seven_day). It skips a stale or missing reading,
+an account at or over `accountRotation.ceilingPct` in either window, one on
+`accountRotation.exclude`, and one the seat budget or reviewer gate would refuse. A tie goes
+to the spawner's own account, then to `accountDirs` order. A name skips the ranking but still
+refuses a failed login, an account over the ceiling and an account a gate refuses. A stale or
+missing reading on a named account only warns, and the warning gives the reading's age. When
+nothing qualifies the spawn is refused with `code: account_exhausted` and `retryable: true`,
+before any slot or worktree is taken. The spawn result's `account` names the choice and every
+reading, and the CLI prints it as `account: ...` on success and on refusal. A reading counts
+as stale here after 360 s without a poll, where `agent_list`'s header allows 15 min, so
+`agent_list` may show a figure the pick calls stale. The readings are the broker host's, so
+on another host `least-used` is refused, and a name resolves under that host's home as a
+`--config-dir` would.
+
 `agent ls --json` rows carry `spawnedAt` (ISO time of the spawn record) and `inferred`
 (CC-333). `inferred` is true when the agent's `agent_exited` row was written by the settle
 timer or a presence check, not by a recorded process exit. It is false for a recorded exit

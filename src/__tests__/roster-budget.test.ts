@@ -163,7 +163,7 @@ describe('agent_list carries budget per row', () => {
         ],
       }),
     )
-    const out = textOf(await handler.handle('agent_list', {}))
+    const out = textOf(await handler.handle('agent_list', { verbose: true }))
     expect(out.split('\n').find(line => line.startsWith('- home-scout'))).toContain('account: default')
     expect(out.split('\n').find(line => line.startsWith('- workout-scout'))).toContain('account: workout')
   })
