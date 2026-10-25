@@ -1,5 +1,5 @@
 import { EVENT_KINDS, NON_KIND_SSE_EVENTS } from './protocol.js'
-import type { AnswerChannel, EventKind, QueueItem, SessionInfo } from './protocol.js'
+import type { AnswerChannel, EventKind, PermissionBehavior, QueueItem, SessionInfo } from './protocol.js'
 import type { SessionAnalytics } from './agents/analytics/types.js'
 
 /**
@@ -166,6 +166,14 @@ export const OWNER_CHANNEL_HEADER = 'X-Owner-Channel'
 export interface EndorseVerdictRequest {
   text: string
   to: string
+}
+
+/**
+ * `POST /api/queue/:msgId/permission`. Runs the socket's `approve_permission`
+ * arbiter: an open prompt only, by msg id. Returns `VerdictResponse`.
+ */
+export interface PermissionVerdictRequest {
+  behavior: PermissionBehavior
 }
 
 /**

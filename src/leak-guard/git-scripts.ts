@@ -98,3 +98,6 @@ export function gitScripts(words: readonly string[], at: number): ScriptSpan[] {
   const opts = sub === undefined ? undefined : OPTION_SCRIPTS.get(sub)
   return opts === undefined ? [] : optionSpans(words, at, opts)
 }
+
+/** Whether a script git hands to a shell expands anything: a `$` (but a trailing literal one) or a backquote. */
+export const expandsShell = (script: string): boolean => /`|\$(?!$)/.test(script)

@@ -16,6 +16,7 @@ import type {
 import { OWNER_CHANNEL_HEADER, TOKEN_HEADER } from '../api-contract.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { APPROVAL_TTL_MS, EventLog } from '../broker/event-log.js'
+import type { OwnerVerdicts } from '../broker/api-routes.js'
 import { buildHttpApp } from '../broker/http.js'
 import { projectSlug } from '../agents/transcript.js'
 import { dashboardDir } from '../paths.js'
@@ -668,6 +669,109 @@ describe('owner-console verdict routes (TP-1989)', () => {
       new Request('http://127.0.0.1/api/approve', { method: 'POST', headers: OWNER_HEADERS, body: '{}' }),
     )
     expect(res.status).toBe(404)
+  })
+
+  describe('POST /api/queue/:msgId/permission', () => {
+    function promptedServer(): { core: BrokerCore; server: SocketServer; msgId: string } {
+      const core = makeCore()
+      const server = new SocketServer(core)
+      const session = { write: () => true } as unknown as Conn
+      server.handleMessage(session, { t: 'register', name: 'agent-1', workingOn: 'w', cwd: '/x', pid: 1 })
+      server.handleMessage(session, {
+        t: 'approval',
+        requestId: 'agent-1-req',
+        toolName: 'Bash',
+        description: 'Bash: example command',
+        inputPreview: 'echo example',
+      })
+      const msgId = core.events.humanQueue().find(i => i.kind === 'approval_request')!.msgId
+      return { core, server, msgId }
+    }
+
+    function stubVerdicts(): { calls: unknown[][]; verdicts: OwnerVerdicts } {
+      const calls: unknown[][] = []
+      return { calls, verdicts: { permission: (...args) => (calls.push(args), { ok: true }) } }
+    }
+
+    const permission = (
+      core: BrokerCore,
+      msgId: string,
+      body: unknown,
+      options: { headers?: Record<string, string>; verdicts?: OwnerVerdicts } = {},
+    ) =>
+      app(core, {
+        token: TOKEN,
+        ...(options.verdicts === undefined ? {} : { verdicts: options.verdicts }),
+      }).fetch(
+        new Request(`http://127.0.0.1/api/queue/${encodeURIComponent(msgId)}/permission`, {
+          method: 'POST',
+          headers: options.headers ?? OWNER_HEADERS,
+          body: JSON.stringify(body),
+        }),
+      )
+
+    it('hands the verdict to the socket arbiter with the owner-console channel', async () => {
+      const { core, msgId } = promptedServer()
+      const { calls, verdicts } = stubVerdicts()
+
+      const res = await permission(core, msgId, { behavior: 'deny' }, { verdicts })
+
+      expect(res.status).toBe(200)
+      expect(calls).toEqual([[msgId, 'deny', 'owner-console']])
+    })
+
+    it.each([
+      ['without the ui token', withoutHeader(TOKEN_HEADER)],
+      ['without the owner-channel header', withoutHeader(OWNER_CHANNEL_HEADER)],
+      ['with another channel', { ...OWNER_HEADERS, [OWNER_CHANNEL_HEADER]: 'dashboard' }],
+    ])('403s %s and leaves the prompt open', async (_case, headers) => {
+      const { core, msgId } = promptedServer()
+      const { calls, verdicts } = stubVerdicts()
+
+      const res = await permission(core, msgId, { behavior: 'allow' }, { headers, verdicts })
+
+      expect(res.status).toBe(403)
+      expect(calls).toHaveLength(0)
+      expect(core.events.openApproval(msgId)).toBeDefined()
+    })
+
+    it.each([
+      ['a missing behavior', {}],
+      ['an unknown behavior', { behavior: 'always' }],
+      ['a padded behavior', { behavior: ' allow' }],
+    ])('400s on %s and leaves the prompt open', async (_case, body) => {
+      const { core, msgId } = promptedServer()
+      const { calls, verdicts } = stubVerdicts()
+
+      expect((await permission(core, msgId, body, { verdicts })).status).toBe(400)
+      expect(calls).toHaveLength(0)
+      expect(core.events.openApproval(msgId)).toBeDefined()
+    })
+
+    it('503s when the app was built without the socket arbiter', async () => {
+      const { core, msgId } = promptedServer()
+
+      const res = await permission(core, msgId, { behavior: 'allow' })
+
+      expect(res.status).toBe(503)
+      expect(((await res.json()) as ErrorResponse).error).toBe('permission verdicts are not wired')
+      expect(core.events.openApproval(msgId)).toBeDefined()
+    })
+
+    it('lists the prompt on /api/queue with its tool, input preview and description', async () => {
+      const { core, msgId } = promptedServer()
+
+      const res = await app(core, { token: TOKEN }).fetch(
+        new Request('http://127.0.0.1/api/queue', { headers: { [TOKEN_HEADER]: TOKEN } }),
+      )
+      const item = ((await res.json()) as QueueResponse).items.find(i => i.msgId === msgId)
+
+      expect(item).toMatchObject({
+        kind: 'approval_request',
+        text: expect.stringContaining('Bash: example command'),
+      })
+      expect(item?.meta).toMatchObject({ tool_name: 'Bash', input_preview: 'echo example' })
+    })
   })
 })
 

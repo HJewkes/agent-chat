@@ -212,7 +212,7 @@ export class BrokerCore<C = Conn> {
    * agent's peers, its brief, and whatever authority the roster implies. Binding
    * the id to the name it was spawned under makes a stolen id useless on its own.
    */
-  private claimable(agentId: string, name: string): { ok: true } | { ok: false; reason: string } {
+  claimable(agentId: string, name: string): { ok: true } | { ok: false; reason: string } {
     const identity = this.agents.get(agentId)
     if (!identity) return { ok: false, reason: `no agent with id ${agentId}` }
     if (identity.name !== name)
