@@ -37,6 +37,12 @@ export interface SimpleCommand {
    * command, which is kept as `)` wherever it stands (TP-2499).
    */
   expanded: string[]
+  /**
+   * The NAME of each `{NAME}>file` redirect, to which bash and zsh assign the descriptor they open.
+   * zsh assigns it before an external command starts, so the command sees it (CC-1630). Each also
+   * leads `words` and `marked` as a prefix assignment `NAME=$$`, which the guard cannot read.
+   */
+  fdNames: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
   /** The function name a `name ()` definition gives the body after it. */
@@ -428,6 +434,7 @@ class ShellLexer {
       substitutions: [],
       writes: [],
       expanded: [],
+      fdNames: [],
       ...unsure,
       before: '',
       after: '',
@@ -948,6 +955,7 @@ class ShellLexer {
     // In `2&>f` the 2 is an argument, not a descriptor.
     const fd = this.src[this.pos] === '&' ? -1 : this.descriptor()
     const aside = fd > 0
+    this.noteFdName()
     this.endWord()
     const ahead = this.ahead(3)
     if (ahead === '<<<') return this.expect(aside ? 'discard' : 'herestring', 3)
@@ -979,6 +987,34 @@ class ShellLexer {
     const fd = Number(this.word)
     this.word = null
     return fd
+  }
+
+  /**
+   * Records the NAME of a `{NAME}` word before a redirect operator and consumes the word, as
+   * descriptor() does the 3 of `3>` (CC-1630). Where bash and zsh read the word apart, the line is
+   * unreadable: in command position zsh runs NAME as a brace group, zsh globs a `{NAME[sub]}` that
+   * bash assigns, and before `&>` bash keeps the word as an argument.
+   */
+  private noteFdName(): void {
+    // zsh writes the file `{fd}` for `>{fd}>x`, which bash refuses to parse.
+    if (this.word === null || this.pending !== null) return
+    const subscript = FD_SUBSCRIPT.exec(this.word.slice(0, this.quoteStart))?.[1]
+    const plain = this.quoteStart === Infinity ? FD_NAME.exec(this.word)?.[1] : undefined
+    const name = subscript ?? plain
+    if (name === undefined) return
+    if (subscript !== undefined || this.assignmentAcceptable() || this.src[this.pos] === '&')
+      this.budget.expansion = 'unreadable'
+    this.cur.fdNames.push(name)
+    this.dropWord()
+  }
+
+  /** Forgets the word being read, which a redirect took as its descriptor. */
+  private dropWord(): void {
+    this.word = null
+    this.quoted = false
+    this.quoteStart = Infinity
+    this.splitting = false
+    this.localeAt = []
   }
 
   /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
@@ -1238,6 +1274,7 @@ class ShellLexer {
     this.endWord()
     if (this.caseOpening !== undefined) this.budget.expansion = 'unreadable'
     this.caseOpening = undefined
+    assignFdNames(this.cur)
     const bare = this.cur.words.length === 0
     if (bare) appendAll(this.carried, this.cur.writes)
     if (!bare || this.readsStdin(this.cur) || this.expandsBeside(this.cur)) this.keep(this.cur, bare)
@@ -1423,6 +1460,18 @@ export function parseShell(src: string): SimpleCommand[] {
 }
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
+const FD_NAME = new RegExp(`^\\{(${NAME})\\}$`)
+const FD_SUBSCRIPT = new RegExp(`^\\{(${NAME})\\[`)
+
+/**
+ * Puts each `{NAME}>file` name in front of the command as `NAME=$$`, a prefix assignment of a value
+ * no one can read, so every rule that reads assignment words sees the write (CC-1630).
+ */
+function assignFdNames(cmd: SimpleCommand): void {
+  const assigns = cmd.fdNames.map(name => `${name}=$$`)
+  cmd.words.unshift(...assigns)
+  cmd.marked.unshift(...assigns.map(word => word.replaceAll('$', `${LIVE}$`)))
+}
 // zsh reads `$NAME:h` and `$NAME[1]` as a modifier and a subscript, even inside double quotes.
 const BARE = `\\$(${NAME})(?![A-Za-z0-9_]|${LIVE}?[:\\[])`
 const EXPANSION = new RegExp(`${LIVE}(?:\\$\\{(${NAME})\\}|${BARE}|~(?=/|$))`, 'g')
