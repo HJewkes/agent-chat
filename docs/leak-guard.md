@@ -1699,16 +1699,24 @@ after it:
 
 - is `--delete`, `-d`, `--force`, `-f`, `--force-with-lease`, `--force-if-includes`, `--mirror`,
   `--prune`, `--all` or `--branches`, a unique prefix of one, or a short cluster holding `d` or `f`;
-- is a refspec that starts with `+` or `:`, or whose destination is `main` or `master` (bare,
-  `X:main`, `heads/main` or `refs/heads/main`), before or after a literal `--`;
+- is a refspec that starts with `+` or `:`, holds a `*` pattern git may expand to main, or whose
+  destination is `main` or `master` (bare, `X:main`, `heads/main` or `refs/heads/main`), before
+  or after a literal `--`;
 - is a word the guard cannot resolve, such as a glob, a brace or a `$(...)`.
+
+It also refuses a push whose `-c` or `--config-env` options (its own, or those of the git whose
+`!` alias runs it) set `remote.*.push`, `remote.*.mirror` or any `push.*` key, or that the guard
+cannot read. And it refuses the writes a later push reads: `git config` naming one of those keys
+or a bare `remote.<name>` or `push` section, `git remote` or `git clone` with `--mirror`, and any
+of those with a word the guard cannot read.
 
 It decides on the argv the shell builds, so quoted or escaped push words, a redirect glued to
 the word, `/usr/bin/git`, `command`, `env`, `bash -c` and a config alias to `push` all reach it.
 It does not see a script file the agent runs (`sh ./del.sh`), a push with no refspec that
-updates main through `push.default` or the current branch (`git push`, `git push origin HEAD`
-on main), or a push git runs for another program. The profile `disallowedTools` push rules
-remain a literal-text backstop.
+updates main through the current branch (`git push`, `git push origin HEAD` on main), config
+already in a repository or written by other means (an edit of `.git/config`), `git send-pack`
+or `git http-push`, or a push git runs for another program. The profile `disallowedTools` push
+rules remain a literal-text backstop.
 
 ## Owner override and its trust limit
 
