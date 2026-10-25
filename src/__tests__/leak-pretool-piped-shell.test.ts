@@ -150,3 +150,73 @@ describe.skipIf(SHELLS.length === 0)('real shells run what the guard reads from 
     for (const [shell, args] of SHELLS) expect(gitCalls(shell, args, src)).toMatch(calls)
   })
 })
+
+// A process substitution reads what the command before it writes (CC-1416). Mutation: inherit the
+// line's stdin in a process substitution again, and every row allows.
+const PROCESS_SUBSTITUTIONS = [
+  `echo '${PUSH}' > >(bash)`,
+  `printf '${PUSH}\\n' > >(zsh)`,
+  `echo '${PUSH}' > >(sh)`,
+  `echo '${PUSH}' > >(dash)`,
+  `echo '${PUSH}' > >(ksh)`,
+  `echo '${PUSH}' 1> >(bash -s)`,
+  `echo '${PUSH}' > >(bash -c bash)`,
+  `echo '${PUSH}' | tee >(bash) > /dev/null`,
+  `tee >(bash) <<< '${PUSH}' > /dev/null`,
+  `x=$(echo '${PUSH}' > >(bash)); echo "$x"`,
+]
+
+// Denied though no shell runs the text: bash's operand is a path echo prints and never writes to.
+const UNWRITTEN = [`echo '${PUSH}' >(bash)`, `echo '${PUSH}' >(sh)`]
+
+// Mutation: make every process substitution deny, every subshell read 'unknown', or every command
+// on a line with a process substitution read 'unknown'.
+const PROCESS_BENIGN: [string, RegExp][] = [
+  [`diff <(git show HEAD:a) <(git show HEAD:b)`, /^show HEAD:a\nshow HEAD:b$|^show HEAD:b\nshow HEAD:a$/],
+  [`git log --oneline > >(wc -l)`, /^log --oneline$/],
+  [`git status > >(cat); bash`, /^status$/],
+  [`echo '${PUSH}' > >(cat > /dev/null)`, /^$/],
+  [`f() ( bash ); git status`, /^status$/],
+]
+
+describe('checkCommand on a shell in a process substitution', () => {
+  it.each([...PROCESS_SUBSTITUTIONS, ...UNWRITTEN])('denies %j', src => {
+    expect(checkCommand(src, ctx())).toBe(REASONS.pipedScript)
+  })
+
+  it.each(PROCESS_BENIGN)('allows %j', src => {
+    expect(checkCommand(src, ctx())).toBeUndefined()
+  })
+})
+
+const pause = (ms: number): void => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+/** The git calls `src` made, waiting up to 3 s for a process substitution the shell did not wait for. */
+function settledCalls(shell: string, args: string[], src: string): string {
+  const record = path.join(real.root, 'git-calls')
+  let calls = gitCalls(shell, args, src)
+  for (let waited = 0; calls === '' && waited < 3_000; waited += 50) {
+    pause(50)
+    calls = fs.existsSync(record) ? fs.readFileSync(record, 'utf8').trim() : ''
+  }
+  return calls
+}
+
+const innerShell = (src: string): string => /\(\s*(\w+)/.exec(src.slice(src.indexOf('>(') + 1))?.[1] ?? 'bash'
+const runnableHere = (src: string): boolean => fs.existsSync(`/bin/${innerShell(src)}`)
+
+describe.skipIf(SHELLS.length === 0)('real shells run the push a process substitution reads', () => {
+  it.each(PROCESS_SUBSTITUTIONS.filter(runnableHere))('every shell pushes for %j', src => {
+    const pushed = SHELLS.filter(([shell, args]) => settledCalls(shell, args, src) === 'push --no-verify')
+
+    expect(pushed.map(([shell]) => shell)).toEqual(SHELLS.map(([shell]) => shell))
+  })
+
+  it.each(UNWRITTEN)('no shell pushes for %j', src => {
+    for (const [shell, args] of SHELLS) expect(gitCalls(shell, args, src)).toBe('')
+  })
+
+  it.each(PROCESS_BENIGN)('every shell runs only what the guard read for %j', (src, calls) => {
+    for (const [shell, args] of SHELLS) expect(gitCalls(shell, args, src)).toMatch(calls)
+  })
+})

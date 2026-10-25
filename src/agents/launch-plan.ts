@@ -195,6 +195,27 @@ function settingSourceArgs(input: LaunchPlanInput): string[] {
   return sources === undefined ? [] : ['--setting-sources', sources.join(',')]
 }
 
+/** ToolSearch reaches the deferred MCP tools, agent-chat's own included; Monitor is how a worker waits. */
+const WORKER_KEPT_TOOLS = ['ToolSearch', 'Monitor']
+
+/**
+ * CC-1593: a worker's `--tools`, the built-ins its allowedTools name plus the kept ones.
+ * Every schema left out of the set (ScheduleWakeup, ListAgents, ...) leaves every turn's prompt.
+ * `Bash(git log:*)` names Bash; an `mcp__` grant is no built-in, and `--tools` keeps MCP deferred.
+ */
+function workerTools(profile: AgentProfile): string[] {
+  const denied = new Set(profile.disallowedTools ?? [])
+  const named = profile.allowedTools
+    .filter(tool => !tool.startsWith('mcp__'))
+    .map(tool => tool.split('(')[0] ?? '')
+  return [...new Set([...named, ...WORKER_KEPT_TOOLS])].filter(tool => tool !== '' && !denied.has(tool))
+}
+
+const toolsArgs = (profile: AgentProfile): string[] =>
+  roleOf(profile) === 'worker' && profile.allowedTools.length > 0
+    ? ['--tools', workerTools(profile).join(',')]
+    : []
+
 /** agent-chat's plugin first, then any carried target it does not already name. */
 const channelTargets = (input: LaunchPlanInput): string[] => [
   ...new Set([`plugin:${AGENT_CHAT_PLUGIN}`, ...(input.channels ?? [])]),
@@ -249,6 +270,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   // them, and wrong for anything else.
   if (profile.allowedTools.length > 0)
     args.push('--allowed-tools', [...profile.allowedTools, AGENT_CHAT_TOOLS].join(','))
+  args.push(...toolsArgs(profile))
   if (profile.disallowedTools?.length) args.push('--disallowed-tools', profile.disallowedTools.join(','))
   for (const dir of input.extraDirs ?? []) args.push('--add-dir', dir)
 
@@ -268,6 +290,8 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // posture inherited from the environment could never be answered by a human.
     // Visible surfaces deliberately emit no flag at all and inherit normally.
     args.push('--permission-mode', 'default')
+    // CC-1598: cwd, memory path and git status move to the first turn, so same-profile workers share a cached prefix.
+    if (roleOf(profile) === 'worker') args.push('--exclude-dynamic-system-prompt-sections')
   } else {
     // `claude [options] [prompt]` — the positional prompt is what makes an
     // interactive agent actually START. Without it the pane opened, Claude Code

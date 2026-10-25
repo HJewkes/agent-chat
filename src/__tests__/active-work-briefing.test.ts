@@ -67,6 +67,24 @@ describe('the briefing built from an active-work initiative', () => {
     expect(text).not.toContain('Already handled')
   })
 
+  it('keeps only the header and Related for the implementer scope (CC-1596)', () => {
+    const root = activeWorkRoot()
+    const dir = initiative(root, 'widgets')
+    fs.writeFileSync(path.join(dir, 'brief.md'), '---\nprofile: work\n---\nWhy: the reason this exists.\n')
+    const related = '## Related to this assignment (1, ranked; open with Read)\n\n- notes/widgets.md'
+
+    const result = briefingFor('widgets', root, related, 'implementer')
+
+    const { text } = result as { text: string }
+    expect(text).toContain('# Orientation: active-work initiative "widgets"')
+    expect(text.endsWith(related)).toBe(true)
+    expect(text).not.toContain('Why: the reason this exists.')
+    expect(text).not.toContain('## Open tasks')
+    expect(text).not.toContain('## Most recent session')
+    // The billing profile is still read from brief.md, whatever the block shows.
+    expect(result).toMatchObject({ slug: 'widgets', profile: 'work' })
+  })
+
   it('reports a missing initiative rather than inventing one', () => {
     const root = activeWorkRoot()
 

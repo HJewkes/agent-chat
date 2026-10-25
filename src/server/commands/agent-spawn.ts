@@ -222,11 +222,29 @@ export const refusalLine = (res: { code?: string; retryable?: boolean }): string
     ? ''
     : `\n  code: ${res.code}${res.retryable === undefined ? '' : ` retryable: ${res.retryable}`}`
 
-function describeSpawn(res: Extract<ServerMessage, { t: 'spawn_result' }>, forkedContext: boolean): string {
+/**
+ * Spawn time is the only place a toolset-confined agent's missing tools are knowable with certainty,
+ * so whole tools stay named. CC-1590: command patterns are only counted, since a worker profile's
+ * ~170 of them cost the coordinator ~4k tokens per spawn; agent_profiles still lists each one.
+ */
+export function deniedLine(denied: readonly string[] | undefined, profile: string): string {
+  if (!denied?.length) return ''
+  const tools = denied.filter(rule => !rule.includes('('))
+  const patterns = denied.length - tools.length
+  const named = tools.length ? [tools.join(', ')] : []
+  const counted = patterns ? [`${patterns} command pattern${patterns === 1 ? '' : 's'}`] : []
+  const pointer = patterns ? ` (agent_profiles ${profile} lists them)` : ''
+  return `\n  denied tools: ${[...named, ...counted].join(' + ')}${pointer}`
+}
+
+export function describeSpawn(
+  res: Extract<ServerMessage, { t: 'spawn_result' }>,
+  forkedContext: boolean,
+  profile: string,
+): string {
   if (!res.ok) return `Not spawned: ${res.reason}${refusalLine(res)}`
   const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
-  // Spawn time is the only place a toolset-confined agent's missing tools are knowable with certainty.
-  const denied = res.disallowedTools?.length ? `\n  denied tools: ${res.disallowedTools.join(', ')}` : ''
+  const denied = deniedLine(res.disallowedTools, profile)
   // The one caveat a forking session cannot check for itself: its current turn is not in the transcript yet.
   const forked = forkedContext
     ? '\n  it holds a copy of your conversation up to your last COMPLETED turn — not this one'
@@ -265,6 +283,6 @@ export const agentSpawn = defineTool({
     if (ctx.registeredName === null)
       return 'Register with chat_register first: a spawn is attributed to the session that asked for it.'
     const res = await requestSpawn(ctx.broker, spawnFrame(input))
-    return describeSpawn(res, input.inherit !== undefined)
+    return describeSpawn(res, input.inherit !== undefined, input.profile)
   },
 })

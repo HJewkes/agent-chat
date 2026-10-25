@@ -98,12 +98,15 @@ describe('the argv every surface shares', () => {
         "plugin:agent-chat@agent-chat-local",
         "--allowed-tools",
         "Read,Grep,mcp__plugin_agent-chat_agent-chat__*",
+        "--tools",
+        "Read,Grep,ToolSearch,Monitor",
         "-p",
         "--output-format",
         "stream-json",
         "--verbose",
         "--permission-mode",
         "default",
+        "--exclude-dynamic-system-prompt-sections",
       ]
     `)
   })
@@ -233,6 +236,7 @@ describe('the one thing surfaces are allowed to differ on', () => {
     // If this fails, someone added a second axis of divergence — which is the
     // wart the single builder exists to prevent.
     // `--strict-mcp-config` rides the same axis: only a headless worker has no pane to answer for an unnamed server.
+    // So does `--exclude-dynamic-system-prompt-sections`, which CC-1598 scopes to headless workers.
     const promptFlags = new Set([
       '-p',
       '--output-format',
@@ -240,6 +244,7 @@ describe('the one thing surfaces are allowed to differ on', () => {
       '--verbose',
       '--permission-mode',
       '--strict-mcp-config',
+      '--exclude-dynamic-system-prompt-sections',
     ])
     const stripped = SURFACE_NAMES.map(surface => {
       const args = buildLaunchPlan(input({ surface })).args
@@ -1181,6 +1186,84 @@ describe('a lean profile', () => {
       )
     },
   )
+})
+
+describe('the shared prompt-cache prefix a headless worker launches with (CC-1598)', () => {
+  const FLAG = '--exclude-dynamic-system-prompt-sections'
+  const argsFor = (over: Partial<AgentProfile>): string[] =>
+    buildLaunchPlan(input({ profile: profile(over) })).args
+
+  // Mutation caught: dropping the role check, which moved a headless coordinator's sections out too.
+  it('moves the dynamic sections out only for a headless worker', () => {
+    expect(argsFor({ surface: 'headless' })).toContain(FLAG)
+    expect(argsFor({ surface: 'iterm-pane' })).not.toContain(FLAG)
+    expect(argsFor({ surface: 'headless', role: 'coordinator' })).not.toContain(FLAG)
+  })
+
+  it('keeps the system prompt byte-stable across two spawns of one profile', () => {
+    const prompt = (agentId: string, name: string, cwd: string): string | undefined =>
+      flag(
+        buildLaunchPlan(input({ agentId, name, cwd, brief: `task for ${name}` })).args,
+        '--append-system-prompt',
+      )
+
+    expect(prompt('ag000001', 'scout', '/repo/a')).toBe(prompt('ag000002', 'ranger', '/repo/b'))
+  })
+})
+
+describe('the built-in toolset a worker launches with (CC-1593)', () => {
+  const shipped = (name: string): AgentProfile => {
+    const parsed = loadProfile(name, path.join(__dirname, '../../profiles'))
+    if ('error' in parsed) throw new Error(parsed.error)
+    return parsed
+  }
+  const toolsFor = (over: Partial<AgentProfile>): string | undefined =>
+    flag(buildLaunchPlan(input({ profile: profile(over) })).args, '--tools')
+
+  // Mutation caught: dropping ToolSearch, which leaves every mcp__ tool, agent-chat's included, unreachable.
+  it('pins the burndown profiles to their granted built-ins plus ToolSearch', () => {
+    const tools = Object.fromEntries(
+      ['bd-implementer', 'bd-reviewer', 'bd-planner'].map(name => [
+        name,
+        flag(buildLaunchPlan(input({ profile: shipped(name) })).args, '--tools'),
+      ]),
+    )
+
+    expect(tools).toMatchInlineSnapshot(`
+      {
+        "bd-implementer": "Read,Write,Edit,Bash,Grep,Glob,Monitor,ToolSearch",
+        "bd-planner": "Read,Grep,Glob,Write,Bash,ToolSearch,Monitor",
+        "bd-reviewer": "Read,Bash,Grep,Glob,ToolSearch",
+      }
+    `)
+  })
+
+  it('names the tool a scoped Bash grant is for, once', () => {
+    expect(toolsFor({ allowedTools: ['Read', 'Bash(git log:*)', 'Bash(gh pr view:*)'] })).toBe(
+      'Read,Bash,ToolSearch,Monitor',
+    )
+  })
+
+  it('keeps out a built-in the profile denies outright, but not one it only scopes', () => {
+    const tools = toolsFor({
+      allowedTools: ['Bash', 'Read'],
+      disallowedTools: ['Monitor', 'Bash(git stash:*)'],
+    })
+
+    expect(tools).toBe('Bash,Read,ToolSearch')
+  })
+
+  it('leaves a coordinator and an inherited posture on the full toolset', () => {
+    expect(toolsFor({ role: 'coordinator' })).toBeUndefined()
+    expect(toolsFor({ allowedTools: [] })).toBeUndefined()
+  })
+
+  it('puts the variadic --tools before the brief separator on an interactive surface', () => {
+    const args = buildLaunchPlan(input({ profile: profile({ surface: 'iterm-pane' }) })).args
+
+    expect(args.indexOf('--tools')).toBeLessThan(args.indexOf('--'))
+    expect(args.at(-1)).toBe(input().brief)
+  })
 })
 
 describe('the account a plan hands the launched process (CC-200)', () => {
