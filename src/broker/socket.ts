@@ -29,7 +29,14 @@ import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
-import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
+import {
+  BrokerCore,
+  readoptRegistration,
+  type Conn,
+  type EndorseApproval,
+  type VerdictResult,
+} from './core.js'
+import type { OpenApproval } from './event-store.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { viewRoster } from '../agents/roster-filter.js'
@@ -133,6 +140,10 @@ const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(scope.rid === undefined ? message : { ...message, rid: scope.rid }))
   scope.record?.(message)
 }
+
+/** A verdict from a non-socket human channel (TP-1989: `owner-console`) names it on the row it writes. */
+const auditMeta = (channel: string | undefined): { meta?: { channel: string } } =>
+  channel === undefined ? {} : { meta: { channel } }
 
 type KeyedReply = Extract<ServerMessage, { t: 'send_result' | 'spawn_result' }>
 interface KeyedJoiner {
@@ -1622,49 +1633,80 @@ export class SocketServer {
           this.refusalHint(conn, 'approve_permission'),
       })
     }
-    const { core } = this
-    const request = core.events.openApproval(msgId)
+    reply(conn, { t: 'answer_result', ...this.permissionVerdict(msgId, behavior) })
+  }
+
+  /**
+   * The one permission arbiter, shared by the socket's `approve_permission` and
+   * the owner-console HTTP route (TP-1989). Who may reach it is the caller's
+   * check; whether the prompt is still open is this one's, so a second verdict
+   * loses here whichever channel sent it. `channel` labels the resolution row
+   * and the log line for audit and changes no check.
+   */
+  permissionVerdict(msgId: string, behavior: PermissionBehavior, channel?: string): VerdictResult {
+    const request = this.core.events.openApproval(msgId)
     if (!request) {
-      return reply(conn, {
-        t: 'answer_result',
+      return {
         ok: false,
         reason: `${msgId} is not an open permission prompt — it may have been answered already, or aged out`,
-      })
+      }
     }
-    if (request.source === 'hook') return this.answerHook(conn, msgId, request.toolName, behavior)
-    const target = core.registry.connFor(request.session)
+    if (request.source === 'hook') return this.answerHook(msgId, request.toolName, behavior, channel)
+    return this.answerSession(msgId, request, behavior, channel)
+  }
+
+  /** The verdict on a channel-raised row goes to the prompting session ALONE; see `handleApprovePermission`. */
+  private answerSession(
+    msgId: string,
+    request: Extract<OpenApproval, { source: 'channel' }>,
+    behavior: PermissionBehavior,
+    channel: string | undefined,
+  ): VerdictResult {
+    const target = this.core.registry.connFor(request.session)
     if (!target) {
-      return reply(conn, {
-        t: 'answer_result',
+      return {
         ok: false,
         reason: `${request.session} is no longer connected, so its prompt cannot be answered from here`,
-      })
+      }
     }
-    core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior })
+    this.core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior, ...auditMeta(channel) })
     reply(target, { t: 'permission_verdict', requestId: request.requestId, behavior })
-    core.registry.setAwaitingApproval(target, false)
-    logEvent('permission_verdict', { msgId, to: request.session, tool: request.toolName, behavior })
-    reply(conn, {
-      t: 'answer_result',
-      ok: true,
-      reason: `${request.toolName} ${behavior} sent to ${request.session}`,
+    this.core.registry.setAwaitingApproval(target, false)
+    logEvent('permission_verdict', {
+      msgId,
+      to: request.session,
+      tool: request.toolName,
+      behavior,
+      ...(channel === undefined ? {} : { channel }),
     })
+    return { ok: true, reason: `${request.toolName} ${behavior} sent to ${request.session}` }
   }
 
   /** The verdict on a hook-raised row goes to the hook's own connection; the session's MCP server never asked. */
-  private answerHook(conn: Conn, msgId: string, toolName: string, behavior: PermissionBehavior): void {
+  private answerHook(
+    msgId: string,
+    toolName: string,
+    behavior: PermissionBehavior,
+    channel: string | undefined,
+  ): VerdictResult {
     const wait = this.hooks.get(msgId)
     if (!wait) {
-      return reply(conn, {
-        t: 'answer_result',
+      return {
         ok: false,
         reason: `${msgId} has no hook waiting on it any more, so the verdict has nowhere to go`,
-      })
+      }
     }
-    this.core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior })
+    this.core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior, ...auditMeta(channel) })
     this.settleHook(msgId, behavior)
-    logEvent('permission_verdict', { msgId, to: wait.session, tool: toolName, behavior, source: 'hook' })
-    reply(conn, { t: 'answer_result', ok: true, reason: `${toolName} ${behavior} sent to ${wait.session}` })
+    logEvent('permission_verdict', {
+      msgId,
+      to: wait.session,
+      tool: toolName,
+      behavior,
+      source: 'hook',
+      ...(channel === undefined ? {} : { channel }),
+    })
+    return { ok: true, reason: `${toolName} ${behavior} sent to ${wait.session}` }
   }
 
   /** Release a waiting hook with `behavior`, if one is waiting on `msgId`. The row is closed by the caller. */
