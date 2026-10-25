@@ -998,6 +998,24 @@ describe('a gh command the command line hides', () => {
     expect(checkCommand(command, ctx())).toBe(REASONS.hiddenScript)
   })
 
+  // TP-4245: a script the guard cannot read may set the command word to git.
+  it.each([
+    'eval "$A=ext"; $G fetch o',
+    'eval $A=ext; $G',
+    'eval "${A}=ext"; $G',
+    'eval "$(cat f)"; $G',
+    'eval `cat f`; $G',
+  ])('denies %s: eval of unread text on a line with an expanded command word', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.hiddenScript)
+  })
+
+  it.each(['. /dev/stdin <<< "$S"; $G fetch o', 'cat f | . /dev/stdin; $G fetch o'])(
+    'denies %s: source of unread text on a line with an expanded command word',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.pipedScript)
+    },
+  )
+
   it('reads eval text it can resolve, and leaves eval alone on a line without git or gh', () => {
     const env = { T: TERM, V: '--no-verify' }
 

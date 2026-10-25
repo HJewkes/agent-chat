@@ -155,6 +155,8 @@ interface Scope {
   cdpath: boolean
   /** The command line names git or gh, so a script the guard cannot read may run either. */
   namesGit: boolean
+  /** The command line runs a command word the guard cannot resolve, which a script it cannot read may make git or gh (TP-4245). */
+  hiddenHead: boolean
   /** How many git or gh aliases the guard has expanded to reach this command. */
   aliases: number
   /** Variables earlier commands set, unset (undefined) or changed in a way the guard cannot tell (UNSURE). */
@@ -2325,7 +2327,7 @@ function checkUnknownFeed(
   const { script } = readShellCall(name, marked, assigns)
   const fromStdin = script.from === 'stdin' || script.from === 'hidden'
   if (fromStdin || (script.from === 'file' && mayReadStdin(marked[script.at])))
-    return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+    return scriptMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
   return undefined
 }
 
@@ -2342,7 +2344,7 @@ function checkSourcedStdin(
   const fed = scope.fed
   if (!operands.some(mayReadStdin) || isNothing(fed)) return undefined
   if (fed !== 'unknown') return checkFed(fed.texts, ctx, scope, depth)
-  return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  return scriptMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
 }
 
 /** Each fed text as a script, past the line's budget only a deny when the line may reach git or gh. */
@@ -2353,7 +2355,7 @@ function checkFed(
   depth: number,
 ): string | undefined {
   scope.fedChecks.left -= texts.length
-  if (scope.fedChecks.left < 0) return lineMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
+  if (scope.fedChecks.left < 0) return scriptMayReachGit(scope, ctx) ? REASONS.pipedScript : undefined
   return firstReason(texts, text => checkAt(text, ctx, { ...scope, stdin: NOTHING }, depth + 1))
 }
 
@@ -2429,6 +2431,19 @@ const withEnv = (word: string, env: Env): string =>
 function lineMayReachGit(scope: Scope, ctx: GuardContext): boolean {
   scope.hiddenStarts.reachesGit ??= mayReachGit(scope.line, ctx.env)
   return scope.hiddenStarts.reachesGit
+}
+
+/**
+ * Whether a script the guard cannot read may reach git or gh: the line may, or it runs a command word
+ * the guard cannot resolve, which that script may set to either (TP-4245).
+ */
+const scriptMayReachGit = (scope: Scope, ctx: GuardContext): boolean =>
+  scope.hiddenHead || lineMayReachGit(scope, ctx)
+
+/** Whether the command's word past its wrappers is an expansion, or unwrap refuses it, so the guard cannot tell what it runs. */
+function runsHiddenHead(cmd: SimpleCommand): boolean {
+  const head = commandHead(cmd)
+  return head === undefined || (head.words[0] ?? '').includes(LIVE)
 }
 
 const mayStartCommand = (word: string): boolean =>
@@ -2522,9 +2537,9 @@ function currentShellScript(
 
 /**
  * Checks the script a builtin runs in the current shell. One the guard cannot read is a deny where it
- * may reach git: for eval, on a line that names git or gh, or that may reach either while stdin is fed
- * text the guard cannot read, which `read` may hand on (CC-1408); for trap and mapfile, on a line that
- * may reach git or gh.
+ * may reach git: for eval, on a line that names git or gh or runs a command word the guard cannot
+ * resolve, or that may reach either while stdin is fed text the guard cannot read, which `read` may
+ * hand on (CC-1408); for trap and mapfile, on a line that may reach git or gh (scriptMayReachGit).
  */
 function checkShellScript(
   script: ShellScript,
@@ -2535,7 +2550,8 @@ function checkShellScript(
 ): string | undefined {
   if (script.kind === 'none') return undefined
   const fedUnread = scope.stdin === 'unknown' && lineMayReachGit(scope, ctx)
-  const gated = name === 'eval' ? scope.namesGit || fedUnread : lineMayReachGit(scope, ctx)
+  const gated =
+    name === 'eval' ? scope.namesGit || scope.hiddenHead || fedUnread : scriptMayReachGit(scope, ctx)
   if (script.kind === 'unreadable' || script.unread) {
     if (gated) return REASONS.hiddenScript
     if (script.kind === 'unreadable') return undefined
@@ -2651,7 +2667,7 @@ const inputEvaluated = (script: string): boolean =>
 /** Checks parallel's no-command form, where each input is a command line of its own. */
 function checkParallelInputs(inputs: ParallelInputs, ctx: GuardContext, scope: Scope, depth: number) {
   if (inputs.kind === 'unread' || inputs.groups.length !== 1)
-    return lineMayReachGit(scope, ctx) ? REASONS.hiddenScript : undefined
+    return scriptMayReachGit(scope, ctx) ? REASONS.hiddenScript : undefined
   return firstReason(inputs.groups[0] ?? [], input =>
     checkAt(input, ctx, parallelScope(scope, ctx), depth + 1),
   )
@@ -2674,12 +2690,12 @@ function checkParallel(
   if (call.command.length === 0) return checkParallelInputs(call.inputs, ctx, scope, depth)
   const plain = call.command.map(word => word.replaceAll(BRACE_PAIR, '{}'))
   const words = plain.map(word => resolveWord(word, cmd, ctx, scope))
-  if (words.includes(undefined) && lineMayReachGit(scope, ctx)) return REASONS.hiddenScript
+  if (words.includes(undefined) && scriptMayReachGit(scope, ctx)) return REASONS.hiddenScript
   const read = words.map((word, i) => word ?? unmark(plain[i] as string))
   const script = parallelScript(read, call)
   if (lineMayReachGit(scope, ctx) && quotesInput(read, call, script)) return REASONS.parallelQuoted
   if (inputRuns(script)) return REASONS.hiddenCommand
-  if (lineMayReachGit(scope, ctx) && inputEvaluated(script)) return REASONS.hiddenScript
+  if (scriptMayReachGit(scope, ctx) && inputEvaluated(script)) return REASONS.hiddenScript
   return checkAt(script, ctx, parallelScope(scope, ctx), depth + 1)
 }
 
@@ -3437,6 +3453,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
   const cmds = parseShell(command)
+  if (!at.hiddenHead && cmds.some(runsHiddenHead)) at = { ...at, hiddenHead: true }
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   const line = lineFeeds(cmds)
@@ -3463,6 +3480,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     fragile: false,
     cdpath,
     namesGit: false,
+    hiddenHead: false,
     aliases: 0,
     exports: new Map(),
     written: [],

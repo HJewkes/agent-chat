@@ -331,6 +331,31 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
   })
 })
 
+// TP-4245: a script the guard cannot read sets the command word, which could as well be git.
+// bash runs the last stage of a pipe in a subshell, so only zsh keeps what `. /dev/stdin` set there.
+const SET_BY_SCRIPT: [string, string, string][] = [
+  ['read S < vars; eval "$S"; $G fetch o', REASONS.hiddenScript, 'sh'],
+  ['read S < vars; eval $S; $G fetch o', REASONS.hiddenScript, 'sh'],
+  ['cat vars | . /dev/stdin; $G fetch o', REASONS.pipedScript, 'zsh'],
+]
+
+describe.skipIf(SHELLS.length === 0)('an expanded command word after a script the guard cannot read', () => {
+  beforeAll(() => fs.writeFileSync(path.join(WORK, 'vars'), 'G=echo\n'))
+
+  it.each(SET_BY_SCRIPT)('denies %j, and a shell runs the word the script set', (command, reason, runs) => {
+    const ran = SHELLS.filter(([shell]) => shell.endsWith(runs)).map(([shell, flags]) =>
+      inShell(shell, flags, command),
+    )
+
+    expect(checkCommand(command, guard())).toBe(reason)
+    for (const output of ran) expect(output).toBe('fetch o\n')
+  })
+
+  it('allows a script the guard cannot read before a literal command word', () => {
+    expect(checkCommand('read S < vars; eval "$S"; npm test', guard())).toBeUndefined()
+  })
+})
+
 // CC-680: a hostile variable behind a quoted endpoint stays one word, so gh gets no method or field flag.
 const API_READS = [
   'gh api "repos/o/r/commits/$SHA/check-runs"',
