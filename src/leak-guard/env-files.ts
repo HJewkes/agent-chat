@@ -35,7 +35,11 @@ const readLink = (file: string): string | undefined => {
  * real path of its nearest existing parent plus the rest, following a dangling symlink to its
  * target, since a write through one creates the target.
  */
-export function realTarget(file: string, realpath: (file: string) => string = fs.realpathSync, links = MAX_LINKS): string {
+export function realTarget(
+  file: string,
+  realpath: (file: string) => string = fs.realpathSync,
+  links = MAX_LINKS,
+): string {
   try {
     return realpath(file)
   } catch {

@@ -464,7 +464,7 @@ export class SocketServer {
   private jobKick: JobKick | undefined
   /** TP-4256: launch nonces and their shell-file baselines. Memory only, so a restart leaves every nonce unknown. */
   readonly integrity = new IntegrityLedger()
-  /** TP-4256 A5: re-hashes the settings.json the broker wrote, on every check and on a timer. */
+  /** TP-4256 A5: re-hashes the launch files the broker wrote, on every check and on a timer. */
   readonly settingsWatch = new SettingsWatch(this.integrity, (nonce, mismatch) =>
     this.noticeQuarantine(nonce, mismatch),
   )

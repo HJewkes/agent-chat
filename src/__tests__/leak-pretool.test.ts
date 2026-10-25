@@ -3131,7 +3131,9 @@ describe('no Edit-family write lands under the agents directory (TP-4256 A5)', (
 
   it('denies a coordinator too', () => {
     const input = { file_path: sibling('plan.json') }
-    expect(checkToolCall('Write', input, guard({ AGENT_CHAT_ROLE: 'coordinator' }))).toBe(REASONS.protectedPath)
+    expect(checkToolCall('Write', input, guard({ AGENT_CHAT_ROLE: 'coordinator' }))).toBe(
+      REASONS.protectedPath,
+    )
   })
 
   it('folds case where the volume does', () => {
