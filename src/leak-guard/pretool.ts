@@ -84,7 +84,13 @@ import {
   hasUnreadableOption,
 } from './git-unresolved.js'
 import { pushFlagMayForm } from './push-words.js'
-import { breaksNoRewrite, noRewriteOn, rewritingParams, writesPushConfig } from './push-policy.js'
+import {
+  breaksNoRewrite,
+  noRewriteOn,
+  PUSH_POLICY_ENV,
+  rewritingParams,
+  writesPushConfig,
+} from './push-policy.js'
 import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import {
@@ -205,7 +211,7 @@ export const REASONS = {
   gitConfig: `leak-guard: git -c or --config-env on core.hooksPath or an alias would bypass the pre-push leak scan. ${DOCS}`,
   configWrite: `leak-guard: writing core.hooksPath, or an alias that skips hooks, is not allowed for agents. ${DOCS}`,
   assignmentSubscript: `leak-guard: a word that opens an assignment subscript, NAME[...], but is not a complete NAME[idx]=value, so the guard cannot tell where the command starts. Keep the subscript free of blanks, or run the command without a prefix assignment. ${DOCS}`,
-  gitConfigEnv: `leak-guard: setting, exporting or unsetting GIT_CONFIG_* would switch off the pre-push leak scan. ${DOCS}`,
+  gitConfigEnv: `leak-guard: setting, exporting or unsetting GIT_CONFIG_* or AGENT_CHAT_PUSH_POLICY would switch off the pre-push leak scan or push policy. ${DOCS}`,
   envClear: `leak-guard: env -i clears the variables that run the pre-push leak scan. ${DOCS}`,
   protectedPath: `leak-guard: the leak guard's hook directory and private term list are off limits to agents. ${DOCS}`,
   tooDeep: `leak-guard: the command nests shells too deeply to check. Run it more directly. ${DOCS}`,
@@ -415,7 +421,9 @@ const SUBSCRIPTED_OR_APPENDING = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\
 const BROKEN_SUBSCRIPT = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*${LIVE}?\\[[^\\]]*$`)
 const assignedValue = (word: string): string => ASSIGNMENT_VALUE.exec(word)?.[1] ?? ''
 const brokenAssignment = (word: string): boolean => BROKEN_SUBSCRIPT.test(word)
-const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
+// The pre-push hook reads the push policy from the env git hands it, so the agent may not edit it (CC-1633).
+const isGuardVar = (name: string | undefined): boolean =>
+  name !== undefined && (/^GIT_CONFIG/.test(name) || name === PUSH_POLICY_ENV)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
 const NAMES_GH = /\bgh\b/
@@ -506,7 +514,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
       return { reason: REASONS.xargsWrapper }
     if (assigned !== undefined) {
-      if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
+      if (isGuardVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
       at++
     } else if (PREFIX_WORDS.has(head) && head !== 'time') at = dropOptions(rest, at + 1)
@@ -1004,7 +1012,7 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
     if (fedReason !== undefined) return { reason: fedReason }
     const unset =
       a === '-u' || a === '--unset' ? args[++i] : (/^-u(.+)/.exec(a)?.[1] ?? /^--unset=(.*)/.exec(a)?.[1])
-    if (isGitConfigVar(unset)) return { reason: REASONS.gitConfigEnv }
+    if (isGuardVar(unset)) return { reason: REASONS.gitConfigEnv }
     if (unset !== undefined) {
       assigns.push(unset)
       continue
@@ -1028,14 +1036,14 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
       let at = i + 1
       for (; at < args.length && (args[at] as string).includes('='); at++) {
         const operand = args[at] as string
-        if (isGitConfigVar(nameOf(operand)) || (fed && nameOf(operand).includes(LIVE)))
+        if (isGuardVar(nameOf(operand)) || (fed && nameOf(operand).includes(LIVE)))
           return { reason: REASONS.gitConfigEnv }
         assigns.push(operand)
       }
       return { words: args, at, chdir, assigns }
     } else if (brokenAssignment(a)) return { reason: REASONS.assignmentSubscript }
     else if (!a.startsWith('-') && !a.includes('=')) break
-    else if (isGitConfigVar(a.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+    else if (isGuardVar(a.split('=')[0])) return { reason: REASONS.gitConfigEnv }
     else if (!a.startsWith('-')) assigns.push(a)
   }
   return { words: args, at: Math.min(i, args.length), chdir, assigns }
@@ -1043,7 +1051,7 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
 
 function checkEnvEdit(args: readonly string[]): string | undefined {
   const names = args.filter(a => !a.startsWith('-')).map(a => ASSIGNMENT.exec(a)?.[1] ?? a)
-  return names.some(isGitConfigVar) ? REASONS.gitConfigEnv : undefined
+  return names.some(isGuardVar) ? REASONS.gitConfigEnv : undefined
 }
 
 const overridesGuard = (kv: string | undefined): boolean => GUARD_KEY.test((kv ?? '').split('=')[0] ?? '')
@@ -2432,7 +2440,10 @@ const mayStartCommand = (word: string): boolean =>
   word.includes(LIVE) ||
   PREFIX_WORDS.has(word) ||
   ASSIGNMENT.test(word) ||
-  CHECKED_NAMES.has(path.basename(word))
+  CHECKED_NAMES.has(path.basename(word)) ||
+  DASHED_GIT.test(path.basename(word))
+
+const DASHED_GIT = /^git-(.+)$/
 
 const suffixCommand = (cmd: SimpleCommand, marked: readonly string[]): SimpleCommand => ({
   ...cmd,
@@ -2765,6 +2776,10 @@ function checkSimple(
   if (PARALLELS.has(name)) return checkParallel(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
+  // git runs its builtin when called by its dashed name (`$(git --exec-path)/git-push`), so read it as `git push` (CC-1633).
+  const dashed = DASHED_GIT.exec(name)?.[1]
+  if (dashed !== undefined)
+    return checkGitRun(gitRun([dashed, ...marked], unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if ((name === 'gh' || (name === 'agent-chat' && args[0] === 'gh-write')) && privileged)
     return REASONS.privilegedGh
   if (name === 'gh')

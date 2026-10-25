@@ -110,14 +110,26 @@ const CONFIG_WRITES = [
   'git clone --mirror https://example.invalid/r.git',
 ]
 
-// The line tries to switch the policy off before the push; the hook's env is not the line's.
+// The line switches the policy off for the git it runs, whose pre-push hook reads the env it is handed.
 const TAMPERS = [
-  `export AGENT_CHAT_PUSH_POLICY=; git push ${DELETE}`,
-  `unset AGENT_CHAT_PUSH_POLICY; git push ${DELETE}`,
-  `AGENT_CHAT_PUSH_POLICY= git push ${DELETE}`,
-  `AGENT_CHAT_PUSH_POLICY=off git push ${DELETE}`,
-  `env -u AGENT_CHAT_PUSH_POLICY git push ${DELETE}`,
-  `env AGENT_CHAT_PUSH_POLICY=off git push ${DELETE}`,
+  'export AGENT_CHAT_PUSH_POLICY=; git push origin feat/x',
+  'unset AGENT_CHAT_PUSH_POLICY; git push origin feat/x',
+  'unset -v AGENT_CHAT_PUSH_POLICY',
+  'AGENT_CHAT_PUSH_POLICY= git push origin feat/x',
+  'AGENT_CHAT_PUSH_POLICY=off git push origin feat/x',
+  'env -u AGENT_CHAT_PUSH_POLICY git push origin feat/x',
+  'env --unset=AGENT_CHAT_PUSH_POLICY git push origin feat/x',
+  'env AGENT_CHAT_PUSH_POLICY=off git push origin feat/x',
+  'declare -x AGENT_CHAT_PUSH_POLICY=off',
+  'typeset AGENT_CHAT_PUSH_POLICY=off',
+]
+
+// git runs its builtin under its dashed name, so these read as `git push` and `git config`.
+const DASHED = [
+  `/usr/lib/git-core/git-push ${DELETE}`,
+  'git-push origin HEAD:main',
+  `command /usr/lib/git-core/git-push ${DELETE}`,
+  '/usr/lib/git-core/git-config remote.origin.mirror true',
 ]
 
 const ALLOWED = [
@@ -163,8 +175,18 @@ describe('leak-guard push policy no-rewrite (CC-1633)', () => {
     },
   )
 
-  it.each(TAMPERS)('keeps the hook policy when the line changes the variable: %j', line => {
+  it.each(TAMPERS)('denies a line that changes the policy variable, with or without the policy: %j', line => {
+    expect(checkCommand(line, ctx())).toBe(REASONS.gitConfigEnv)
+    expect(checkCommand(line, ctx({ PWD: scratch }))).toBe(REASONS.gitConfigEnv)
+  })
+
+  it.each(DASHED)('denies the dashed builtin %j', line => {
     expect(checkCommand(line, ctx())).toBe(REASONS.pushRewrite)
+  })
+
+  it('reads a dashed push for --no-verify and allows a plain one', () => {
+    expect(checkCommand('/usr/lib/git-core/git-push --no-verify origin feat/x', ctx())).toBe(REASONS.noVerify)
+    expect(checkCommand('/usr/lib/git-core/git-push origin feat/x', ctx())).toBeUndefined()
   })
 
   it.each(ALLOWED)('allows %j', line => {

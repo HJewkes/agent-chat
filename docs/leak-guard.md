@@ -1690,12 +1690,28 @@ Not covered, by design or by cost:
 ## The no-rewrite push policy (CC-1633)
 
 A profile with `"pushPolicy": "no-rewrite"` (the bd implementer, implementer-lite and reviewer
-profiles) launches its agent with `AGENT_CHAT_PUSH_POLICY=no-rewrite`. The hook reads the variable
-from its own environment, which Claude Code sets at launch. An `export`, `unset`, prefix
-assignment or `env -u` in the agent's Bash runs in a child shell and never reaches it.
+profiles) launches its agent with `AGENT_CHAT_PUSH_POLICY=no-rewrite`. Two layers enforce it.
 
-With the policy on, the hook refuses a git run whose resolved subcommand is `push` when any word
-after it:
+**The pre-push hook is the enforcement.** git hands it the ref updates it is about to make, after
+`-c` options, config includes, `HOME` and `XDG_CONFIG_HOME`, `push.default`, refspec patterns,
+aliases and the dashed `git-push` name have all been resolved. With the variable set to
+`no-rewrite` in the env git hands the hook, the hook refuses the whole push when any update:
+
+- deletes a ref (an all-zero local sha);
+- updates `refs/heads/main` or `refs/heads/master`;
+- is not a fast-forward of the remote's tip, or its tip is not in the repository to check.
+
+It reads ancestry in a view of the repository's objects alone, with no replace refs, grafts or
+commit-graph, so the agent's repository state cannot fake a fast-forward. git leaves a mirror's
+prune deletions off the hook's input (observed on git 2.53), so the hook also reads
+`remote.<name>.mirror` with git's own env, which carries the push's `-c` options, includes and
+`HOME`, and refuses a mirror remote.
+
+**The PreToolUse hook keeps the variable intact and refuses early.** It refuses any line that
+sets, exports, unsets or prefixes `AGENT_CHAT_PUSH_POLICY`, the same rule that protects
+`GIT_CONFIG_*`, with or without the policy. Its own copy of the policy comes from its own
+environment, which Claude Code sets at launch. With that policy on, it also refuses, before git
+runs, a resolved `push` (a dashed `git-push` included) when any word after it:
 
 - is `--delete`, `-d`, `--force`, `-f`, `--force-with-lease`, `--force-if-includes`, `--mirror`,
   `--prune`, `--all` or `--branches`, a unique prefix of one, or a short cluster holding `d` or `f`;
@@ -1704,19 +1720,18 @@ after it:
   or after a literal `--`;
 - is a word the guard cannot resolve, such as a glob, a brace or a `$(...)`.
 
-It also refuses a push whose `-c` or `--config-env` options (its own, or those of the git whose
-`!` alias runs it) set `remote.*.push`, `remote.*.mirror` or any `push.*` key, or that the guard
-cannot read. And it refuses the writes a later push reads: `git config` naming one of those keys
-or a bare `remote.<name>` or `push` section, `git remote` or `git clone` with `--mirror`, and any
-of those with a word the guard cannot read.
+It also refuses a push whose `-c` or `--config-env` options set `remote.*.push`,
+`remote.*.mirror` or any `push.*` key, or that it cannot read. It refuses `git config` writes of
+those keys and `git remote` or `git clone` with `--mirror`. These refusals are only clearer and
+earlier. A typed `--prune` is the one rewrite the pre-push hook cannot see, because git leaves
+its deletions off the hook's input, so for that flag this layer is the only one.
 
-It decides on the argv the shell builds, so quoted or escaped push words, a redirect glued to
-the word, `/usr/bin/git`, `command`, `env`, `bash -c` and a config alias to `push` all reach it.
-It does not see a script file the agent runs (`sh ./del.sh`), a push with no refspec that
-updates main through the current branch (`git push`, `git push origin HEAD` on main), config
-already in a repository or written by other means (an edit of `.git/config`), `git send-pack`
-or `git http-push`, or a push git runs for another program. The profile `disallowedTools` push
-rules remain a literal-text backstop.
+Not covered: a script file or program that runs git with the variable changed where the line
+does not name it (`sh ./p.sh`, a name built at run time; the gap the `GIT_CONFIG_*` rule shares),
+`--prune` that this layer does not see (a script, an unread wrapper), `git send-pack` and
+`git http-push`, which run no pre-push hook, a GitHub API call that moves or deletes a ref, and
+a push from a session that runs neither hook. The profile `disallowedTools` push rules remain a
+literal-text backstop.
 
 ## Owner override and its trust limit
 

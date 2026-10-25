@@ -385,6 +385,41 @@ const bakePath = (brokerPath: string): string =>
 exit 2`
     : `PATH=${shQuote(brokerPath)}; export PATH`
 
+const POLICY_REFUSED = 'leak-scan: push refused by the no-rewrite push policy (CC-1633)'
+
+const policyRefusal = (why: string): string =>
+  `{ printf '%s\\n' "${POLICY_REFUSED}: ${why}; see docs/leak-guard.md." >&2; exit 1; }`
+
+/**
+ * The no-rewrite push policy (CC-1633), judged on the ref updates git is about to make, after
+ * config, includes, push.default and aliases are resolved: a delete, an update of main or master,
+ * or one that is not a fast-forward of the remote's tip. Ancestry is read in a view of the
+ * repository's objects alone, with no replace refs, grafts or commit-graph, and a tip the view
+ * cannot reach refuses. git leaves a mirror's prune deletions off these lines (observed on 2.53),
+ * so the mirror flag is read here too, with git's own env: its `-c` options, includes and HOME.
+ * The pretool hook refuses a typed --mirror or --prune, and any line that sets or clears the variable.
+ */
+const POLICY_STEP = `case \${AGENT_CHAT_PUSH_POLICY-} in
+no-rewrite)
+  mirror=$(git config --type=bool --get "remote.$1.mirror" 2>/dev/null)
+  [ $? -le 1 ] && [ "$mirror" != true ] || ${policyRefusal('remote $1 is a mirror, which deletes and forces')}
+  pview=$tmp/policy
+  pobjects=$(cd "$(git rev-parse --git-path objects)" 2>/dev/null && pwd -P) &&
+    /usr/bin/env -i PATH="$PATH" git init -q --template= "$pview" >/dev/null 2>&1 &&
+    printf '%s\\n' "$pobjects" > "$pview/.git/objects/info/alternates" ||
+    ${policyRefusal("could not open the repository's objects to check the push")}
+  while read -r lref lsha rref rsha; do
+    case $lsha in *[!0]*) ;; *) ${policyRefusal('it deletes $rref')} ;; esac
+    case $rref in refs/heads/main | refs/heads/master) ${policyRefusal('it updates $rref')} ;; esac
+    case $rsha in
+    *[!0]*)
+      /usr/bin/env -i PATH="$PATH" git -C "$pview" --no-replace-objects -c core.commitGraph=false \\
+        merge-base --is-ancestor "$rsha" "$lsha" >/dev/null 2>&1 ||
+        ${policyRefusal("$rref is not a fast-forward of the remote's tip")} ;;
+    esac
+  done < "$refs" ;;
+esac`
+
 // The broker's PATH covers the whole shim, not only the scan; the repo hook gets the agent's PATH back.
 const prePushShim = (
   inputs: ScanInputs,
@@ -398,6 +433,7 @@ trap 'rm -rf "$tmp"' EXIT
 refs=$tmp/refs
 errs=$tmp/errs
 cat > "$refs"
+${POLICY_STEP}
 ${scanStep(inputs, bake)}
 scan=$?
 ${FIND_REPO_HOOK}
