@@ -112,6 +112,8 @@ export interface PoolRoute {
   redirect?: Pool
   /** Enforce mode: every eligible pool is past a budget stop; the caller still bills an open home pool. */
   refusal?: string
+  /** With `refusal`: the pool the spawn falls back to, absent when its account is no charter pool. */
+  billed?: string
 }
 
 /** The pick's candidates, with a pool the budget gate closed carrying the gate's reason. */
@@ -148,12 +150,24 @@ export function routePool(
     candidates: withClosed(read.pick.candidates, closed),
   }
   if (mode !== 'enforce' || inOrder.length === 0) return { record }
-  if (chosen === undefined) return { record, refusal: allClosed(closed) }
+  if (chosen === undefined) {
+    return {
+      record,
+      refusal: allClosed(closed),
+      ...(read.billed === undefined ? {} : { billed: read.billed }),
+    }
+  }
   return chosen.name === read.billed ? { record } : { record, redirect: chosen }
 }
 
 const allClosed = (closed: ReadonlyMap<string, string>): string =>
   `every eligible pool is closed: ${[...closed].map(([pool, reason]) => `${pool}: ${reason}`).join('; ')}`
+
+/** The refusal once the account the spawn bills is closed; CC-615: a refusing route names that home pool and why. */
+export const homeClosedRefusal = (route: PoolRoute | undefined, reason: string): string =>
+  route?.refusal === undefined
+    ? reason
+    : `seat budget stop: ${route.refusal}; home ${route.billed ?? 'account'} is closed: ${reason}`
 
 /** One line for the event row's body and `seats status`. */
 export function poolPickText(agent: string, record: PoolPickRecord): string {
