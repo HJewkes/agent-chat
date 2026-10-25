@@ -75,6 +75,7 @@ describe('parseShell on very wide input', () => {
   ])('keeps every write of %s', (_name, src) => {
     let commands: Array<{ writes: unknown[] }> = []
     expect(() => (commands = parseShell(src))).not.toThrow()
-    expect(commands.at(-1)?.writes.length).toBe(600000)
+    expect(commands.reduce((sum, cmd) => sum + cmd.writes.length, 0)).toBe(600000)
+    expect(commands.at(-1)?.writes).toEqual([])
   })
 })

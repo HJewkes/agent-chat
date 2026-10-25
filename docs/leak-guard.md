@@ -871,6 +871,30 @@ cannot read, such as `-x "$(cat s)"`, is a deny for a literal `git` or an expans
 `git rebase -i`, `git submodule update` and `git bisect start`, `good` and `bad` run no command and
 are not affected.
 
+In a shell git starts (`submodule foreach`, `rebase -x`, `bisect run`, `!` aliases, pagers and
+editors), git puts its exec-path first on PATH. The launcher points that exec-path at a mirror of
+git-core whose `git` and dashed builtins are the push shim. So any `git` such a shell finds by name
+is the shim, whatever script, alias, startup file, argv0 or arithmetic expansion led to it. The
+shim restores GIT_EXEC_PATH on every run and refuses `--exec-path=<dir>`. The guard's static rules
+for that shell are main's: `$` or backquote text, startup variables, and a visible
+`push --no-verify`. Not closed, the same as at top level: a git run by path (`/usr/bin/git`,
+`hash -p /usr/bin/git p`, `exec -a git-push /usr/bin/git`) or after a PATH reset. Closing that
+needs enforcement that `--no-verify` cannot skip.
+
+The mirror (TP-4249) is `<home>/git-bin/core`, a link to a `core-<key>` dir beside the shim. At
+each spawn the shim writer reads the real `git --exec-path` and `--list-cmds=builtins` with
+GIT_EXEC_PATH unset, so a nested launch never mirrors a mirror. In the mirror, `git` and
+`git-<name>` for every builtin link to the shim, and every other entry, such as `git-sh-setup`,
+`git-remote-https` and `mergetools`, links to the real one. The key covers `git --version`, the
+core path, the builtin list and the core listing, so an upgrade gets a new dir on the next spawn.
+The shim maps a `git-<name>` it is run as to `git <name>`. Its own exec-path, for the
+`git-<word>` lookup, stays the real core. A git a shim-run git starts for itself
+(`pack-objects`, `upload-pack`, `receive-pack`) also passes through the shim, which costs about
+3 ms a call on Linux. A launch with no mirror, because git or its core could not be read, sets no
+GIT_EXEC_PATH. Linux only so far: on macOS (Apple's xcrun `git`, Homebrew's `libexec`) the
+mirror is UNVERIFIED. `src/__tests__/leak-git-mirror.test.ts` runs each row against real git, once
+with no shim, where it lands a ref, and once through the mirror, where it is refused.
+
 Config values that name a program are read in their own section below (TP-636). git's own hooks,
 and an option whose name is an expansion, as in `git rebase "$OPT" "<cmd>"` with `OPT` set on the
 line, are not read.
@@ -1023,7 +1047,9 @@ variable `X` names (TP-2499). These rules also read a command's redirect targets
 and unquoted heredoc bodies on any descriptor, where a program var's `${NAME:=x}` denies too. The
 lexer drops none of that text: it keeps a redirect-only command that holds any, whose assignments
 bash keeps, as a `)` command wherever it stands, at the end of the line and before a heredoc body
-included. Such a name may be any program var or
+included. That `)` command keeps its own write targets too: zsh runs a redirect-only command as
+NULLCMD, which is `cat`, so `< f >> x` writes `x` where it stands and never through the command
+after it (TP-4250). Such a name may be any program var or
 `GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the line's
 other checks so a more specific reason wins. Two rules carry this into the scripts a line runs:
 
@@ -1927,7 +1953,8 @@ refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 
 A `!` alias whose name is not on the shell alias allowlist is refused before it runs, push or
 not, with exit 2 and a line `git-shim: refused (shell-alias)` (CC-613). Inside a `!` alias git
-puts its exec-path first on PATH, so the body's own `git` skips the shim, and a body can build
+puts its exec-path first on PATH. That is the shim's mirror (TP-4249), so the body's own `git` by
+name is the shim, but a body can still run git by path and build
 `push` in more ways than any check can see (`echo hsup | rev | xargs -I% git %`, a `tr` or
 `base64 | sh` pipeline, a variable from the environment). So only named aliases run. The allowlist is `gitShellAliases` in `~/.agent-chat/config.json`,
 an array of alias names, and the edit is the owner's. Without it the list is empty and every
@@ -2048,20 +2075,22 @@ starts (a hook, `rebase -x`) inherits no list, so its own `-c protocol.ext.allow
 Not covered:
 
 - an absolute git path (`/usr/bin/git push`), or `env -i`, which drops the shim from PATH;
-- `GIT_EXEC_PATH` or `--exec-path`;
+- `GIT_EXEC_PATH` set for a git run by path; a shim-run git restores the mirror, and the shim
+  refuses `--exec-path=<dir>` for any dir but the mirror with `git-shim: refused (exec-path)`;
+- `git send-pack`, which pushes refs without running the pre-push hook (observed through the shim
+  with a local bare remote);
 - a `git` that the agent puts ahead of the shim on its own PATH (the PreToolUse guard reads that
   command line);
-- a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
-  `!` aliases and `rebase --exec`. An unlisted `!` alias never runs (above), so only a listed
-  one is in this class: its body can build push at run time without any argument, such as
-  `echo hsup | rev | xargs -I% git %`, a `tr` or `base64 | sh` pipeline, or
-  `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments or text
-  mention push is refused (above);
+- a git run by path inside a shell git starts for its hooks, `!` aliases and `rebase --exec`.
+  By name it finds the mirror's shim (above), so `echo hsup | rev | xargs -I% git %` or
+  `!git $P --no-verify origin main; true` run as `P=push git g` reach the shim. An unlisted `!`
+  alias never runs, so only a listed one is in this class, through `/usr/bin/git` or a PATH
+  reset in its body;
 - a listed `!` alias whose text an agent replaces, since the allowlist holds names and not alias
   text. Editing `.git/config` directly is one source; `git -c alias.<name>=...` and the
   `GIT_CONFIG_*` variables, set inside a script the PreToolUse guard does not read, are others;
 - an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
-  git's exec-path first on PATH as for a `!` alias;
+  the mirror first on PATH as for a `!` alias, so only a git it runs by path skips the shim;
 - pushing without git.
 
 The shim is live for an agent only after a broker restart picks up the

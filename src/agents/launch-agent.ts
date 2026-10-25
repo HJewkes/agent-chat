@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
@@ -7,6 +8,7 @@ import {
   type RunAgentOptions,
 } from '@titan-design/agent-surface'
 import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
+import { gitMirrorDirFor } from '../leak-guard/git-mirror.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
 import { agentDir, distDir, ghShimDir, home } from '../paths.js'
 import { pinGitProtocols } from '../git.js'
@@ -64,6 +66,13 @@ function withGitShim(env: Record<string, string>): Record<string, string> {
   return dir === undefined ? env : withShimOnPath(env, dir)
 }
 
+/** TP-4249: the shim's mirror as git's exec-path, so a shell git starts finds the shim; absent when none was built. */
+function gitExecPathFor(env: Record<string, string>): Record<string, string> {
+  const dir = env[GIT_SHIM_DIR_ENV]
+  if (dir === undefined || !fs.existsSync(gitMirrorDirFor(dir))) return {}
+  return { GIT_EXEC_PATH: gitMirrorDirFor(dir) }
+}
+
 /** `agentEnv()` with a PATH that keeps agent-chat, gh and sbin however the broker was started (CC-456). */
 export function agentBaseEnv(
   parent: NodeJS.ProcessEnv = process.env,
@@ -76,7 +85,8 @@ export function agentBaseEnv(
 /**
  * The plan with the shim dirs on its PATH. The launcher layers `plan.env` over the base env,
  * so a PATH the plan sets wins over the base's: the shims go onto whichever PATH will win.
- * GIT_ALLOW_PROTOCOL is pinned the same way, so a profile's env cannot re-enable `ext` (CC-1095).
+ * GIT_ALLOW_PROTOCOL is pinned the same way, so a profile's env cannot re-enable `ext` (CC-1095),
+ * and so is GIT_EXEC_PATH, so a profile cannot move git's helpers off the shim's mirror (TP-4249).
  */
 export function withShims(plan: LaunchPlan, base: Record<string, string> = agentBaseEnv()): LaunchPlan {
   const env = {
@@ -85,7 +95,15 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
   }
   const { PATH } = withGitShim(withGhShim(env))
   const GIT_ALLOW_PROTOCOL = pinGitProtocols(plan.env.GIT_ALLOW_PROTOCOL ?? base.GIT_ALLOW_PROTOCOL)
-  return { ...plan, env: { ...plan.env, ...(PATH === undefined ? {} : { PATH }), GIT_ALLOW_PROTOCOL } }
+  return {
+    ...plan,
+    env: {
+      ...plan.env,
+      ...(PATH === undefined ? {} : { PATH }),
+      GIT_ALLOW_PROTOCOL,
+      ...gitExecPathFor(plan.env),
+    },
+  }
 }
 
 /** Where the launch's private TMPDIR goes, beyond its name and pid. Injected by tests. */
