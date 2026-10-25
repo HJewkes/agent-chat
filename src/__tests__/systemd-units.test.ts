@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeWorkRoot } from '../agents/active-work.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from '../cli/verbs/burndown-job.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from '../cli/verbs/watchdog-job.js'
@@ -467,6 +467,63 @@ describe('watchdog home (CC-819)', () => {
     expect(report.errors?.[0]).toMatch(error)
     expect(calls).toEqual([])
     expect(fs.existsSync(host.unitDir)).toBe(false)
+  })
+
+  // Kills: vetting only the flag's home, so a real install bakes in a shell home under tmpdir or a worktree.
+  it.each([
+    ['a temp dir', path.join(os.tmpdir(), 'shell-home'), 'temp dir'],
+    ['a worktree', '/repo/.claude/worktrees/cc-1/home', 'worktree'],
+  ])(
+    'refuses a shell AGENT_CHAT_HOME inside %s with the flag message, writing and calling nothing',
+    (_, home, where) => {
+      process.env.AGENT_CHAT_HOME = home
+      const { systemctl, calls } = fakeSystemctl()
+      const host = linuxHost(systemctl)
+      const report = watchdogInstallOn(host)
+      expect(report).toEqual({
+        ok: false,
+        lines: [],
+        errors: [`refused: --agent-chat-home ${home} is inside a ${where}`],
+      })
+      expect(calls).toEqual([])
+      expect(fs.existsSync(host.unitDir)).toBe(false)
+    },
+  )
+
+  // Kills: guarding only the systemd path, so the darwin install still loads a plist with a temp shell home.
+  it('refuses a temp shell AGENT_CHAT_HOME on darwin before writing a plist or calling launchctl', () => {
+    vi.spyOn(os, 'homedir').mockReturnValue(scratch)
+    process.env.AGENT_CHAT_HOME = path.join(os.tmpdir(), 'shell-home')
+    const { launchctl, calls } = fakeLaunchctl()
+    try {
+      const report = watchdogInstallOn(darwinHost(launchctl))
+      expect(report.errors).toEqual([
+        `refused: --agent-chat-home ${process.env.AGENT_CHAT_HOME} is inside a temp dir`,
+      ])
+      expect(calls).toEqual([])
+      expect(fs.existsSync(watchdogPlistPath())).toBe(false)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  // Kills: vetting the shell home under --dry-run, which only prints and installs nothing.
+  it('still dry-runs with a temp shell AGENT_CHAT_HOME', () => {
+    process.env.AGENT_CHAT_HOME = path.join(os.tmpdir(), 'shell-home')
+    const { systemctl, calls } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl, true))
+    expect(report.ok).toBe(true)
+    expect(report.lines[0]).toContain(`Environment="AGENT_CHAT_HOME=${process.env.AGENT_CHAT_HOME}"`)
+    expect(calls).toEqual([])
+  })
+
+  // Kills: vetting the shell home even when --agent-chat-home overrides it.
+  it('installs against a durable --agent-chat-home over a temp shell AGENT_CHAT_HOME', () => {
+    process.env.AGENT_CHAT_HOME = path.join(os.tmpdir(), 'shell-home')
+    const { systemctl, calls } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl), { agentChatHome: PILOT })
+    expect(report.ok).toBe(true)
+    expect(calls.at(-1)).toBe(`--user enable --now ${WATCHDOG}-pilot.timer`)
   })
 
   it('uninstalls and reports the suffixed units the flag names', () => {

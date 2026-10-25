@@ -52,18 +52,26 @@ const spec = (logDir: string, target: WatchdogTarget) =>
 const units = (target: WatchdogTarget): RenderedUnits =>
   renderUnits(spec(linuxLogDir(target), target), linuxName(target))
 
-/** A scratch or worktree home vanishes under the job, so an explicit one is refused before anything renders. */
-function refusal(target: WatchdogTarget): Report | null {
+/** The home a real install must vet: the flag's always, the shell's only when it is baked in for real. */
+function vettedHome(target: WatchdogTarget, dryRun: boolean): string | undefined {
+  const home = flagHome(target)
+  if (home !== undefined || dryRun) return home
+  const shellHome = process.env.AGENT_CHAT_HOME
+  return shellHome ? path.resolve(shellHome) : undefined
+}
+
+/** A scratch or worktree home vanishes under the job, so one is refused before anything renders. */
+function refusal(target: WatchdogTarget, dryRun: boolean): Report | null {
   if (target.agentChatHome === '')
     return { ok: false, lines: [], errors: ['refused: --agent-chat-home is empty'] }
-  const home = flagHome(target)
+  const home = vettedHome(target, dryRun)
   const errors = home === undefined ? [] : agentChatHomeRefusals(home, os.tmpdir())
   return errors.length === 0 ? null : { ok: false, lines: [], errors }
 }
 
 /** The darwin install body, taking its `JobControl` explicitly so a test can inject a stub. */
 export function watchdogInstall(control: JobControl, target: WatchdogTarget = {}): Report {
-  const refused = refusal(target)
+  const refused = refusal(target, control.dryRun)
   if (refused !== null) return refused
   const plist = renderPlist(spec(watchdogLogDir(), target))
   // No kickstart: the first wake waits for the next scheduled minute, not the install.
@@ -75,7 +83,7 @@ export function watchdogInstall(control: JobControl, target: WatchdogTarget = {}
 
 export function watchdogInstallOn(host: JobHost, target: WatchdogTarget = {}): Report {
   if (!usesSystemd(host)) return watchdogInstall(launchdControl(host, WATCHDOG_LABEL), target)
-  const refused = refusal(target)
+  const refused = refusal(target, host.dryRun)
   if (refused !== null) return refused
   const rendered = units(target)
   // An OnCalendar timer never fires on enable, so the first wake waits for the next scheduled minute here too.
