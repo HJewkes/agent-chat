@@ -435,12 +435,15 @@ checks the `-c` string where the shell finds it: `mksh -T - -c TEXT` and `ksh -o
 run `TEXT`, and `ksh -c 'echo hi' TEXT` does not. `ksh` may be ksh93, which runs a script operand no
 file has as `name "$@"` (`ksh 'git push' --no-verify` pushes), so that operand is checked as text
 with each later operand appended as one quoted word: `ksh 'git -C' '#' push` runs `git -C '#' push`,
-not a comment. `-o -c` hides the call, since mksh reads it as the letter `c` and ksh93 as the next option.
+not a comment. A later operand the outer shell expands (`ksh 'git push' "$F"`) may be any flag, so it
+denies (kshOperandExpansion) on a line that may reach git or gh. `-o -c` hides the call, since mksh reads it as the letter `c` and ksh93 as the next option.
 csh runs the word after the one holding `c`, whatever it starts with, and a letter neither csh
 knows hides the call, since bsd-csh ignores it (`csh --c TEXT` runs `TEXT`). A hidden call has every
-word checked as its `-c` string. csh rewrites `!` history in the text it reads (`!#:1` repeats a
-word of the line), so a csh `-c` string or fed text holding `!` denies (cshHistory) on a line that
-may reach git or gh.
+word checked as its `-c` string. The guard parses a csh `-c` string or fed text as sh, and csh reads
+some text differently: it rewrites `!` history (`!#:1` repeats a word of the line), a `\` inside
+double quotes does not escape the `"`, `#` starts a comment, and `set`, `setenv`, `alias`, `if`,
+`foreach`, `while` and `switch` are its own. So csh text holding any of these denies (cshSyntax) on a
+line that may reach git or gh, and the rest is checked as sh.
 
 | Denied                                                                                                                                                                                                                                                                                                                                    | Why                                                         |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |

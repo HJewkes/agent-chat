@@ -267,7 +267,7 @@ describe('the bypass guard reads ash, mksh and csh behind a privilege wrapper (C
     "su -s /bin/csh -c 'echo --no-verify; git push !#:1'",
     "capsh --shell=/bin/csh -- -c 'echo --no-verify; git push !#:1'",
   ])('denies %s, whose text csh rewrites', line => {
-    deny(line, REASONS.cshHistory)
+    deny(line, REASONS.cshSyntax)
   })
 
   // doas -s runs $SHELL on text the guard reads as sh's, which csh reads with `!` history.

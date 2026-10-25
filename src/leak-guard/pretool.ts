@@ -269,7 +269,8 @@ export const REASONS = {
   templateDir: `leak-guard: this line sets GIT_TEMPLATE_DIR, passes git init, init-db or clone --template=<dir>, or sets init.templateDir by git -c, --config-env or git config, which makes git copy hooks and config from a directory the guard never reads. Drop the setting. ${DOCS}`,
   checkTimeout: `leak-guard: the guard could not finish checking this call in time, so it was not run. Split the command into smaller Bash calls. ${DOCS}`,
   safeDirectory: `leak-guard: git -c, --config-env or git config here sets safe.directory, which makes git trust the config and hooks of a repository someone else owns, which the guard never reads. Drop the setting. ${DOCS}`,
-  cshHistory: `leak-guard: csh rewrites ! history in the text it reads (!#:1 repeats a word of the line) before it runs it, which the guard never replays, and this line may reach git or gh. Drop the !, or run the text with sh. ${DOCS}`,
+  cshSyntax: `leak-guard: csh reads this text differently from sh, which the guard parses it as: it rewrites ! history, a backslash does not escape a double quote, # starts a comment, and set, setenv, alias, if, foreach, while and switch are its own, and this line may reach git or gh. Run the text with sh. ${DOCS}`,
+  kshOperandExpansion: `leak-guard: ksh93 runs a script operand no file has as a command with the later operands as its arguments, and one of them is an expansion the guard cannot see, which may be --no-verify, on a line that may reach git or gh. Write the arguments out, or run the text with ksh -c. ${DOCS}`,
 } as const
 
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
@@ -2253,7 +2254,8 @@ function checkShell(
   depth: number,
 ): string | undefined {
   const fed = scope.fed
-  if (cshHistory(call, fed) && lineMayReachGit(scope, ctx)) return REASONS.cshHistory
+  const foreign = foreignReading(call, fed)
+  if (foreign !== undefined && lineMayReachGit(scope, ctx)) return foreign
   const reason =
     fed === 'unknown'
       ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
@@ -2286,10 +2288,23 @@ function missingFileRun(marked: readonly string[], at: number): string {
   return [unmark(marked[at] as string), ...literals].join(' ')
 }
 
-/** csh substitutes `!` history in its `-c` string and stdin (observed: `!#:1` repeats a word), which the guard never replays. */
-function cshHistory(call: ShellRun, fed: Feed): boolean {
-  const texts = [...commandTexts(call), ...(fed === 'unknown' ? [] : fed.texts)]
-  return call.name === 'csh' && texts.some(text => text.includes('!'))
+// What csh reads unlike sh: `!` history, `\` inside double quotes, `#` comments, and its own builtins and keywords.
+const CSH_ONLY = /[!\\"#]|(?:^|[\s;&|()])(?:set|setenv|alias|if|foreach|while|switch)(?=$|[\s;&|()])/
+
+/**
+ * The deny reason for a shell whose reading of its script differs from the sh reading the guard
+ * checks: csh text that leaves sh's common syntax, or ksh93 handing an expanded operand to a
+ * missing-file script as an argument the guard would check as a literal.
+ */
+function foreignReading(call: ShellRun, fed: Feed): string | undefined {
+  if (call.name === 'csh') {
+    const texts = [...commandTexts(call), ...(fed === 'unknown' ? [] : fed.texts)]
+    return texts.some(text => CSH_ONLY.test(text)) ? REASONS.cshSyntax : undefined
+  }
+  const { script } = readShellCall(call.name, call.marked, call.assigns)
+  const missing = script.from === 'file' && script.missingRuns === true
+  const live = missing && call.marked.slice(script.at + 1).some(word => word.includes(LIVE))
+  return live ? REASONS.kshOperandExpansion : undefined
 }
 
 /** A shell's base name, its marked words after the name, and the assignments it runs with. */

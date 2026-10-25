@@ -76,10 +76,23 @@ const ONE_SHELL_PUSHES = [
   `/bin/csh -c '${P}'`,
 ]
 
-// csh rewrites `!` history in the text it reads, so `!#:1` is the line's second word.
+// csh reads its text unlike sh: `!#:1` is the line's second word, a backslash leaves a double quote
+// closing, `#` starts a comment, and `set` assigns a variable.
 const HISTORY = [
   `csh -c 'echo --no-verify; git push !#:1 origin HEAD:main'`,
   `echo 'echo --no-verify; git push !#:1 origin HEAD:main' | csh`,
+]
+const CSH_QUOTING = [
+  `csh -c 'echo "a\\" ; ${P} ; #"'`,
+  `csh <<'EOF'\necho "a\\" ; ${P} ; #"\nEOF`,
+  `su -s /bin/csh -c 'echo "a\\" ; ${P} ; #"'`,
+]
+const CSH_ONLY = [...HISTORY, ...CSH_QUOTING, `csh -c 'set g=g; $g"it" ${PUSHED}'`]
+
+// The outer shell expands a later operand before ksh93 passes it on, so it may be any flag.
+const KSH93_EXPANDED_OPERANDS = [
+  `F=--no-verify; ksh 'git push' "$F" origin HEAD:main`,
+  `ksh 'git push' "$(printf -- --no-verify)" origin HEAD:main`,
 ]
 
 const NOT_PUSHED = [
@@ -101,6 +114,8 @@ const ALLOWED = [
   `csh -c 'echo hi'`,
   'csh script.csh',
   `csh -c 'echo hi!'`,
+  `csh -c 'echo "hi"'`,
+  `ksh 'echo' "$F"`,
   ...NOT_PUSHED,
 ]
 
@@ -109,8 +124,12 @@ describe('ksh, mksh and csh run their -c string and stdin checked (CC-1631)', ()
     expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
   })
 
-  it.each(HISTORY)('denies %s, whose text csh rewrites', line => {
-    expect(checkCommand(line, ctx)).toBe(REASONS.cshHistory)
+  it.each(CSH_ONLY)('denies %s, whose text csh reads unlike sh', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.cshSyntax)
+  })
+
+  it.each(KSH93_EXPANDED_OPERANDS)('denies %s, whose operand ksh93 gets expanded', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.kshOperandExpansion)
   })
 
   it.each(ALLOWED)('allows %s', line => {
@@ -161,7 +180,7 @@ describe.skipIf(found.ksh === undefined || SH === undefined || !isKsh93())('real
 })
 
 describe.skipIf(found.csh === undefined || SH === undefined)('real csh', () => {
-  it.each(HISTORY)('%s pushes with --no-verify', line => {
+  it.each([...HISTORY, CSH_QUOTING[0] as string])('%s pushes with --no-verify', line => {
     expect(run(line)).toMatch(/^push --no-verify/)
   })
 })
