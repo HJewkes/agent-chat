@@ -1,4 +1,4 @@
-import type { AgentIdentity } from '../agents/identity.js'
+import type { AgentIdentity } from '../protocol.js'
 
 /** A `hello` id longer than any id the broker mints is not one of its ids. */
 export const MAX_DECLARED_ID = 128

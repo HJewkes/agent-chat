@@ -53,7 +53,7 @@ beforeEach(async () => {
       lineReader<ClientMessage & Correlated>(
         msg => {
           entry.frames.push(msg)
-          if (msg.t === 'list') socket.write(encode({ t: 'list_result', sessions: [], rid: msg.rid }))
+          if (msg.t === 'list') socket.write(encode({ t: 'list_result', sessions: [] }))
         },
         () => undefined,
       ),
