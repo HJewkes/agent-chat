@@ -1032,10 +1032,11 @@ export class SocketServer {
     const machines = Object.values(knownMachineAliases())
     const hello = launcherHello(msg, machines)
     if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
-    const refusal = this.enforcedProofRefusal(hello.host, msg.proof, nonce)
+    const verdict = proofRefusal(hello.host, msg.proof, nonce, brokerKeyFor)
+    const refusal = this.enforcedProofRefusal(hello.host, msg.proof, verdict)
     const result =
       refusal === undefined
-        ? this.hosts.hello(conn, hello, frame => reply(conn, frame))
+        ? this.hosts.hello(conn, hello, frame => reply(conn, frame), verdict === undefined)
         : { ok: false, reason: refusal }
     if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
     reply(conn, { t: 'host_hello_result', ...result })
@@ -1044,12 +1045,16 @@ export class SocketServer {
   /**
    * CC-1063: with `hostProof` off (the default until launchers answer the challenge), a hello without a
    * proof is accepted as before, and a bad proof is logged and accepted, so the check can be watched live.
+   * `verdict` is `proofRefusal` over the hello's one nonce; off still records it, and routing reads it (CC-1331).
    */
-  private enforcedProofRefusal(host: string, proof: unknown, nonce: string | undefined): string | undefined {
+  private enforcedProofRefusal(
+    host: string,
+    proof: unknown,
+    verdict: string | undefined,
+  ): string | undefined {
     const enforced = resolveHostProofMode() === 'enforce'
     if (!enforced && proof === undefined) return undefined
-    const refusal = proofRefusal(host, proof, nonce, brokerKeyFor)
-    if (enforced || refusal === undefined) return refusal
+    if (enforced || verdict === undefined) return verdict
     logEvent('host_launcher_refused', { host, reason: 'proof-invalid (not enforced)' })
     return undefined
   }

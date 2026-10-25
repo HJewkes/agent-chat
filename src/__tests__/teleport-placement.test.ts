@@ -26,7 +26,7 @@ const tempDir = (prefix: string): string => {
 }
 
 const launcher: LauncherSite = {
-  launchers: () => [{ host: LAPTOP, platform: 'linux' }],
+  launchers: () => [{ host: LAPTOP, platform: 'linux', proved: true }],
   surfacesOn: () => ['headless', 'tmux-window'],
   probe: () => Promise.resolve({ ok: true }),
   launch: () => Promise.resolve({ ok: true }),
@@ -36,6 +36,7 @@ beforeEach(() => {
   vi.spyOn(process, 'kill').mockImplementation(() => true)
   const home = tempDir('ac-tele-place-')
   process.env.AGENT_CHAT_HOME = home
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ machines: { laptop: LAPTOP } }))
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(home, 'active-work')
   core = new BrokerCore(() => undefined, {
     events: new EventLog(path.join(home, 'events.db')),
