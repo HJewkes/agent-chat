@@ -45,7 +45,7 @@ describe('knownMachineAliases', () => {
       to: 'mac',
       callerHost: BROKER,
       brokerHost: BROKER,
-      launchers: [{ host: MAC, platform: 'darwin' }],
+      launchers: [{ host: MAC, platform: 'darwin', proved: true }],
       aliases: knownMachineAliases(),
     })
 

@@ -2,7 +2,8 @@
  * CC-951: which machine a teleport's successor lands on, and who launches it there.
  *
  * `broker`: this broker's own host launches it. `caller`: the predecessor's own host, reached
- * through its MCP process (CC-881). `launcher`: a host launcher connected for another machine.
+ * through its MCP process (CC-881). `launcher`: a host launcher connected for another machine,
+ * chosen only when that machine is configured and its launcher's hello proved its host key (CC-1331).
  * Pure: the caller supplies the hosts, the connected launchers and the configured aliases.
  */
 
@@ -15,6 +16,8 @@ export type DestinationSite = 'broker' | 'caller' | 'launcher'
 export interface ConnectedLauncher {
   host: string
   platform: NodeJS.Platform
+  /** CC-1331: the broker checked the hello's proof of this host's launcher key over the connection's nonce. */
+  proved: boolean
 }
 
 export interface DestinationInput {
@@ -24,7 +27,7 @@ export interface DestinationInput {
   callerHost: string
   brokerHost: string
   launchers: readonly ConnectedLauncher[]
-  /** Config `machines`: alias → hostname. */
+  /** Configured machines (config `machines` over key-registered ones): alias → hostname. */
   aliases: Readonly<Record<string, string>>
 }
 
@@ -45,9 +48,25 @@ function aliasTarget(to: string, aliases: Readonly<Record<string, string>>): str
   return alias === undefined ? undefined : aliases[alias]
 }
 
+const configured = (host: string, aliases: Readonly<Record<string, string>>): boolean =>
+  Object.values(aliases).some(target => same(target, host))
+
+/** Why a connected launcher may not take the successor, or undefined when it may. */
+function launcherRefusal(
+  launcher: ConnectedLauncher,
+  aliases: Readonly<Record<string, string>>,
+): string | undefined {
+  if (!configured(launcher.host, aliases))
+    return `${launcher.host} is not one of the configured machines; add it to config machines or run host key-new`
+  if (!launcher.proved)
+    return `the launcher on ${launcher.host} has not proved its host key; provision its launcher key and restart it`
+  return undefined
+}
+
 function knownMachines(input: DestinationInput): string {
   const named = Object.entries(input.aliases).map(([alias, host]) => `${alias} (${host})`)
-  const hosts = [input.brokerHost, input.callerHost, ...input.launchers.map(l => l.host)]
+  const routable = input.launchers.filter(l => launcherRefusal(l, input.aliases) === undefined)
+  const hosts = [input.brokerHost, input.callerHost, ...routable.map(l => l.host)]
   return [...new Set([...named, ...hosts])].join(', ')
 }
 
@@ -61,10 +80,11 @@ export function resolveDestination(input: DestinationInput): DestinationResult {
     }
   if (same(host, brokerHost)) return { ok: true, destination: { site: 'broker', host: brokerHost } }
   const launcher = launchers.find(l => same(l.host, host))
-  if (launcher !== undefined)
+  const refusal = launcher === undefined ? undefined : launcherRefusal(launcher, input.aliases)
+  if (launcher !== undefined && refusal === undefined)
     return { ok: true, destination: { site: 'launcher', host: launcher.host, platform: launcher.platform } }
-  const known = Object.values(input.aliases).some(target => same(target, host))
-  const why = known ? `no launcher connected on ${host}` : `unknown machine "${to}"`
+  const known = configured(host, input.aliases)
+  const why = refusal ?? (known ? `no launcher connected on ${host}` : `unknown machine "${to}"`)
   return { ok: false, reason: `${why}; known machines: ${knownMachines(input)}` }
 }
 

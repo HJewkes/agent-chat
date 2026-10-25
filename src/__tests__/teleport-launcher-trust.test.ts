@@ -35,7 +35,7 @@ function tempDir(prefix: string): string {
 }
 
 const refusingOnTrust: LauncherSite = {
-  launchers: () => [{ host: LAPTOP, platform: 'linux' }],
+  launchers: () => [{ host: LAPTOP, platform: 'linux', proved: true }],
   surfacesOn: () => ['headless', 'tmux-window'],
   probe: (_host, probe) => {
     probes.push(probe)
@@ -57,6 +57,7 @@ beforeEach(() => {
   })
   const home = tempDir('ac-tele-trust-')
   process.env.AGENT_CHAT_HOME = home
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ machines: { laptop: LAPTOP } }))
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(home, 'active-work')
   core = new BrokerCore(() => undefined, {
     events: new EventLog(path.join(home, 'events.db')),
