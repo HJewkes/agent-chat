@@ -165,10 +165,8 @@ const RESTORE_GIT_CONFIG = `[ -z "\${caller_git_config+set}" ] || export GIT_CON
 // agentEnv and launch-agent still export this exact list (CC-1587), so the shim reads it as unset.
 const LEGACY_PIN = 'file:git:http:https:ssh'
 
-// CC-1095 without overriding config (CC-1336): an exported list outranks every protocol.*.allow, so
-// the shim exports only a caller's own list, cut to the safe ones. It appends protocol.ext.allow=never
-// as the last GIT_CONFIG_COUNT pair instead, which git ranks over every config file and include and
-// over protocol.allow, and git reads every other protocol policy itself.
+// CC-1095 without overriding config (CC-1336): an exported list outranks every protocol.*.allow, but a
+// last GIT_CONFIG_COUNT pair outranks every config file and include, so git reads all other policy itself.
 const PIN_PROTOCOLS = `refuse_pin() {
   printf '%s\\n' "git-shim: refused ($1): $2 ${DOCS}" >&2
   exit 2

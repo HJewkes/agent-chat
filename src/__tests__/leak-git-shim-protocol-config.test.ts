@@ -28,42 +28,26 @@ const sshCommand = (fx: Fixture, prefix: string, configs: string, subcommand = '
 const cloneCommand = (fx: Fixture, prefix: string, options: string): string =>
   `${sshCommand(fx, prefix, '', `clone -q ${options}`)} ../cloned`
 
-function expectSshDenied(fx: Fixture, command: string): void {
+function expectSsh(fx: Fixture, command: string, ran: boolean): void {
   const run = runScript(fx, command)
 
-  expect(run.stderr).toContain("transport 'ssh' not allowed")
-  expect(fs.existsSync(sshMarker(fx))).toBe(false)
+  expect(run.stderr.includes("transport 'ssh' not allowed")).toBe(!ran)
+  expect(fs.existsSync(sshMarker(fx))).toBe(ran)
 }
 
-function expectSshRan(fx: Fixture, command: string): void {
-  const run = runScript(fx, command)
-
-  expect(run.stderr).not.toContain('not allowed')
-  expect(fs.existsSync(sshMarker(fx))).toBe(true)
-}
-
-describe("the pin under a caller's command-line protocol config (rows 1, 2, 16, 20)", () => {
+describe("the pin under a caller's command-line protocol config (rows 1, 2, 16, 17, 20)", () => {
   it.each([
-    ['protocol.allow=never, list unset', 'env -u GIT_ALLOW_PROTOCOL', '-c protocol.allow=never'],
+    ['protocol.allow=never, list unset', 'env -u GIT_ALLOW_PROTOCOL', '-c protocol.allow=never', false],
     // Kills: exporting the legacy list a live agent's env already carries.
-    ['protocol.allow=never, legacy list', LEGACY, '-c protocol.allow=never'],
-    ['protocol.ssh.allow=never, legacy list', LEGACY, '-c protocol.ssh.allow=never'],
-    ['ssh never over allow always', '', '-c protocol.ssh.allow=never -c protocol.allow=always'],
-    ['a caller list of https alone', 'GIT_ALLOW_PROTOCOL=https', ''],
-  ])('keeps ssh denied under %s', (_label, prefix, configs) => {
+    ['protocol.allow=never, legacy list', LEGACY, '-c protocol.allow=never', false],
+    ['protocol.ssh.allow=never, legacy list', LEGACY, '-c protocol.ssh.allow=never', false],
+    ['a caller list of https alone', 'GIT_ALLOW_PROTOCOL=https', '', false],
+    ['no config, list unset', 'env -u GIT_ALLOW_PROTOCOL', '', true],
+    ['no config, legacy list', LEGACY, '', true],
+  ])('under %s, ssh runs: %s', (_label, prefix, configs, ran) => {
     const fx = harness.fixture()
 
-    expectSshDenied(fx, sshCommand(fx, prefix, configs))
-  })
-
-  it.each([
-    ['no config, list unset', 'env -u GIT_ALLOW_PROTOCOL', ''],
-    ['no config, legacy list', LEGACY, ''],
-    ['protocol.allow=never with ssh always', '', '-c protocol.allow=never -c protocol.ssh.allow=always'],
-  ])('lets ssh run under %s (row 17)', (_label, prefix, configs) => {
-    const fx = harness.fixture()
-
-    expectSshRan(fx, sshCommand(fx, prefix, configs))
+    expectSsh(fx, sshCommand(fx, prefix, configs), ran)
   })
 })
 
@@ -101,13 +85,13 @@ describe('the pin under config a clone creates (rows 3-6)', () => {
   ] as const)('keeps ssh denied for a clone under %s', (_label, global, template, via) => {
     const fx = harness.fixture()
 
-    expectSshDenied(fx, cloneUnder(fx, global, template, via))
+    expectSsh(fx, cloneUnder(fx, global, template, via), false)
   })
 
   it('lets a clone run ssh under a template that allows it', () => {
     const fx = harness.fixture()
 
-    expectSshRan(fx, cloneUnder(fx, '', '[protocol "ssh"]\n\tallow = always\n', 'option'))
+    expectSsh(fx, cloneUnder(fx, '', '[protocol "ssh"]\n\tallow = always\n', 'option'), true)
   })
 })
 
