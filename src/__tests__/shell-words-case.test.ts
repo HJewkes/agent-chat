@@ -77,6 +77,20 @@ describe('a case form only one shell reads, where a ) can end the span', () => {
   })
 })
 
+describe("a | between a case's patterns", () => {
+  it.each([
+    'case q in (q|r) :;; (*) :;; esac',
+    'case q in q) :;; r|s) :;; *) :;; esac',
+    'echo "$(case q in q|r) :;; esac)"',
+  ])('joins patterns and makes no pipe: %s', line => {
+    expect(parseShell(line).some(cmd => cmd.before === '|' || cmd.after === '|')).toBe(false)
+  })
+
+  it('still pipes inside a pattern body', () => {
+    expect(commandOf('case q in (q|r) echo a | cat;; esac', 'cat').before).toBe('|')
+  })
+})
+
 describe('a case word the splitter reads as an argument (T4)', () => {
   it.each([
     'echo "$(repeat 1 case q in q) :;; esac)"',
