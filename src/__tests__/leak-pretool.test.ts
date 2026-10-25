@@ -3,11 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseTerms } from '@titan-design/egress-scan'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   checkCommand,
   checkToolCall,
   guardContext,
+  isUnderAgentsDir,
   pathFindsOwnInstall,
   loadTerms,
   pretoolDecision,
@@ -3059,50 +3060,93 @@ describe('an environment variable git runs as a program (TP-636)', () => {
   })
 })
 
-describe("no agent may rewrite any agent's hook settings (TP-4256 A5)", () => {
-  const guard = () => guardContext({ AGENT_CHAT_AGENT_ID: 'a1-synthetic' }, '/work', '/home/example')
+describe('no Edit-family write lands under the agents directory (TP-4256 A5)', () => {
+  const caseInsensitiveTmp = fs.existsSync(SCRATCH.toUpperCase())
+  let base = ''
+  let previous: string | undefined
+  const guard = (env: NodeJS.ProcessEnv = {}) =>
+    guardContext({ AGENT_CHAT_AGENT_ID: 'a1-synthetic', ...env }, '/work', '/home/example')
+  const write = (file: string, tool = 'Write') => checkToolCall(tool, { file_path: file }, guard())
+  const sibling = (name: string) => path.join(agentDir('a2-synthetic'), name)
 
-  it.each(['Edit', 'Write', 'MultiEdit'])('denies %s on its own settings.json', tool => {
-    const file = path.join(agentDir('a1-synthetic'), 'settings.json')
-    expect(checkToolCall(tool, { file_path: file }, guard())).toBe(REASONS.protectedPath)
-  })
-
-  it("denies a Write to a sibling agent's settings.json", () => {
-    const file = path.join(agentDir('a2-synthetic'), 'settings.json')
-    expect(checkToolCall('Write', { file_path: file }, guard())).toBe(REASONS.protectedPath)
-  })
-
-  it("denies a Write through a symlink that lands on an agent's settings.json", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-settings-link-'))
-    const previous = process.env.AGENT_CHAT_HOME
-    process.env.AGENT_CHAT_HOME = path.join(dir, 'home')
-    try {
-      fs.mkdirSync(agentDir('a2-synthetic'), { recursive: true })
-      fs.writeFileSync(path.join(agentDir('a2-synthetic'), 'settings.json'), '{}')
-      fs.symlinkSync(path.join(agentDir('a2-synthetic'), 'settings.json'), path.join(dir, 'alias.json'))
-      expect(checkToolCall('Write', { file_path: path.join(dir, 'alias.json') }, guard())).toBe(
-        REASONS.protectedPath,
-      )
-    } finally {
-      if (previous === undefined) delete process.env.AGENT_CHAT_HOME
-      else process.env.AGENT_CHAT_HOME = previous
-      fs.rmSync(dir, { recursive: true, force: true })
+  beforeEach(() => {
+    base = fs.realpathSync(fs.mkdtempSync(path.join(SCRATCH, 'agents-dir-')))
+    previous = process.env.AGENT_CHAT_HOME
+    process.env.AGENT_CHAT_HOME = path.join(base, 'home')
+    for (const id of ['a1-synthetic', 'a2-synthetic']) {
+      fs.mkdirSync(agentDir(id), { recursive: true })
+      for (const name of ['settings.json', 'plan.json', 'relaunch', 'mcp.json'])
+        fs.writeFileSync(path.join(agentDir(id), name), '{}')
     }
   })
 
-  it('denies a case variant of the file name', () => {
-    const file = path.join(agentDir('a2-synthetic'), 'Settings.json')
-    expect(checkToolCall('Write', { file_path: file }, guard())).toBe(REASONS.protectedPath)
+  afterEach(() => {
+    if (previous === undefined) delete process.env.AGENT_CHAT_HOME
+    else process.env.AGENT_CHAT_HOME = previous
+  })
+
+  it.each(['Edit', 'Write', 'MultiEdit'])('denies %s on its own settings.json', tool => {
+    expect(write(path.join(agentDir('a1-synthetic'), 'settings.json'), tool)).toBe(REASONS.protectedPath)
+  })
+
+  it('denies a NotebookEdit in an agent dir', () => {
+    const input = { notebook_path: sibling('n.ipynb') }
+    expect(checkToolCall('NotebookEdit', input, guard())).toBe(REASONS.protectedPath)
+  })
+
+  it.each(['settings.json', 'plan.json', 'relaunch', 'mcp.json', 'notes.txt', 'Settings.json'])(
+    "denies a Write to a sibling's %s",
+    name => {
+      expect(write(sibling(name))).toBe(REASONS.protectedPath)
+    },
+  )
+
+  it.each([
+    ['a file one level deeper', () => path.join(sibling('sub'), 'settings.json')],
+    ['a file in an agent dir not made yet', () => path.join(agentDir('a3-synthetic'), 'plan.json')],
+    ['a path through ..', () => `${agentDir('a1-synthetic')}/../a2-synthetic/relaunch`],
+  ])('denies %s', (_name, file) => {
+    expect(write(file())).toBe(REASONS.protectedPath)
+  })
+
+  it("denies a Write through a symlink to a sibling's mcp.json", () => {
+    fs.symlinkSync(sibling('mcp.json'), path.join(base, 'alias.json'))
+    expect(write(path.join(base, 'alias.json'))).toBe(REASONS.protectedPath)
+  })
+
+  it("denies a Write through a symlink to a sibling's dir", () => {
+    fs.symlinkSync(agentDir('a2-synthetic'), path.join(base, 'sib'))
+    expect(write(path.join(base, 'sib', 'plan.json'))).toBe(REASONS.protectedPath)
+  })
+
+  it('denies a Write through a symlink to the agent-chat home', () => {
+    fs.symlinkSync(path.join(base, 'home'), path.join(base, 'x'))
+    expect(write(path.join(base, 'x', 'agents', 'a2-synthetic', 'relaunch'))).toBe(REASONS.protectedPath)
+  })
+
+  it('denies a Write through a dangling symlink into an agent dir', () => {
+    fs.symlinkSync(sibling('new.json'), path.join(base, 'dangling'))
+    expect(write(path.join(base, 'dangling'))).toBe(REASONS.protectedPath)
+  })
+
+  it('denies a coordinator too', () => {
+    const input = { file_path: sibling('plan.json') }
+    expect(checkToolCall('Write', input, guard({ AGENT_CHAT_ROLE: 'coordinator' }))).toBe(REASONS.protectedPath)
+  })
+
+  it('folds case where the volume does', () => {
+    const variant = path.join(agentDir('a2-synthetic').toUpperCase(), 'plan.json')
+    expect(isUnderAgentsDir(variant, 'darwin')).toBe(true)
+  })
+
+  it.runIf(caseInsensitiveTmp)('denies a case variant of the agents dir on this volume', () => {
+    expect(write(path.join(agentDir('a2-synthetic').toUpperCase(), 'plan.json'))).toBe(REASONS.protectedPath)
   })
 
   it.each([
-    ['another file in an agent dir', () => path.join(agentDir('a2-synthetic'), 'notes.txt')],
-    ['a settings.json one level too deep', () => path.join(agentDir('a2-synthetic'), 'sub', 'settings.json')],
+    ['a settings.json outside the agents directory', () => '/work/project/settings.json'],
+    ['a dir that only shares the prefix', () => path.join(base, 'home', 'agents-archive', 'a2', 'plan.json')],
   ])('leaves %s alone', (_name, file) => {
-    expect(checkToolCall('Write', { file_path: file() }, guard())).toBeUndefined()
-  })
-
-  it('leaves a settings.json outside the agents directory alone', () => {
-    expect(checkToolCall('Write', { file_path: '/work/project/settings.json' }, guard())).toBeUndefined()
+    expect(write(file())).toBeUndefined()
   })
 })

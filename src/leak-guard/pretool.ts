@@ -3561,12 +3561,18 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
   return checkAt(command, ctx, scope, 0)
 }
 
-// Every agent's hooks live in <agents dir>/<id>/settings.json; rewriting one drops them (TP-4256 A5).
-// Matched on the real path of the target, never on command text.
-function isAgentSettings(resolved: string): boolean {
-  const real = realTarget(resolved)
-  if (path.basename(real).toLowerCase() !== 'settings.json') return false
-  return path.dirname(path.dirname(real)) === realTarget(agentsDir())
+// The native realpath gives the on-disk case of what exists; the fold covers a leaf not made yet.
+const canonical = (file: string, platform: NodeJS.Platform): string => {
+  const real = realTarget(file, fs.realpathSync.native)
+  return platform === 'darwin' || platform === 'win32' ? real.toLowerCase() : real
+}
+
+/**
+ * Every launch file an agent's hooks depend on lives under the agents dir, so one rule on the real
+ * path covers them all, with no list of names (TP-4256 A5). Never matched on command text (CC-1643).
+ */
+export function isUnderAgentsDir(resolved: string, platform: NodeJS.Platform = process.platform): boolean {
+  return canonical(resolved, platform).startsWith(canonical(agentsDir(), platform) + path.sep)
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -3581,7 +3587,7 @@ export function checkToolCall(toolName: string, toolInput: unknown, ctx: GuardCo
   if (typeof file !== 'string') return undefined
   const resolved = path.resolve(ctx.cwd, file)
   if (ctx.protectedPaths.some(p => resolved.includes(p))) return REASONS.protectedPath
-  if (isAgentSettings(resolved)) return REASONS.protectedPath
+  if (isUnderAgentsDir(resolved)) return REASONS.protectedPath
   return editsEnvFile(resolved, ctx.env) ? REASONS.ghHelperEnvFileEdit : undefined
 }
 

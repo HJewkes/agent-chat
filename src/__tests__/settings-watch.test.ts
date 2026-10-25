@@ -39,6 +39,8 @@ function setup() {
   dirs.push(dir)
   const settings = path.join(dir, 'settings.json')
   fs.writeFileSync(settings, WITH_HOOK)
+  const plan = path.join(dir, 'plan.json')
+  fs.writeFileSync(plan, JSON.stringify({ argv: ['--settings', settings] }))
   const core = new BrokerCore(() => undefined, {
     events: new EventLog(path.join(dir, 'events.db')),
     registry: new Registry<Conn>(),
@@ -47,7 +49,7 @@ function setup() {
   const server = new SocketServer(core)
   servers.push(server)
   server.integrity.registerLaunch(NONCE, 'a1', { [ZSHRC]: zshrc })
-  server.settingsWatch.register(NONCE, settings)
+  server.settingsWatch.register(NONCE, [settings, plan])
   const frames: ServerMessage[] = []
   const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
   const check = (): ServerMessage | undefined => {
@@ -61,7 +63,7 @@ function setup() {
     return frames.at(-1)
   }
   const notices = () => core.events.since(0, 500).filter(row => row.kind === 'notice')
-  return { settings, check, notices, server }
+  return { settings, plan, check, notices, server }
 }
 
 describe('settings-watch', () => {
@@ -97,13 +99,24 @@ describe('settings-watch', () => {
     expect(check()).toMatchObject({ ok: false, reason: 'quarantined', file: settings })
   })
 
+  it('quarantines when a launch file other than settings.json changes', () => {
+    const { plan, check, notices } = setup()
+
+    fs.writeFileSync(plan, JSON.stringify({ argv: ['--settings', '/dev/null'] }))
+    vi.advanceTimersByTime(TICK_MS)
+
+    expect(notices()).toHaveLength(1)
+    expect(notices()[0]).toMatchObject({ meta: { file: plan, field: 'sha256' } })
+    expect(check()).toMatchObject({ ok: false, reason: 'quarantined', file: plan })
+  })
+
   it("detects a rewrite of a sibling's settings.json made outside pretool and quarantines the sibling", () => {
     const { settings, check, notices, server } = setup()
     const sibling = path.join(path.dirname(settings), 'sibling-settings.json')
     const siblingNonce = 'f'.repeat(64)
     fs.copyFileSync(settings, sibling)
     server.integrity.registerLaunch(siblingNonce, 'a1', { [ZSHRC]: zshrc })
-    server.settingsWatch.register(siblingNonce, sibling)
+    server.settingsWatch.register(siblingNonce, [sibling])
 
     fs.appendFileSync(sibling, ' ')
     server.settingsWatch.sweep()
@@ -140,7 +153,7 @@ describe('settings-watch edge cases', () => {
   it('keeps watching a change whose nonce the ledger does not know yet', () => {
     const { settings, notices, server } = setup()
     const late = 'd'.repeat(64)
-    server.settingsWatch.register(late, settings)
+    server.settingsWatch.register(late, [settings])
     fs.writeFileSync(settings, JSON.stringify({ hooks: {} }))
 
     vi.advanceTimersByTime(TICK_MS)
@@ -151,10 +164,10 @@ describe('settings-watch edge cases', () => {
     expect(server.integrity.check(late, 's1', { [ZSHRC]: zshrc })).toMatchObject({ reason: 'quarantined' })
   })
 
-  it('refuses a baseline for a file that is missing', () => {
-    const { settings, server } = setup()
+  it('refuses a baseline when any file is missing', () => {
+    const { settings, plan, server } = setup()
     fs.rmSync(settings)
 
-    expect(() => server.settingsWatch.register('e'.repeat(64), settings)).toThrow(/unreadable/)
+    expect(() => server.settingsWatch.register('e'.repeat(64), [plan, settings])).toThrow(/unreadable/)
   })
 })
