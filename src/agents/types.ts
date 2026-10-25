@@ -33,7 +33,7 @@ export type CacheTtl = (typeof CACHE_TTLS)[number]
 
 export const isCacheTtl = (value: unknown): value is CacheTtl => CACHE_TTLS.includes(value as never)
 
-/** CC-1633: what the leak guard refuses on a push; `no-rewrite` denies deletes, force, mirror, prune and main or master. */
+/** CC-1633: what the pre-push hook refuses; `no-rewrite` denies deletes, non-fast-forwards, mirrors and main or master. */
 export const PUSH_POLICIES = ['no-rewrite'] as const
 
 export type PushPolicy = (typeof PUSH_POLICIES)[number]
@@ -115,7 +115,7 @@ export interface AgentProfile {
   effort?: EffortLevel
   /** Sets `CLAUDE_CODE_PROMPT_CACHE_TTL`, over any value in `env`; unset leaves the harness default. */
   cacheTtl?: CacheTtl
-  /** Exported as AGENT_CHAT_PUSH_POLICY for the leak guard's pretool hook; unset leaves pushes to the leak scan alone. */
+  /** Selects the guard's no-rewrite hooks dir, whose pre-push hook bakes the policy in; unset leaves pushes to the leak scan alone. */
   pushPolicy?: PushPolicy
   /** Appended via --append-system-prompt, after the standard peer preamble. */
   promptPrelude: string

@@ -1435,27 +1435,32 @@ describe('per-profile env (CC-259)', () => {
     expect(resumed.env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('5m')
   })
 
-  // Mutation caught: dropping the AGENT_CHAT_PUSH_POLICY line from envFor.
-  it('exports the profile push policy for the leak guard, over a raw env value (CC-1633)', () => {
+  // Mutation caught: guardEnv ignoring pushPolicy, or pointing only one of hooksPath and the shim dir at the no-rewrite dir.
+  it('points a no-rewrite profile at the no-rewrite hooks dir and its shim, over a raw env value (CC-1633)', () => {
     const parsed = parseProfile('p', {
       ...base,
       pushPolicy: 'no-rewrite',
-      env: { AGENT_CHAT_PUSH_POLICY: 'off' },
+      env: { GIT_CONFIG_VALUE_0: '/state/git-hooks' },
     })
 
+    const plan = buildLaunchPlan(input({ profile: parsed as AgentProfile, gitHooksDir: '/state/git-hooks' }))
+
     expect(parsed).toMatchObject({ pushPolicy: 'no-rewrite' })
-    expect(buildLaunchPlan(input({ profile: parsed as AgentProfile })).env.AGENT_CHAT_PUSH_POLICY).toBe(
-      'no-rewrite',
-    )
+    expect(plan.env).toMatchObject({
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/state/git-hooks/no-rewrite',
+      AGENT_CHAT_GIT_SHIM_DIR: '/state/git-hooks/git-bin',
+    })
+    expect(plan.env).not.toHaveProperty('AGENT_CHAT_PUSH_POLICY')
   })
 
-  it('launches without a push policy when the profile names none, even if its env does', () => {
-    const parsed = parseProfile('p', {
-      ...base,
-      env: { AGENT_CHAT_PUSH_POLICY: 'no-rewrite' },
-    }) as AgentProfile
+  it('keeps a profile without a push policy on the shared hooks dir', () => {
+    const plan = buildLaunchPlan(input({ gitHooksDir: '/state/git-hooks' }))
 
-    expect(buildLaunchPlan(input({ profile: parsed })).env).not.toHaveProperty('AGENT_CHAT_PUSH_POLICY')
+    expect(plan.env).toMatchObject({
+      GIT_CONFIG_VALUE_0: '/state/git-hooks',
+      AGENT_CHAT_GIT_SHIM_DIR: '/state/git-bin',
+    })
   })
 
   it('makes a profile with an unknown push policy unreadable, naming the choices', () => {

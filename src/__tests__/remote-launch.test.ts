@@ -227,15 +227,16 @@ describe('building a spawn on the host that launches it', () => {
   })
 
   // Mutation caught: dropping pushPolicy from profileOf, or carrying it without the isPushPolicy check.
-  it("exports the spec's push policy, and drops one that is not no-rewrite (CC-1633)", () => {
+  it("selects the no-rewrite hooks dir for the spec's push policy, and ignores one that is not no-rewrite (CC-1633)", () => {
     const valid = fakeHost()
     const bogus = fakeHost()
 
     prepareRemoteSpawn(spec({ profile: { ...spec().profile, pushPolicy: 'no-rewrite' } }), valid.host)
     prepareRemoteSpawn(spec({ profile: { ...spec().profile, pushPolicy: 'x=1' as never } }), bogus.host)
 
-    expect(valid.written[0]?.plan.env.AGENT_CHAT_PUSH_POLICY).toBe('no-rewrite')
-    expect(bogus.written[0]?.plan.env).not.toHaveProperty('AGENT_CHAT_PUSH_POLICY')
+    const hooks = path.join(root, 'agent-chat', 'git-hooks')
+    expect(valid.written[0]?.plan.env.GIT_CONFIG_VALUE_0).toBe(path.join(hooks, 'no-rewrite'))
+    expect(bogus.written[0]?.plan.env.GIT_CONFIG_VALUE_0).toBe(hooks)
   })
 
   it("passes the spec's model, a teleport's carried one included, as --model (CC-1166)", () => {

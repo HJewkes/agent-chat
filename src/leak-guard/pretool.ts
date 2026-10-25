@@ -84,13 +84,6 @@ import {
   hasUnreadableOption,
 } from './git-unresolved.js'
 import { pushFlagMayForm } from './push-words.js'
-import {
-  breaksNoRewrite,
-  noRewriteOn,
-  PUSH_POLICY_ENV,
-  rewritingParams,
-  writesPushConfig,
-} from './push-policy.js'
 import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import {
@@ -207,11 +200,10 @@ const MAX_FED_CHECKS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
-  pushRewrite: `leak-guard: this agent's push policy (no-rewrite) refuses a git push that deletes (--delete, -d, :ref), forces (--force, -f, --force-with-lease, +ref), mirrors, prunes, pushes --all, a * pattern or to main or master, or runs with -c on remote.*.push, remote.*.mirror or push.*, or that holds a word the guard cannot read; and git config, remote --mirror or clone --mirror writes of what a later push reads. Push your own branch by name, as in git push -u origin HEAD:<branch>. ${DOCS}`,
   gitConfig: `leak-guard: git -c or --config-env on core.hooksPath or an alias would bypass the pre-push leak scan. ${DOCS}`,
   configWrite: `leak-guard: writing core.hooksPath, or an alias that skips hooks, is not allowed for agents. ${DOCS}`,
   assignmentSubscript: `leak-guard: a word that opens an assignment subscript, NAME[...], but is not a complete NAME[idx]=value, so the guard cannot tell where the command starts. Keep the subscript free of blanks, or run the command without a prefix assignment. ${DOCS}`,
-  gitConfigEnv: `leak-guard: setting, exporting or unsetting GIT_CONFIG_* or AGENT_CHAT_PUSH_POLICY would switch off the pre-push leak scan or push policy. ${DOCS}`,
+  gitConfigEnv: `leak-guard: setting, exporting or unsetting GIT_CONFIG_* would switch off the pre-push leak scan. ${DOCS}`,
   envClear: `leak-guard: env -i clears the variables that run the pre-push leak scan. ${DOCS}`,
   protectedPath: `leak-guard: the leak guard's hook directory and private term list are off limits to agents. ${DOCS}`,
   tooDeep: `leak-guard: the command nests shells too deeply to check. Run it more directly. ${DOCS}`,
@@ -421,9 +413,7 @@ const SUBSCRIPTED_OR_APPENDING = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\
 const BROKEN_SUBSCRIPT = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*${LIVE}?\\[[^\\]]*$`)
 const assignedValue = (word: string): string => ASSIGNMENT_VALUE.exec(word)?.[1] ?? ''
 const brokenAssignment = (word: string): boolean => BROKEN_SUBSCRIPT.test(word)
-// The pre-push hook reads the push policy from the env git hands it, so the agent may not edit it (CC-1633).
-const isGuardVar = (name: string | undefined): boolean =>
-  name !== undefined && (/^GIT_CONFIG/.test(name) || name === PUSH_POLICY_ENV)
+const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
 const NAMES_GH = /\bgh\b/
@@ -514,7 +504,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
       return { reason: REASONS.xargsWrapper }
     if (assigned !== undefined) {
-      if (isGuardVar(assigned)) return { reason: REASONS.gitConfigEnv }
+      if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
       at++
     } else if (PREFIX_WORDS.has(head) && head !== 'time') at = dropOptions(rest, at + 1)
@@ -1012,7 +1002,7 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
     if (fedReason !== undefined) return { reason: fedReason }
     const unset =
       a === '-u' || a === '--unset' ? args[++i] : (/^-u(.+)/.exec(a)?.[1] ?? /^--unset=(.*)/.exec(a)?.[1])
-    if (isGuardVar(unset)) return { reason: REASONS.gitConfigEnv }
+    if (isGitConfigVar(unset)) return { reason: REASONS.gitConfigEnv }
     if (unset !== undefined) {
       assigns.push(unset)
       continue
@@ -1036,14 +1026,14 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
       let at = i + 1
       for (; at < args.length && (args[at] as string).includes('='); at++) {
         const operand = args[at] as string
-        if (isGuardVar(nameOf(operand)) || (fed && nameOf(operand).includes(LIVE)))
+        if (isGitConfigVar(nameOf(operand)) || (fed && nameOf(operand).includes(LIVE)))
           return { reason: REASONS.gitConfigEnv }
         assigns.push(operand)
       }
       return { words: args, at, chdir, assigns }
     } else if (brokenAssignment(a)) return { reason: REASONS.assignmentSubscript }
     else if (!a.startsWith('-') && !a.includes('=')) break
-    else if (isGuardVar(a.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+    else if (isGitConfigVar(a.split('=')[0])) return { reason: REASONS.gitConfigEnv }
     else if (!a.startsWith('-')) assigns.push(a)
   }
   return { words: args, at: Math.min(i, args.length), chdir, assigns }
@@ -1051,7 +1041,7 @@ function unwrapEnv(args: readonly string[], i: number, fed = false): EnvRun {
 
 function checkEnvEdit(args: readonly string[]): string | undefined {
   const names = args.filter(a => !a.startsWith('-')).map(a => ASSIGNMENT.exec(a)?.[1] ?? a)
-  return names.some(isGuardVar) ? REASONS.gitConfigEnv : undefined
+  return names.some(isGitConfigVar) ? REASONS.gitConfigEnv : undefined
 }
 
 const overridesGuard = (kv: string | undefined): boolean => GUARD_KEY.test((kv ?? '').split('=')[0] ?? '')
@@ -1139,7 +1129,6 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
   return (
     checkGit(run.args) ??
     checkPushExpansion(run, scope) ??
-    checkPushPolicy(run, ctx, scope) ??
     checkUnresolvedConfig(run) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
@@ -1189,27 +1178,6 @@ function checkPushExpansion(run: GitRun, scope: Scope): string | undefined {
   return at >= 0 && run.resolved[at] === 'push' && pushFlagMayForm(run.marked, at)
     ? REASONS.noVerify
     : undefined
-}
-
-/**
- * Under the hook's own push policy (CC-1633): a push that deletes, forces, mirrors, prunes or lands
- * on main, by its words or by the `-c` config it runs with, and a config write a later push reads.
- */
-function checkPushPolicy(run: GitRun, ctx: GuardContext, scope: Scope): string | undefined {
-  if (!noRewriteOn(ctx.env)) return undefined
-  const at = subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams))
-  const sub = at < 0 ? undefined : run.resolved[at]
-  if (sub === undefined) return undefined
-  const words = run.resolved.slice(at + 1)
-  const breaks = sub === 'push' ? pushBreaks(run, words, scope) : writesPushConfig(sub, words)
-  return breaks ? REASONS.pushRewrite : undefined
-}
-
-/** git's own options are read as resolved, so a `-c` pair the guard cannot read fails closed. */
-function pushBreaks(run: GitRun, words: readonly (string | undefined)[], scope: Scope): boolean {
-  const options = gitOptions(run.resolved, scope.cwd, scope.gitParams)
-  if (options === UNSURE_CALL || !options.sure) return true
-  return rewritingParams(options.params) || breaksNoRewrite(words)
 }
 
 /** git push options that take no value, so a `--` after them ends the options. */

@@ -392,33 +392,34 @@ const policyRefusal = (why: string): string =>
 
 /**
  * The no-rewrite push policy (CC-1633), judged on the ref updates git is about to make, after
- * config, includes, push.default and aliases are resolved: a delete, an update of main or master,
- * or one that is not a fast-forward of the remote's tip. Ancestry is read in a view of the
- * repository's objects alone, with no replace refs, grafts or commit-graph, and a tip the view
- * cannot reach refuses. git leaves a mirror's prune deletions off these lines (observed on 2.53),
- * so the mirror flag is read here too, with git's own env: its `-c` options, includes and HOME.
- * The pretool hook refuses a typed --mirror or --prune, and any line that sets or clears the variable.
+ * config, includes, push.default, aliases and the dashed name are resolved: a delete, an update of
+ * main or master or of a ref outside refs/heads/ and refs/tags/, or one that is not a fast-forward
+ * of the remote's tip. Ancestry is read in a view of the repository's objects alone, with no
+ * replace refs, grafts or commit-graph, and a tip the view cannot reach refuses. git leaves a
+ * mirror's deletions off these lines (observed on 2.53), so the mirror flag is read with git's own
+ * env: its `-c` options, includes and HOME. A typed --mirror still sends the local refs/remotes/*,
+ * which the namespace check refuses. Only the no-rewrite dir carries this step, so nothing in the
+ * agent's environment can switch it off.
  */
-const POLICY_STEP = `case \${AGENT_CHAT_PUSH_POLICY-} in
-no-rewrite)
-  mirror=$(git config --type=bool --get "remote.$1.mirror" 2>/dev/null)
-  [ $? -le 1 ] && [ "$mirror" != true ] || ${policyRefusal('remote $1 is a mirror, which deletes and forces')}
-  pview=$tmp/policy
-  pobjects=$(cd "$(git rev-parse --git-path objects)" 2>/dev/null && pwd -P) &&
-    /usr/bin/env -i PATH="$PATH" git init -q --template= "$pview" >/dev/null 2>&1 &&
-    printf '%s\\n' "$pobjects" > "$pview/.git/objects/info/alternates" ||
-    ${policyRefusal("could not open the repository's objects to check the push")}
-  while read -r lref lsha rref rsha; do
-    case $lsha in *[!0]*) ;; *) ${policyRefusal('it deletes $rref')} ;; esac
-    case $rref in refs/heads/main | refs/heads/master) ${policyRefusal('it updates $rref')} ;; esac
-    case $rsha in
-    *[!0]*)
-      /usr/bin/env -i PATH="$PATH" git -C "$pview" --no-replace-objects -c core.commitGraph=false \\
-        merge-base --is-ancestor "$rsha" "$lsha" >/dev/null 2>&1 ||
-        ${policyRefusal("$rref is not a fast-forward of the remote's tip")} ;;
-    esac
-  done < "$refs" ;;
-esac`
+const POLICY_STEP = `mirror=$(git config --type=bool --get "remote.$1.mirror" 2>/dev/null)
+[ $? -le 1 ] && [ "$mirror" != true ] || ${policyRefusal('remote $1 is a mirror, which deletes and forces')}
+pview=$tmp/policy
+pobjects=$(cd "$(git rev-parse --git-path objects)" 2>/dev/null && pwd -P) &&
+  /usr/bin/env -i PATH="$PATH" git init -q --template= "$pview" >/dev/null 2>&1 &&
+  printf '%s\\n' "$pobjects" > "$pview/.git/objects/info/alternates" ||
+  ${policyRefusal("could not open the repository's objects to check the push")}
+while read -r lref lsha rref rsha; do
+  case $lsha in *[!0]*) ;; *) ${policyRefusal('it deletes $rref')} ;; esac
+  case $rref in refs/heads/main | refs/heads/master) ${policyRefusal('it updates $rref')} ;; esac
+  case $rref in refs/heads/?* | refs/tags/?*) ;; *) ${policyRefusal('$rref is outside refs/heads/ and refs/tags/')} ;; esac
+  case $rsha in
+  *[!0]*)
+    /usr/bin/env -i PATH="$PATH" git -C "$pview" --no-replace-objects -c core.commitGraph=false \\
+      merge-base --is-ancestor "$rsha" "$lsha" >/dev/null 2>&1 ||
+      ${policyRefusal("$rref is not a fast-forward of the remote's tip")} ;;
+  esac
+done < "$refs"
+`
 
 // The broker's PATH covers the whole shim, not only the scan; the repo hook gets the agent's PATH back.
 const prePushShim = (
@@ -426,6 +427,7 @@ const prePushShim = (
   shell: string,
   shimDirs: readonly string[],
   bake: Bake | undefined,
+  noRewrite: boolean,
 ): string => `${prePushHeader(shell)}${ENVIRONMENT_SCRUB}agent_path=$PATH
 ${bakePath(withoutShimDirs(inputs.path, shimDirs))}
 tmp=$(mktemp -d) || exit 1
@@ -433,8 +435,7 @@ trap 'rm -rf "$tmp"' EXIT
 refs=$tmp/refs
 errs=$tmp/errs
 cat > "$refs"
-${POLICY_STEP}
-${scanStep(inputs, bake)}
+${noRewrite ? POLICY_STEP : ''}${scanStep(inputs, bake)}
 scan=$?
 ${FIND_REPO_HOOK}
 own_status=0
@@ -452,11 +453,18 @@ export function hookScripts(
   shell = posixShell(),
   shimDirs: readonly string[] = [ghShimDir()],
   bake?: Bake,
+  noRewrite = false,
 ): Map<string, string> {
   return new Map([
     [
       'pre-push',
-      prePushShim(inputs, shell, shimDirs, bake?.facts.verdict === 'scans-text' ? bake : undefined),
+      prePushShim(
+        inputs,
+        shell,
+        shimDirs,
+        bake?.facts.verdict === 'scans-text' ? bake : undefined,
+        noRewrite,
+      ),
     ],
     ...CHAINED_HOOKS.map(name => [name, chainShim(shell)] as const),
   ])
@@ -475,6 +483,17 @@ function writeIfChanged(file: string, body: string): void {
   fs.renameSync(tmp, file)
 }
 
+const NO_REWRITE_DIR = 'no-rewrite'
+
+/**
+ * The hooks dir a `no-rewrite` profile's git runs with (CC-1633): under the guard's own dir, so the
+ * pretool's protected path covers it, and with its own git shim dir beside it.
+ */
+export const noRewriteHooksDir = (hooksDir: string): string => path.join(hooksDir, NO_REWRITE_DIR)
+
+/** The dir's name carries the policy, so a plan that selected it rewrites it the same way on resume. */
+export const isNoRewriteHooksDir = (dir: string): boolean => path.basename(dir) === NO_REWRITE_DIR
+
 export function writeGitHooks(
   dir: string,
   inputs: ScanInputs = defaultScanInputs(),
@@ -483,7 +502,7 @@ export function writeGitHooks(
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const shimDirs = [gitShimDirFor(dir), ghShimDir()]
   const bake = bakeScanner(inputs, shimDirs, path.join(dir, STAMP_FILE))
-  for (const [name, body] of hookScripts(inputs, shell, shimDirs, bake))
+  for (const [name, body] of hookScripts(inputs, shell, shimDirs, bake, isNoRewriteHooksDir(dir)))
     writeIfChanged(path.join(dir, name), body)
 }
 
