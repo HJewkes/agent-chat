@@ -41,7 +41,9 @@ const HELPER_NAME =
 
 /** Commands that only read files or print the words on the line. */
 const PLAIN_COMMANDS = new Set(
-  'cat grep egrep fgrep rg head tail wc ls stat file diff cmp less test [ [[ true : cd echo printf'.split(' '),
+  'cat grep egrep fgrep rg head tail wc ls stat file diff cmp less test [ [[ true : cd echo printf'.split(
+    ' ',
+  ),
 )
 
 const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
@@ -53,7 +55,8 @@ const ESCAPE = /\\(?![nt])/
 
 /** Whether echo, printf or an operand-less cat writes text the line shows whole, ending in a newline. */
 function writesLineText(head: string, args: readonly string[], cmd: SimpleCommand): boolean {
-  if (head === 'cat') return args.length === 0 && cmd.stdin !== undefined && !cmd.stdinLive && !SOURCED_CODE.test(cmd.stdin)
+  if (head === 'cat')
+    return args.length === 0 && cmd.stdin !== undefined && !cmd.stdinLive && !SOURCED_CODE.test(cmd.stdin)
   if (head !== 'echo' && head !== 'printf') return false
   const text = args.join(' ')
   if (args.some(arg => arg.startsWith('-')) || /[$`]/.test(text) || ESCAPE.test(text)) return false
@@ -79,7 +82,12 @@ function writesUnread(cmd: SimpleCommand, env: Env): boolean {
  * a plain read or print, or writes one text the line does not show whole. `said` is the line with
  * its `$NAME` reads dropped.
  */
-export function writesEnvFile(command: string, said: string, cmds: readonly SimpleCommand[], env: Env): boolean {
+export function writesEnvFile(
+  command: string,
+  said: string,
+  cmds: readonly SimpleCommand[],
+  env: Env,
+): boolean {
   if (!namesEnvFile(command, env)) return false
   return HELPER_NAME.test(said) || cmds.some(cmd => writesUnread(cmd, env))
 }
