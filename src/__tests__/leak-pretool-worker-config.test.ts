@@ -109,6 +109,37 @@ describe('an agent touching the launcher key files (CC-1063)', () => {
   })
 })
 
+const POLICY_TOUCHES: [string, Record<string, string>][] = [
+  ['Bash', { command: 'echo {} > ~/.agent-chat/seat-policy.json' }],
+  ['Edit', { file_path: '~/.agent-chat/seat-policy.json', old_string: 'a', new_string: 'b' }],
+  ['Write', { file_path: path.join(HOME, '.agent-chat/seat-policy.json'), content: '{}' }],
+  ['MultiEdit', { file_path: path.join(HOME, '.agent-chat/seat-policy.json') }],
+]
+
+describe('an agent touching the seat spawn policy (CC-1580)', () => {
+  it.each([
+    ['worker', { AGENT_CHAT_ROLE: 'worker' }],
+    ['coordinator', { AGENT_CHAT_ROLE: 'coordinator' }],
+    ['missing role', {}],
+  ])('is denied for a %s', (_role, env) => {
+    const ctx = hookContext(env)
+
+    for (const [tool, call] of POLICY_TOUCHES)
+      expect(checkToolCall(tool, call, ctx)).toBe(REASONS.protectedPath)
+  })
+
+  it('covers a relocated agent-chat home by its absolute path', () => {
+    const ctx = hookContext({ AGENT_CHAT_ROLE: 'coordinator', AGENT_CHAT_HOME: '/srv/bus' })
+
+    expect(checkToolCall('Bash', { command: 'cp x /srv/bus/seat-policy.json' }, ctx)).toBe(
+      REASONS.protectedPath,
+    )
+    expect(checkToolCall('Write', { file_path: '/srv/bus/seat-policy.json', content: '{}' }, ctx)).toBe(
+      REASONS.protectedPath,
+    )
+  })
+})
+
 describe('AGENT_CHAT_ROLE in the launch env', () => {
   it('is the profile role, and a profile cannot set it', () => {
     const worker = bdImplementer({ env: { AGENT_CHAT_ROLE: 'coordinator' } })
