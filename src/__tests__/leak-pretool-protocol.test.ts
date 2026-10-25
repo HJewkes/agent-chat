@@ -480,6 +480,7 @@ describe('a nameref or an indirect default assignment, on a line that runs git (
     'declare -x -n R=$A; R=ext; git fetch o',
     'declare +n R; git fetch o',
     'declare -$F R=$A; git fetch o',
+    'declare -x -- $A=ext; git fetch o',
     'command declare -n R=$A; R=ext; git fetch o',
     ': ${!A:=ext}; git fetch o',
     ': ${!A=ext}; git fetch o',
