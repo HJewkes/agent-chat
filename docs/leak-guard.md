@@ -470,6 +470,9 @@ trailing `echo a }`; the splitter does not, which only leaves the case open, so 
 ends the `$( )` where it would. zsh also reads `case` as a command where the splitter reads an
 argument, as after `repeat 1` or in an anonymous function `() { … }`. Inside a `$( )` or subshell,
 such a `case` whose subject is followed by `in` or `{` makes the line unreadable, so it is denied.
+The splitter decides this on the next word it reads itself, past comments, joined lines and
+separators, as zsh does. A `}` is read as bash's pattern only when blanks alone stand between it and
+the `)` or `|`, since bash allows nothing else there.
 
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
