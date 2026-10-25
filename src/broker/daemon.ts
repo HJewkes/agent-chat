@@ -39,6 +39,7 @@ import {
 import { readReviewerAccount } from '../agents/reviewer-account-gate-read.js'
 import { readPoolPick, type PoolPickRequest } from '../agents/seats/pool-route.js'
 import { accountDirs, readAccountUsage } from '../agents/account-budget.js'
+import { accountIdentity } from '../agents/account-identity.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
 import { activeHold } from './hold.js'
@@ -319,6 +320,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
         accountRotation: {
           config: resolveAccountRotation,
           readings: () => accountDirs(os.homedir(), process.env).map(dir => readAccountUsage(dir)),
+          identify: (dir: string) => accountIdentity(dir),
         },
       }
   const socketServer = new SocketServer(

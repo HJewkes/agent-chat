@@ -122,6 +122,7 @@ import { withLinkedDirs } from './linked-dirs.js'
 import { crossingBriefPaths } from './brief-paths.js'
 import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { pickAccount, rotationText, type RotationConfig, type RotationRecord } from './account-rotation.js'
+import { chooseAccount, LEAST_USED, remoteAccountDir, type AccountChoice } from './account-request.js'
 import type { AccountUsage } from './account-budget.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
@@ -488,6 +489,25 @@ interface RemoteDraft extends RemoteGated {
   injected: { slug: string; text: string } | undefined
 }
 
+const ACCOUNT_TWICE = 'account and config_dir both name the account; pass one'
+
+/**
+ * TP-4214: a requested account on another host. The readings are this host's, so least-used
+ * refuses there, and a name passes as the explicit config dir it names under that host's home.
+ */
+function remoteAccountRequest(
+  req: SpawnRequest,
+  gated: RemoteGated,
+): { configDir?: string } | { refusal: string } {
+  if (req.account === undefined) return req.configDir === undefined ? {} : { configDir: req.configDir }
+  if (req.configDir !== undefined) return { refusal: ACCOUNT_TWICE }
+  if (req.account === LEAST_USED)
+    return {
+      refusal: `${LEAST_USED} reads ${brokerHost()}'s accounts; on ${gated.site.host} pass --account <name>`,
+    }
+  return { configDir: remoteAccountDir(req.account, gated.home) }
+}
+
 const toolsetOf = (profile: AgentProfile): NonNullable<IsolationContext['toolset']> => ({
   allowedTools: [...profile.allowedTools],
   ...(profile.disallowedTools ? { disallowedTools: [...profile.disallowedTools] } : {}),
@@ -661,6 +681,8 @@ export interface SpawnRequest {
    * fall back.
    */
   configDir?: string
+  /** TP-4214: an account name or `least-used`, resolved to an explicit `configDir`; never with one. */
+  account?: string
   /** The requester's own `CLAUDE_CONFIG_DIR`, observed rather than claimed (CC-100). */
   spawnerConfigDir?: string
   /** CC-156: the requester is a known Claude Code session, so no `spawnerConfigDir` means `~/.claude`. */
@@ -744,6 +766,7 @@ export type SpawnRefusalCode =
   | 'surface_refused'
   | 'spawn_rate_limit'
   | 'broker_draining'
+  | typeof ACCOUNT_EXHAUSTED
   | MachineRefusalCode
   | SeatBudgetRefusalCode
   | SeatOverlapRefusalCode
@@ -779,13 +802,21 @@ export interface PoolPickReaders {
 }
 
 /** CC-1546: the readings a worker spawn's account rotation compared, kept or rotated. */
-type Account = Extract<ConfigDirResolution, { dir: string }> & { rotation?: RotationRecord }
+/** TP-4214: `choice` is a requested account's line: the pick and every reading it compared. */
+type Account = Extract<ConfigDirResolution, { dir: string }> & { rotation?: RotationRecord; choice?: string }
 
 /** CC-1546: the `accountRotation` config and every account's reading, both read per spawn. */
 export interface AccountRotationReaders {
   config: () => RotationConfig
   readings: () => AccountUsage[]
+  /** TP-4214: a config dir's login, so a requested account's pick sees one row per login. */
+  identify?: (configDir: string) => string | undefined
 }
+
+/** TP-4214: every account a requested pick could launch on is closed; the readings say until when. */
+export const ACCOUNT_EXHAUSTED = 'account_exhausted'
+
+type RequestedAccount = { dir: string; text: string; warning?: string } | { refused: SpawnOutcome }
 /** The profile facts the seat budget gate reads: its name for the inferred role, and its model. */
 type SpawnProfile = { name: string; model: string }
 
@@ -799,6 +830,13 @@ const pickedAccount =
   })
 const poolAccount = pickedAccount('pool')
 const rotationAccount = pickedAccount('rotation')
+
+/** TP-4214: a requested account that lands on the default one runs it unset too, as a pick would. */
+const requestedBilling = (account: Account, choice: string): Account => ({
+  ...account,
+  choice,
+  ...(path.resolve(account.dir) === defaultConfigDir() ? { unset: true as const } : {}),
+})
 
 /**
  * CC-1546: only a fresh worker spawn rotates. A coordinator keeps its spawner's account, and a
@@ -1678,7 +1716,11 @@ export class Supervisor implements TeleportHost {
     cause:
       | {
           code:
-            'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode | typeof REVIEWER_ACCOUNT_LIMIT
+            | 'spawn_rate_limit'
+            | MachineRefusalCode
+            | SeatBudgetRefusalCode
+            | typeof REVIEWER_ACCOUNT_LIMIT
+            | typeof ACCOUNT_EXHAUSTED
           retryable: boolean
         }
       | { code: 'broker_draining'; retryable: true; retryAfterMs: number }
@@ -2028,6 +2070,47 @@ export class Supervisor implements TeleportHost {
         error: err instanceof Error ? err.message : String(err),
       })
       return account
+    }
+  }
+
+  /**
+   * TP-4214: a requested account, picked here and then pinned as an explicit `config_dir`, so no
+   * pool route or rotation moves it. The spawn's own gates disqualify a candidate before the pick,
+   * as rotation's do, and a refusal carries every reading the pick compared.
+   */
+  private requestedAccount(req: SpawnRequest, profile: SpawnProfile): RequestedAccount | undefined {
+    const wanted = req.account
+    if (wanted === undefined) return undefined
+    if (req.configDir !== undefined) return { refused: this.refuse(req, ACCOUNT_TWICE) }
+    const readers = this.accountRotation
+    if (readers === undefined)
+      return { refused: this.refuse(req, `account ${wanted}: this broker reads no account usage`) }
+    const choice = this.pickRequested(req, profile, readers, wanted)
+    if ('error' in choice) return { refused: this.refuse(req, choice.error) }
+    if (choice.ok) return choice
+    const cause = choice.unknown ? {} : ({ code: ACCOUNT_EXHAUSTED, retryable: true } as const)
+    return { refused: { ...this.refuse(req, choice.reason, cause), account: choice.text } }
+  }
+
+  private pickRequested(
+    req: SpawnRequest,
+    profile: SpawnProfile,
+    readers: AccountRotationReaders,
+    wanted: string,
+  ): AccountChoice | { error: string } {
+    const refuses = (dir: string): boolean =>
+      this.seatBudgetRefusal(req, profile, dir) !== undefined ||
+      this.reviewerAccountRefusal(req, profile, dir) !== undefined
+    const preferDir = req.spawnerConfigDir ?? (req.spawnerIsSession === true ? defaultConfigDir() : undefined)
+    try {
+      return chooseAccount(readers.readings(), readers.config(), {
+        account: wanted,
+        refuses,
+        ...(preferDir === undefined ? {} : { preferDir }),
+        ...(readers.identify === undefined ? {} : { identify: readers.identify }),
+      })
+    } catch (err) {
+      return { error: `account ${wanted}: the readings could not be read (${(err as Error).message})` }
     }
   }
 
@@ -2413,8 +2496,13 @@ export class Supervisor implements TeleportHost {
     // CC-100. Resolved here rather than at launch time so a bad `config_dir`
     // refuses before anything is allocated, and so the WARNING from a missing
     // initiative profile dir reaches the requester with every other spawn warning.
+    // TP-4214: a requested account resolves first and is pinned, so billing never moves it.
+    const requested = this.requestedAccount(req, profile)
+    if (requested !== undefined && 'refused' in requested) return requested.refused
+    if (requested?.warning !== undefined) warnings.push(requested.warning)
+    const pinned = requested === undefined ? req : { ...req, configDir: requested.dir }
     const resolved = resolveConfigDir({
-      ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
+      ...(pinned.configDir === undefined ? {} : { explicit: pinned.configDir }),
       ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
       ...(req.spawnerIsSession === true ? { spawnerIsSession: true } : {}),
       ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
@@ -2422,7 +2510,7 @@ export class Supervisor implements TeleportHost {
     if ('error' in resolved) return this.refuse(req, resolved.error)
     if (resolved.warning !== undefined) warnings.push(resolved.warning)
     // A fork or a resumed session continues a transcript that lives under its account, so neither is routed.
-    const billed = this.billedAccount(req, profile, resolved, {
+    const billed = this.billedAccount(pinned, profile, resolved, {
       cwd,
       ...(injected === undefined ? {} : { initiative: injected.slug }),
       keepsAccount: fork !== undefined || req.resumeSession !== undefined,
@@ -2430,7 +2518,8 @@ export class Supervisor implements TeleportHost {
     })
     if ('refusal' in billed)
       return this.refuse(req, billed.refusal, { code: SEAT_BUDGET_STOP, retryable: true })
-    const { account } = billed
+    const account =
+      requested === undefined ? billed.account : requestedBilling(billed.account, requested.text)
     const limited = this.reviewerAccountRefusal(req, profile, account.dir)
     if (limited) return this.refuse(req, limited, { code: REVIEWER_ACCOUNT_LIMIT, retryable: true })
     const resumed = await this.resumeSource(req, isolationName, cwd, account.dir)
@@ -2567,8 +2656,10 @@ export class Supervisor implements TeleportHost {
     gated: RemoteGated,
     injected: { slug: string; profile?: string } | undefined,
   ): (Account & { warning?: string }) | { refusal: string; cause?: SeatRefusalCause } {
+    const named = remoteAccountRequest(req, gated)
+    if ('refusal' in named) return named
     const resolved = resolveConfigDir({
-      ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
+      ...(named.configDir === undefined ? {} : { explicit: named.configDir }),
       ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
       ...(req.spawnerIsSession === true ? { spawnerIsSession: true } : {}),
       ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
@@ -2577,7 +2668,7 @@ export class Supervisor implements TeleportHost {
       isDirectory: () => true,
     })
     if ('error' in resolved) return { refusal: resolved.error }
-    const billed = this.billedAccount(req, profile, resolved, {
+    const billed = this.billedAccount({ ...req, ...named }, profile, resolved, {
       cwd: gated.cwd,
       ...(injected === undefined ? {} : { initiative: injected.slug }),
       keepsAccount: false,
@@ -2820,6 +2911,7 @@ export class Supervisor implements TeleportHost {
         config_dir_source: account.source,
         ...(account.unset ? { config_dir_unset: 'true' } : {}),
         ...(account.rotation ? { account_rotation: JSON.stringify(account.rotation) } : {}),
+        ...(account.choice === undefined ? {} : { account_choice: account.choice }),
         allowed_tools: profile.allowedTools.join(','),
         // Recorded for symmetry with the allowlist the escalation check reads:
         // the deny list is the half that actually confines (see `profiles.ts`),
@@ -2894,6 +2986,7 @@ export class Supervisor implements TeleportHost {
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
       ...(resumed ? { transcript: { path: resumed.path, found: true } } : {}),
       ...(account.rotation ? { account: rotationText(account.rotation) } : {}),
+      ...(account.choice === undefined ? {} : { account: account.choice }),
       ...branchBaseOf(allocation),
     }
   }

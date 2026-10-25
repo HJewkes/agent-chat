@@ -84,6 +84,7 @@ export interface SpawnResultFields {
     | 'reviewer_account_limit'
     | 'broker_draining'
     | 'harness_unsupported'
+    | 'account_exhausted'
   /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
   retryable?: boolean
   /** CC-1179: set with `broker_draining`, the time until the drain lifts at its ttl. */
@@ -98,7 +99,10 @@ export interface SpawnResultFields {
   disallowedTools?: string[]
   /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
   transcript?: { path: string; found: boolean }
-  /** CC-1546: the account a worker spawn's rotation chose, with the seven_day readings it compared. */
+  /**
+   * CC-1546: the account a worker spawn's rotation chose, with the seven_day readings it compared.
+   * TP-4214: or a requested account's pick and its readings, set on a refusal too.
+   */
   account?: string
   /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
   base?: { ref: string; sha: string }
@@ -1126,6 +1130,12 @@ export type ClientMessage =
        * failure this field exists to prevent.
        */
       configDir?: string
+      /**
+       * TP-4214: the account by name (`default` for `~/.claude`), or `least-used` for the logged-in
+       * account with the lowest fresh max(five_hour, seven_day) on the broker's host. Never sent
+       * with `configDir`; the broker refuses both.
+       */
+      account?: string
       /**
        * The REQUESTER's own `CLAUDE_CONFIG_DIR`, observed by its MCP server from
        * its own environment (CC-100).
