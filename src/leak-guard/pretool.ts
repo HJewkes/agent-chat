@@ -2671,8 +2671,10 @@ function checkParallel(
 const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
   tail.every((word, i) => word === words[words.length - tail.length + i])
 
-// `$@`, `$*`, `$1`, `${@:2}`, `${!1}` and zsh's `$argv`, which hold the words a `set --` or a function call gave.
-const POSITIONAL = new RegExp(`${LIVE}\\$${LIVE}?(?:[@*0-9]|\\{[!#]?(?:[@*0-9]|argv\\b)|argv\\b)`)
+// Any parameter that is not a plain name, so every spelling of a positional (`$@`, `$*`, `$1`, `${@:2}`,
+// `${!#}`, zsh's `$=@`, `${~*}`, `$^@`) and zsh's `$argv`, which hold the words a `set --` or a call gave.
+// A command substitution and a `$'...'` or `$"..."` string have rules of their own.
+const POSITIONAL = new RegExp(`${LIVE}\\$${LIVE}?(?:[^A-Za-z_({'"]|\\{(?![A-Za-z_])|\\{?argv\\b)`)
 
 /**
  * Whether `head`, the command word before xargs adds any, reads a positional parameter on a line whose

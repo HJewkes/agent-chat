@@ -45,6 +45,15 @@ const BYPASSES: [string, string[]][] = [
   [`f() { "$@"; }; f g''it push --no-verify`, BOTH],
   [`bash -c '"$@"' _ ${PUSH}`, BOTH],
   [`f() { bash -c '"$@"' _ "$@"; }; f ${PUSH}`, BOTH],
+  // A zsh flag between `$` and the positional, and bash's last argument (review of #1240).
+  [`f() { \${=@}; }; f ${PUSH}`, ['zsh']],
+  [`f() { \${~@}; }; f ${PUSH}`, ['zsh']],
+  [`f() { $=@; }; f ${PUSH}`, ['zsh']],
+  [`f() { $=*; }; f ${PUSH}`, ['zsh']],
+  [`f() { \${^@}; }; f ${PUSH}`, ['zsh']],
+  [`set -- ${PUSH}; \${~*}`, ['zsh']],
+  [`set -- ${PUSH}; $^@`, ['zsh']],
+  [`f() { \${!#}; }; f "${PUSH}"`, ['bash']],
 ]
 
 // The guard does not follow which words fill a positional, so any other word that may reach git denies.
