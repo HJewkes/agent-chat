@@ -504,6 +504,16 @@ unreadable, so it is denied, whatever it runs:
   redirection included, is unreadable (CC-1609).
 
 A case at the top level, outside any such span, is read as before: there a pattern's `)` ends nothing.
+These rules hold for a case inside backticks, `$(( ))` and `$[ ]`, and in `select`, `repeat` and zsh's
+short `for`, `foreach`, `while` and `until` bodies (CC-1610).
+
+Inside such a span, an argument-position `(` group that is not plain makes the line unreadable
+(CC-1610). That covers a group with no close on its line, one holding any unquoted `#`, or one holding a
+quote, escape, blank, `$`, backtick or operator. zsh parses the group or short loop's list itself. It
+reads past a line (`for v (a` and a newline, then `)`), past a comment (`(a;# )`), and past a nested
+case pattern's `)` (`(a $(case x in x) …;; esac) b)`). So the `)` the splitter would take for the
+span's end may be the group's. Plain groups such as `*(.N)` are still read. One-line lists such as
+`for v (a b)` are refused there too; that is an accepted cost.
 
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in
@@ -876,6 +886,17 @@ backtick substitution or a glob or brace word, may name one of these keys, so it
 git subcommand too, not only before one that runs a hook. So `git -c "$(cat k)" -c "$(cat k2)" log`
 is denied: the two files may set `core.pager` to a push and `core.hooksPath` for it. This replaces
 the TP-630 allowance for `git -c "$X" log`.
+
+A `git config` write to one of these keys persists the value for a later git, whose config the
+guard does not read, so the write is checked the same way (TP-4240). The written value is checked
+like a `-c` value: `git config core.pager '$X'`, ``git config core.editor '`x`'`` and
+`git config alias.p '!$X'` deny for the expansion, and a value the guard cannot read, as in
+`git config core.sshCommand "$S"`, denies as `configProgramWrite`. A section rename can turn a
+key the write check skipped into one git runs, so a rename out of an inert section, or out of one
+holding an inert key, into any section not inert as a whole denies too: `git config rename-section
+user core`, `rename-section credential alias` (`credential.username` becomes `alias.username`) and
+`rename-section merge pager` (`merge.log` becomes `pager.log`). `git config user.name "$N"`,
+`git config core.pager less` and `git config alias.st 'status -s'` stay allowed.
 
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or
 `protocol.allow=always`. A `-c`, `--config-env` or clone config word that sets either to anything

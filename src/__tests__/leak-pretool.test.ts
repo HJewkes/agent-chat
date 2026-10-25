@@ -1621,7 +1621,7 @@ describe('a git alias already in config', () => {
   })
 
   describe('an alias the same command line writes (TP-607)', () => {
-    const writeAlias = `git config alias.pnvw '!git push --no-ve""rify'`
+    const writeAlias = `git config alias.pnvw '!git status'`
 
     it.each(['&&', ';', '||', '\n'])('denies git config alias then its use joined by %j', joiner => {
       expect(checkCommand(`${writeAlias} ${joiner} git pnvw`, at(plain))).toBe(REASONS.aliasWritten)
