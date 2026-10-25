@@ -216,7 +216,7 @@ export const REASONS = {
   parallelOption: `leak-guard: GNU parallel with an option this guard does not read, on a command line that names git or gh, so it cannot tell what command parallel runs or what it puts in it. Run the command without parallel, or drop the option. ${DOCS}`,
   parallelQuoted: `leak-guard: GNU parallel puts its input inside quotes or after a backslash here, where the guard would read it as plain text, on a command line that names git or gh. Leave replacement strings such as {} unquoted, or run the command without parallel. ${DOCS}`,
   jobShell: `leak-guard: flock, script, unshare or sudo -s runs the program $SHELL names, and this line sets SHELL or the hook's SHELL is not a shell the guard reads, so it cannot tell what runs the text, on a line that may reach git or gh. Run the command without the wrapper. ${DOCS}`,
-  jobOption: `leak-guard: setsid, flock, taskset, chrt, script or unshare with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
+  jobOption: `leak-guard: an exec wrapper (setsid, flock, taskset, chrt, script, unshare, prlimit, time, numactl, nsenter, chroot, setarch, enosys, uclampset, coresched, busybox or scriptlive) with an option this guard does not know, or one the shell expands, on a line that may reach git or gh, so it cannot tell which word is the command. Drop the option, or run the command without the wrapper. ${DOCS}`,
   wrapperValue: `leak-guard: nice, ionice, timeout, stdbuf or exec with an option, option value or duration the shell may split or turn into an option, on a line that may reach git or gh, so it cannot tell which word is the command. Spell the value literally or quote it, or run the command without the wrapper. ${DOCS}`,
   sudoOption: `leak-guard: sudo with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without sudo. ${DOCS}`,
   privilegedHidden: `leak-guard: under sudo or another privilege wrapper, the command word is an expansion the guard cannot read, on a line that may reach git or gh. Privilege drops the agent's GIT_CONFIG_* hooks path and PATH shims, so nothing would catch a push or gh call at run time. Write the command out literally, or run it without the wrapper. ${DOCS}`,
@@ -267,6 +267,8 @@ export const REASONS = {
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
+/** unwrap reads `time` as GNU time, whose options cover the keyword's -p, since `command time` runs that program. */
+const SKIPPED_PREFIXES: ReadonlySet<string> = new Set([...PREFIX_WORDS].filter(word => word !== 'time'))
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
 /** GNU parallel and its env_parallel front end, which run their command words as a shell script. */
 const PARALLELS: ReadonlySet<string> = new Set(['parallel', 'env_parallel'])
@@ -500,7 +502,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
       at++
-    } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
+    } else if (SKIPPED_PREFIXES.has(head)) at = dropOptions(rest, at + 1)
     else if (next !== undefined) {
       if (movesCommand(rest, at + 1, next, values, splits)) return { reason: REASONS.wrapperValue }
       at = next
