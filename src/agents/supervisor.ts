@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
+import type { IdentityBinding } from '../broker/registry.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
@@ -404,6 +405,8 @@ export interface SwitchRequest {
   host?: string
   /** CC-225: the requester's own agent id, resolved by the broker from its connection. */
   requesterAgentId?: string
+  /** CC-1614: how that id was bound to the connection. */
+  requesterBinding?: IdentityBinding
 }
 
 type AttachOutcome =
@@ -686,6 +689,8 @@ export interface SpawnRequest {
   override?: 'fix-round'
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
+  /** CC-1614: how `parentAgentId` was bound to the requester's connection. */
+  requesterBinding?: IdentityBinding
   requestedBy: string
   forceReset?: boolean
   /** CC-1158: the `origin/<branch>` a new worktree is cut from; absent, origin's default branch. */
@@ -833,7 +838,7 @@ export interface SpawnOutcome {
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
 /** CC-282: who asked, resolved by the broker from the connection, for the worker ownership rule. */
-export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'> & {
+export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId' | 'requesterBinding'> & {
   /** CC-1039: refuse a tree a process still sits in, for a tracked agent too. */
   checkProcesses?: boolean
   /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
@@ -849,6 +854,8 @@ export interface ResumeRequest {
   requestedBy?: string
   /** CC-216: the requester's own agent id, resolved by the broker from its connection. */
   requesterAgentId?: string
+  /** CC-1614: how that id was bound to the connection. */
+  requesterBinding?: IdentityBinding
   /** CC-497: the requester's pane, resolved by the broker from its connection, as for a spawn. */
   anchor?: string
   /** CC-883: `--remote-control` for a coordinator; a worker resumes without it and is told so. */
