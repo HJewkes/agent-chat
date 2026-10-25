@@ -283,6 +283,8 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     ...(agent.state === 'retired' ? { retired: true } : {}),
     inferred: agent.exit?.inferred === true,
     spawnedAt: new Date(agent.spawnedAt).toISOString(),
+    // CC-1577: only once an exit is recorded, so a live row keeps its shape; the numeric field stays internal.
+    ...(agent.exitedAt === undefined ? {} : { exitedAt: new Date(agent.exitedAt).toISOString() }),
     contextK: retire?.contextK ?? null,
     retireK: retire?.retireK ?? null,
     retireDue: retire === undefined || retire.contextK === null ? null : retire.retireDue,
