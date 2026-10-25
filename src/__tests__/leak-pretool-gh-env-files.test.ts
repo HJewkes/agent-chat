@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import { writesEnvFile } from '../leak-guard/env-files.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
 import { checkCommand, checkToolCall, REASONS, type GuardContext } from '../leak-guard/pretool.js'
 
 // Synthetic only.
@@ -21,121 +23,16 @@ const ctx = (env: Record<string, string> = ENV): GuardContext => ({
 
 const SNAPSHOT = '/srv/agent/.claude-profiles/agents/shell-snapshots/snapshot-zsh-1.sh'
 
-describe('a file a later shell sources is owner-only (TP-4232)', () => {
-  const denies = (command: string, env: Record<string, string> = ENV) =>
-    expect(checkCommand(command, ctx(env))).toBe(REASONS.ghHelperEnvFile)
+const edit = (file: string, env: Record<string, string> = ENV, tool = 'Edit') =>
+  checkToolCall(tool, { file_path: file, content: 'export FOO=1\n' }, ctx(env))
 
-  it.each([
-    `LESSOPEN='|cp /tmp/rc %s' less ~/.zshenv`,
-    'less ~/.zshenv',
-    `rg --pre /tmp/x '' ~/.zshenv`,
-    'GREP_OPTIONS=-r grep x ~/.bashrc',
-  ])('denies %s, since a prefix or a reader that runs a program is no plain read (rows 1, 2)', command => {
-    denies(command)
-  })
-
-  it.each([
-    `echo 'export GH_PATH=/opt/x' >> ~/.claude-profiles/agents/session-env/s1/sessionstart-hook-0.sh`,
-    `cd ~/.claude/session-env && echo 'export GH_PATH=/x' >> abc/sessionstart-hook-9.sh`,
-    `echo 'export GH_PATH=/opt/x' >> /srv/agent/env.sh`,
-  ])('denies %s, a write into Claude session-env (rows 4, 7)', command => {
-    denies(command, { ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' })
-  })
-
-  it.each([
-    `echo 'source /tmp/rc' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'alias gh=/tmp/x/gh' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'alias gh=/tmp/x/gh' >> ~/.zshenv`,
-    `echo '. /tmp/rc' >> ~/.bashrc`,
-    `cat >> ~/.zshenv <<'EOF'\nsource /tmp/rc\nEOF`,
-  ])('denies %s, a source or alias append (rows 5, 6)', command => {
-    denies(command)
-  })
-
-  it.each([
-    `echo 'export BASH_ENV=/tmp/rc' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'ENV=/tmp/rc' >> ~/.profile`,
-    `echo 'export ZDOTDIR=/tmp/z' >> ~/.zshenv`,
-    `echo 'export GIT_SSH_COMMAND=/tmp/x' >> "$CLAUDE_ENV_FILE"`,
-    `echo 'PROMPT_COMMAND=x' >> ~/.bashrc`,
-  ])('denies %s, an assignment whose later reader the guard cannot know (rows 8, 9)', command => {
-    denies(command)
-  })
-
-  it.each([
-    `echo 'export GH_PATH=/opt/x' >> ${SNAPSHOT}`,
-    'cp /tmp/rc ~/.claude/shell-snapshots/snapshot-bash-1.sh',
-    `printf 'export GH_PATH=/x\\n' > ~/.claude/shell-snapshots/snapshot-zsh-1.sh`,
-  ])('denies %s, a write into the shell snapshot the Bash tool sources (rows 10, 11)', command => {
-    denies(command)
-  })
-
-  it.each(['< /tmp/rc >> ~/.zshenv', '>> ~/.zshenv < /tmp/rc'])(
-    'denies %s, a bare redirection zsh runs as cat (row 13)',
-    command => {
-      denies(command)
-    },
-  )
-
-  it('denies a line naming a sourced file that parses to no command, since that proves no read (row 13)', () => {
-    expect(writesEnvFile('< /tmp/rc >> ~/.zshenv', [], ENV)).toBe(true)
-  })
-
-  it.each(['echo hi; < /tmp/rc >> ~/.zshenv', 'echo hi && >> ~/.zshenv < /tmp/rc'])(
-    'denies %s, a bare redirection after a plain command (row 14)',
-    command => {
-      denies(command)
-    },
-  )
-
-  it.each(['/tmp/x/cat /tmp/rc ~/.zshenv', './cat /tmp/rc ~/.zshenv'])(
-    'denies %s, since a reader named by path may be any program (row 15)',
-    command => {
-      denies(command)
-    },
-  )
-
-  it.each([
-    `echo 'export GH_""PATH=/opt/x' >> "$CLAUDE_ENV_FILE"`,
-    `printf 'export GH_CONFIG_%sDIR=/opt/c\\n' '' >> "$CLAUDE_ENV_FILE"`,
-    `cat /tmp/rc >> "$CLAUDE_ENV_FILE"`,
-    'cp /tmp/rc ~/.zshenv',
-    'cat /tmp/rc | tee -a ~/.bash_profile',
-    `echo 'export GH_PATH=/opt/x' >> ~/.ba""shrc`,
-    `echo 'export GH_PATH=/opt/x' >> ~/.BASHRC`,
-    `sed -i 's/^#//' ~/.bashrc`,
-    'mv /tmp/rc "$CLAUDE_ENV_FILE"',
-  ])('denies %s, a write or a writer (row 16)', command => {
-    denies(command)
-  })
-
-  it.each([
-    '{ echo a; } >> ~/.bashrc',
-    'exec 3>>~/.bashrc; echo x >&3',
-    'f() { cat > ~/.zshenv; }; f < /tmp/rc',
-    'cat ~/.zshrc <(cp /tmp/rc ~/.zshenv)',
-    `bash -c 'cat /tmp/rc >> ~/.bashrc'`,
-  ])('denies %s, a group, exec, function or substitution (row 17)', command => {
-    denies(command)
-  })
-
-  it.each([
-    `echo 'export FOO=1' >> "$CLAUDE_ENV_FILE"`,
-    `printf 'export FOO=1\\n' >> ~/.bashrc`,
-    `echo 'alias ll="ls -l"' >> ~/.bashrc`,
-    `cat >> ~/.zshenv <<'EOF'\nexport FOO=1\nEOF`,
-    'grep alias ~/.zshrc > /tmp/aliases.txt',
-  ])('denies %s, an accepted over-deny: only the owner changes these files (row 22)', command => {
-    denies(command)
-  })
-
+describe('a Bash line that names a file a later shell sources is left to the runtime check (TP-4232, TP-4256)', () => {
   it.each([
     'cat ~/.bashrc',
     'cat ~/.zshrc 2>/dev/null || true',
     'grep x ~/.zshrc 2>&1 | head -5',
     'ls ~/.claude-profiles/agents/shell-snapshots',
     'test -f ~/.zshenv && echo y',
-    'echo x # >> ~/.zshenv',
     'echo "$CLAUDE_ENV_FILE"',
   ])('allows %s, a plain read (row 20)', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
@@ -153,21 +50,95 @@ describe('a file a later shell sources is owner-only (TP-4232)', () => {
   })
 
   it.each([
+    `echo 'export FOO=1' >> "$CLAUDE_ENV_FILE"`,
+    `printf 'export FOO=1\\n' >> ~/.bashrc`,
+    `echo 'alias ll="ls -l"' >> ~/.bashrc`,
+    `cat >> ~/.zshenv <<'EOF'\nexport FOO=1\nEOF`,
+    'grep alias ~/.zshrc > /tmp/aliases.txt',
+    'rg CLAUDE_ENV_FILE src',
+    `git commit -m 'fix .zshrc'`,
+  ])('allows %s, since no Bash-line rule judges writes to these files (row 22)', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
+
+describe('the Edit tools on a file a later shell sources are owner-only (TP-4232)', () => {
+  it.each([
     { file: '/srv/agent/.bashrc', tool: 'Write' },
     { file: '/srv/agent/.zshenv', tool: 'Edit' },
     { file: '/srv/agent/env.sh', tool: 'MultiEdit' },
     { file: '/srv/agent/.claude/session-env/s1/sessionstart-hook-0.sh', tool: 'Write' },
-    { file: SNAPSHOT, tool: 'Write' },
-    { file: SNAPSHOT, tool: 'Edit' },
-  ])('denies the $tool tool on $file (rows 4, 12)', ({ file, tool }) => {
-    const env = { ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' }
-    expect(checkToolCall(tool, { file_path: file, content: 'export FOO=1\n' }, ctx(env))).toBe(
+    { file: '/srv/agent/.ZSHRC', tool: 'NotebookEdit' },
+  ])('denies the $tool tool on $file (row 4)', ({ file, tool }) => {
+    expect(edit(file, { ...ENV, CLAUDE_ENV_FILE: '/srv/agent/env.sh' }, tool)).toBe(
       REASONS.ghHelperEnvFileEdit,
     )
   })
 
+  it.each(['Write', 'Edit'])(
+    'denies the %s tool on a shell snapshot the Bash tool sources (row 12)',
+    tool => {
+      expect(edit(SNAPSHOT, ENV, tool)).toBe(REASONS.ghHelperEnvFileEdit)
+    },
+  )
+
+  it.each(['BASH_ENV', 'ENV'])('denies an Edit on the absolute file the hook names in %s', name => {
+    expect(edit('/work/../srv/rc', { ...ENV, [name]: '/srv/rc' })).toBe(REASONS.ghHelperEnvFileEdit)
+  })
+
+  it.each([
+    { name: 'ENV', value: 'dev', file: 'src/dev/x.ts' },
+    { name: 'BASH_ENV', value: 'rc', file: 'rc' },
+    { name: 'BASH_ENV', value: '/srv/rc', file: '/srv/rc.d/x' },
+    { name: 'CLAUDE_ENV_FILE', value: '/srv/e', file: '/srv/e2' },
+  ])(
+    'allows an Edit on $file with $name=$value, which is no exact absolute match',
+    ({ name, value, file }) => {
+      expect(edit(file, { ...ENV, [name]: value })).toBeUndefined()
+    },
+  )
+
   it('allows the Write tool on a file no shell sources', () => {
-    expect(checkToolCall('Write', { file_path: '/work/build.bash', content: 'x' }, ctx())).toBeUndefined()
+    expect(edit('/work/build.bash', ENV, 'Write')).toBeUndefined()
+  })
+})
+
+describe('the Edit tools match a sourced file by its real path (TP-4232)', () => {
+  const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-env-files-')))
+  const home = path.join(ROOT, 'home')
+  const scratch = path.join(ROOT, 'scratch')
+  fs.mkdirSync(home)
+  fs.mkdirSync(scratch)
+  fs.writeFileSync(path.join(home, '.zshenv'), '')
+  fs.writeFileSync(path.join(home, 'rc'), '')
+  fs.symlinkSync(path.join(home, '.zshenv'), path.join(scratch, 'link'))
+  fs.symlinkSync(path.join(home, '.zlogin'), path.join(scratch, 'dangling'))
+  fs.symlinkSync(path.join(home, 'rc'), path.join(scratch, 'rc-link'))
+  fs.symlinkSync(home, path.join(scratch, 'dir'))
+  afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }))
+
+  it('denies an Edit on a scratch symlink pointing at the synthetic ~/.zshenv', () => {
+    expect(edit(path.join(scratch, 'link'))).toBe(REASONS.ghHelperEnvFileEdit)
+  })
+
+  it('denies a Write through a dangling symlink to an absent ~/.zlogin, which the write creates', () => {
+    expect(edit(path.join(scratch, 'dangling'), ENV, 'Write')).toBe(REASONS.ghHelperEnvFileEdit)
+  })
+
+  it('denies an Edit on a symlink to the hook BASH_ENV file', () => {
+    expect(edit(path.join(scratch, 'rc-link'), { ...ENV, BASH_ENV: path.join(home, 'rc') })).toBe(
+      REASONS.ghHelperEnvFileEdit,
+    )
+  })
+
+  it('denies an Edit on the hook BASH_ENV file named through a symlinked directory', () => {
+    expect(edit(path.join(home, 'rc'), { ...ENV, BASH_ENV: path.join(scratch, 'dir', 'rc') })).toBe(
+      REASONS.ghHelperEnvFileEdit,
+    )
+  })
+
+  it('allows an Edit on a file in the symlinked directory that no shell sources', () => {
+    expect(edit(path.join(scratch, 'dir', 'notes.txt'))).toBeUndefined()
   })
 })
 

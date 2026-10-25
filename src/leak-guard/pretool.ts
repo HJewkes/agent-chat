@@ -79,7 +79,7 @@ import {
   type GhAliasSet,
   type ReadGhAliases,
 } from './gh-runs.js'
-import { editsEnvFile, writesEnvFile } from './env-files.js'
+import { editsEnvFile } from './env-files.js'
 import {
   expandsToWords,
   hasOptionAlternation,
@@ -264,8 +264,7 @@ export const REASONS = {
   ghCloneHidden: `leak-guard: gh repo clone, gh repo fork or gh gist clone hands git clone a word after -- that the guard cannot resolve, which may be a -c, --config or --upload-pack option. Write it out literally. ${DOCS}`,
   ghExtension: `leak-guard: this gh command runs a gh extension, a program the guard cannot read. Run the commands it runs directly. ${DOCS}`,
   ghCredentialHelper: `leak-guard: gh auth setup-git, login or refresh writes the gh path it finds from GH_PATH or PATH into git config as the credential helper, a program git runs on every later fetch and push, and this line sets GH_PATH or PATH, one of them holds a quote or relative entry, or the guard cannot tell. Run gh auth setup-git without changing GH_PATH or PATH. ${DOCS}`,
-  ghHelperEnvFile: `leak-guard: this line writes a file a later shell sources (startup file, CLAUDE_ENV_FILE, Claude session-env or shell snapshot); only the owner changes these files. A line that names one may only read it: cat, grep, head and the like, with no prefix assignment and no redirect but to /dev/null. ${DOCS}`,
-  ghHelperEnvFileEdit: `leak-guard: the Edit and Write tools may not change a file a later shell sources (startup file, CLAUDE_ENV_FILE, Claude session-env or shell snapshot); only the owner changes these files. ${DOCS}`,
+  ghHelperEnvFileEdit: `leak-guard: the Edit and Write tools may not change a file a later shell sources (startup file, CLAUDE_ENV_FILE, Claude session-env or shell snapshot, or the hook's BASH_ENV or ENV file), matched by its real path; only the owner changes these files. ${DOCS}`,
   ghRenamed: `leak-guard: this runs auth setup-git, an auth subcommand the guard cannot read, or auth login or refresh with a gh flag through a program not named gh, which may be a renamed copy of gh that writes its own path as git's credential helper. Run gh by its name. ${DOCS}`,
   extProtocol: `leak-guard: this switches on git's ext:: transport, which runs a URL as a shell command: GIT_ALLOW_PROTOCOL listing ext on any line, or unset on a line that runs git, or git config setting protocol.allow or protocol.ext.allow to anything but never, or renaming a section into protocol. Leave the protocol list alone. ${DOCS}`,
   remoteUrlUnresolved: `leak-guard: this writes a git remote URL, URL helper or insteadOf rewrite (git clone's repository, git remote or git submodule add or set-url, git config remote.*.url, pushurl, vcs, submodule.*.url or url.*.insteadOf, or a section renamed into remote, url or submodule), or a config key or verb, that the guard cannot read, or passes git config, remote or submodule a word the shell may expand to none or several (an unquoted $X, "$@", a glob or a brace), and it may hide an ext:: URL a later git runs as a shell command. Write the URL and key out literally. ${DOCS}`,
@@ -3442,6 +3441,13 @@ const DEFERRED_REASONS: ReadonlyMap<DeferredEnv, string> = new Map<DeferredEnv, 
   [SEARCH_UNREAD, REASONS.searchPathEnv],
 ])
 
+/**
+ * The hidden-name reason when it caused `reason`: a name the shell builds may export GH_CONFIG_DIR,
+ * so the renamed-gh rule then fires on every program after it, where the name is what to fix.
+ */
+const outranked = (reason: string, envReason: DeferredEnv | undefined): string | undefined =>
+  reason === REASONS.ghRenamed && envReason === NAME_HIDDEN ? DEFERRED_REASONS.get(envReason) : undefined
+
 /** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */
 function deniesExpansion(command: string): boolean {
   const risk = expansionRisk(command)
@@ -3503,7 +3509,6 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
   const cmds = parseShell(command)
-  if (writesEnvFile(command, cmds, ctx.env)) return REASONS.ghHelperEnvFile
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   const line = lineFeeds(cmds)
@@ -3513,7 +3518,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     const fed = feeds(cmd, prev, at, line)
     if (fed.fed !== at.fed || fed.stdin !== at.stdin) at = { ...at, ...fed }
     const reason = checkSimple(cmd, ctx, at, depth)
-    if (reason !== undefined) return reason
+    if (reason !== undefined) return outranked(reason, envReason) ?? reason
     prev = cmd.after === '|' ? { cmd, output: stageOutput(cmd, at.fed) } : undefined
     at = advance(cmd, ctx, at)
   }
