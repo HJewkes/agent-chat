@@ -220,3 +220,76 @@ describe.skipIf(SHELLS.length === 0)('real shells run the push a process substit
     for (const [shell, args] of SHELLS) expect(gitCalls(shell, args, src)).toMatch(calls)
   })
 })
+
+// A shell in a command substitution reads the stdin of the command it sits in (CC-1412). Mutation:
+// drop the pipe from ownsStdin, and every row denies no more.
+const PIPED_SUBSTITUTIONS = [
+  `echo '${PUSH}' | $(bash)`,
+  `echo '${PUSH}' | \`bash\``,
+  `echo '${PUSH}' | $( (bash) )`,
+  `echo '${PUSH}' | $( $(bash) )`,
+  `echo '${PUSH}' | $(sh)`,
+  `echo '${PUSH}' | $(dash)`,
+  `echo '${PUSH}' | $(zsh -f)`,
+  `echo '${PUSH}' | $(bash -c bash)`,
+  `echo '${PUSH}' | echo $(bash)`,
+  `echo '${PUSH}' | x=$(bash)`,
+  `printf '${PUSH}\\n' | cat | $(bash)`,
+]
+
+// Fail closed on a heredoc or redirect too, though bash and dash open it only after the substitution
+// ran. Mutation: drop the heredoc or the unread redirect from ownsStdin.
+const REDIRECTED_SUBSTITUTIONS = [
+  `$(bash) <<< '${PUSH}'`,
+  `$(bash) <<'EOF'\n${PUSH}\nEOF`,
+  `$(bash) < push.sh`,
+]
+
+// Mutation: make every command in a substitution read 'unknown'.
+const SUBSTITUTION_BENIGN: [string, RegExp][] = [
+  [`x=$( (bash) ); git status`, /^status$/],
+  [`x=$(bash -c 'git rev-parse HEAD'); git status`, /^rev-parse HEAD\nstatus$/],
+  [`git log --oneline | head -$(echo 3)`, /^log --oneline$/],
+  [`echo '${PUSH}' | grep -c $(echo push)`, /^$/],
+]
+
+describe('checkCommand on a shell in a command substitution', () => {
+  it.each(PIPED_SUBSTITUTIONS)('denies %j', src => {
+    expect(checkCommand(src, ctx())).toBe(REASONS.pipedScript)
+  })
+
+  it.each(REDIRECTED_SUBSTITUTIONS)('denies %j', src => {
+    expect(checkCommand(src, ctx())).toBe(REASONS.pipedScript)
+  })
+
+  it.each(SUBSTITUTION_BENIGN)('allows %j', src => {
+    expect(checkCommand(src, ctx())).toBeUndefined()
+  })
+})
+
+const OUTER_SHELLS: [string, string[]][] = [
+  ...SHELLS,
+  ...(fs.existsSync('/bin/dash') ? [['/bin/dash', []]] : []),
+] as [string, string[]][]
+
+// zsh runs a pipeline's last stage in the shell itself, so there the substitution reads the shell's stdin.
+const PIPE_RUNNERS = OUTER_SHELLS.filter(([shell]) => !shell.endsWith('zsh'))
+
+describe.skipIf(SHELLS.length === 0)('real shells run the push a command substitution reads', () => {
+  it.each(PIPED_SUBSTITUTIONS.filter(src => HAS_ZSH || !src.includes('zsh')))(
+    'bash and dash push for %j',
+    src => {
+      const pushed = OUTER_SHELLS.filter(([shell, args]) => gitCalls(shell, args, src) === 'push --no-verify')
+
+      expect(pushed.map(([shell]) => shell)).toEqual(PIPE_RUNNERS.map(([shell]) => shell))
+    },
+  )
+
+  it.each(REDIRECTED_SUBSTITUTIONS)('no shell pushes for %j', src => {
+    for (const [shell, args] of OUTER_SHELLS) expect(gitCalls(shell, args, src)).toBe('')
+  })
+
+  it.each(SUBSTITUTION_BENIGN)('every shell runs only what the guard read for %j', (src, calls) => {
+    for (const [shell, args] of OUTER_SHELLS) expect(gitCalls(shell, args, src)).toMatch(calls)
+  })
+})
