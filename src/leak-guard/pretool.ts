@@ -86,6 +86,7 @@ import {
 import { pushFlagMayForm } from './push-words.js'
 import { GUARD_KEY, mayDropHook } from './hook-words.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
+import { globMayFormPush } from './glob-push.js'
 import {
   indirectFeed,
   isNothing,
@@ -200,6 +201,7 @@ const MAX_FED_CHECKS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
+  globPush: `leak-guard: an unquoted glob or brace word here may expand to push or --no-verify, which the guard reads as written, so this may be a push that skips the pre-push leak scan. Write the word out, or quote it. ${DOCS}`,
   gitConfig: `leak-guard: git -c or --config-env on core.hooksPath or an alias would bypass the pre-push leak scan. ${DOCS}`,
   configWrite: `leak-guard: writing core.hooksPath, or an alias that skips hooks, is not allowed for agents. ${DOCS}`,
   assignmentSubscript: `leak-guard: a word that opens an assignment subscript, NAME[...], but is not a complete NAME[idx]=value, so the guard cannot tell where the command starts. Keep the subscript free of blanks, or run the command without a prefix assignment. ${DOCS}`,
@@ -1138,7 +1140,8 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkFedPush(run, scope) ??
     checkPrivilegedPush(run, scope) ??
     checkHiddenSubcommand(run, scope) ??
-    checkAlias(run, ctx, scope, depth)
+    checkAlias(run, ctx, scope, depth) ??
+    checkGlobPush(run, scope)
   )
 }
 
@@ -1179,6 +1182,12 @@ function checkPushExpansion(run: GitRun, scope: Scope): string | undefined {
     ? REASONS.noVerify
     : undefined
 }
+
+/** A glob or brace word the guard reads as written that may expand to push or `--no-verify` (TP-4235). */
+const checkGlobPush = (run: GitRun, scope: Scope): string | undefined =>
+  globMayFormPush(run, subcommandAt(run, gitOptions(run.args, scope.cwd, scope.gitParams)))
+    ? REASONS.globPush
+    : undefined
 
 /** git push options that take no value, so a `--` after them ends the options. */
 const PUSH_FLAGS = new Set(

@@ -101,14 +101,23 @@ function segmentMatches(segment: string, name: string): boolean {
   }
 }
 
+const plainText = (raw: string): string =>
+  decodeAnsiC(raw).replace(REFERENCE, '').replace(EXPANSION_OPEN, `{${DEFAULT}`).replace(QUOTING, '')
+
 /** Whether the word may expand to a path segment `name`, by the same expansions as mayExpandToGit. */
 export function mayExpandTo(raw: string, name: string): boolean {
   if (raw.length > MAX_LENGTH) return true
-  const plain = decodeAnsiC(raw)
-    .replace(REFERENCE, '')
-    .replace(EXPANSION_OPEN, `{${DEFAULT}`)
-    .replace(QUOTING, '')
-  return expandedWords(plain).some(word => (word.match(SEGMENT) ?? []).some(seg => segmentMatches(seg, name)))
+  return expandedWords(plainText(raw)).some(word =>
+    (word.match(SEGMENT) ?? []).some(seg => segmentMatches(seg, name)),
+  )
+}
+
+/** Whether the word may expand to the whole word `name`, as `--no-verif?` may to `--no-verify` and `feat/*` may not. */
+export function mayExpandToWord(raw: string, name: string): boolean {
+  if (raw.length > MAX_LENGTH) return true
+  return expandedWords(plainText(raw)).some(word =>
+    word.split(/\s+/).some(part => segmentMatches(part, name)),
+  )
 }
 
 export const mayExpandToGit = (raw: string): boolean => mayExpandTo(raw, 'git')
