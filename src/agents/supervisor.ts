@@ -178,7 +178,8 @@ import { inheritedProfile } from './teleport-config.js'
 import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
-import { resolveCoordinatorGrantableTools, resolveMachines, resolveProfileDriftMode } from '../config.js'
+import { resolveCoordinatorGrantableTools, resolveProfileDriftMode } from '../config.js'
+import { knownMachineAliases } from './machine-registry.js'
 import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
@@ -2652,7 +2653,7 @@ export class Supervisor implements TeleportHost {
       launchesHere: req.launchesHere,
       brokerHost: brokerHost(),
       launchers: this.hosts?.launchers() ?? [],
-      aliases: resolveMachines(),
+      aliases: knownMachineAliases(),
     })
   }
 
@@ -4225,7 +4226,7 @@ export class Supervisor implements TeleportHost {
       host,
       brokerHost: brokerHost(),
       launchers: this.hosts?.launchers() ?? [],
-      aliases: resolveMachines(),
+      aliases: knownMachineAliases(),
     })
   }
 
