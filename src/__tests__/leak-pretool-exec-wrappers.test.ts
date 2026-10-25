@@ -33,6 +33,9 @@ const USERNS = [
 const PROBES: Record<string, string> = {
   prlimit: 'prlimit -n git probe',
   time: '/usr/bin/time -o /dev/null git probe',
+  // Where sh is dash, which has no time keyword.
+  sh: `sh -c 'time -o /dev/null git probe'`,
+  dash: `dash -c 'time -o /dev/null git probe'`,
   numactl: 'numactl -l git probe',
   setarch: 'setarch linux64 git probe',
   x86_64: 'x86_64 git probe',
@@ -63,6 +66,13 @@ const BYPASSES: [string, string][] = [
   [`function -o { "$@"; }; time -p -o ${P}`, 'time'],
   [`function -o { "$@"; }; if time -o ${P}; then :; fi`, 'time'],
   [`function -f { "$@"; }; ! time -f ${P}`, 'time'],
+  // After a pipe, quoted or escaped, and under dash, which has no keyword, `time` is GNU time.
+  [`true | time -o /dev/null ${P}`, 'time'],
+  [`\\time -o /dev/null ${P}`, 'time'],
+  [`"time" -o /dev/null ${P}`, 'time'],
+  [`sh -c 'time -o /dev/null ${P}'`, 'sh'],
+  [`dash -c 'time -o /dev/null ${P}'`, 'dash'],
+  [`echo x | xargs sh -c 'time -o /dev/null ${P}'`, 'sh'],
   [`numactl -l ${P}`, 'numactl'],
   [`numactl --localalloc -- ${P}`, 'numactl'],
   [`numactl -C 0 ${P}`, 'numactl'],
@@ -132,6 +142,7 @@ describe('exec wrappers run the command after their options (CC-1424)', () => {
   it.each([
     'prlimit --bogus git push',
     'command time -x git push',
+    'time -x git push',
     'numactl -x git push',
     'nsenter --frob git push',
     'chroot / --userspec=0:0 git push',

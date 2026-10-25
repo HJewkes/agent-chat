@@ -471,9 +471,6 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
   let siblings: Sibling[] | undefined
   let viaShellVar = false
   let privileged = lead?.privileged ?? false
-  // Whether only prefix words came before, where `time` is the keyword; behind a wrapper or assignment it is GNU time.
-  // The keyword takes only -p and --, so a later `-o` is a command that may run the rest: every option word is skipped.
-  let atKeyword = lead === undefined
   const assigns = [...(lead?.assigns ?? [])]
   const done = (): Unwrapped =>
     fedCommand && at >= rest.length
@@ -496,8 +493,6 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     const assigned = ASSIGNMENT.exec(head)?.[1]
     const values: number[] = []
     const next = wrapperEnd(rest, at, name, values)
-    const keyword = atKeyword && PREFIX_WORDS.has(head)
-    atKeyword = keyword
     if (brokenAssignment(head)) return { reason: REASONS.assignmentSubscript }
     if (fed !== undefined && next !== undefined && rest.slice(at + 1, next).some(w => w.includes(LIVE)))
       return { reason: REASONS.xargsWrapper }
@@ -505,7 +500,7 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
       at++
-    } else if (keyword || (PREFIX_WORDS.has(head) && head !== 'time')) at = dropOptions(rest, at + 1)
+    } else if (PREFIX_WORDS.has(head) && head !== 'time') at = dropOptions(rest, at + 1)
     else if (next !== undefined) {
       if (movesCommand(rest, at + 1, next, values, splits)) return { reason: REASONS.wrapperValue }
       at = next
@@ -566,6 +561,8 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
         viaShellVar = true
       }
     } else if (JOB_WRAPPERS.has(name)) {
+      if (head === 'time')
+        siblings = [...(siblings ?? []), keywordTime(rest, at, { assigns, chdir, fed, privileged })]
       const run = jobRun(rest, at + 1, name, splits)
       if (run === undefined) return { reason: REASONS.jobOption }
       chdir ||= run.chdir === true
@@ -586,6 +583,17 @@ function unwrap(words: readonly string[], splits: readonly string[] = [], lead?:
     } else return done()
   }
 }
+
+/**
+ * A bare `time` is the bash and zsh keyword or GNU time, by the shell that runs it (dash has no keyword),
+ * a quote or a pipe before it, so unwrap reads it both ways. The keyword takes only -p and --, and
+ * a later word such as `-o` is a command that may run the rest, so this reading skips every option word.
+ */
+const keywordTime = (rest: readonly string[], at: number, lead: Lead): Sibling => ({
+  ...lead,
+  assigns: [...lead.assigns],
+  words: rest.slice(dropOptions(rest, at + 1)),
+})
 
 /** The words xargs runs: unwrap has put its replace words in place, and here it appends the rest. */
 const stdinArgs = (words: readonly string[], fed: Fed | undefined): string[] => {
