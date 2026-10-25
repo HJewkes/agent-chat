@@ -383,7 +383,7 @@ const LEGITIMATE_COMMANDS = [
   'git push -u origin agent-chat/x && npm run verify',
   'git push -u origin agent-chat/x 2>&1 | tail -5',
   'git -C /tmp/work push -u origin agent-chat/x',
-  "git commit -m \"a push 'b' c\"",
+  'git commit -m "a push \'b\' c"',
   'git -C "$dir" log --oneline',
   // The quote rules for a global option look only after `push`, so the prelude's quoted -C works.
   'git -C "$dir" push -u origin agent-chat/x',
