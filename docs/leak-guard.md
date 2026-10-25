@@ -994,10 +994,12 @@ other checks so a more specific reason wins. Two rules carry this into the scrip
 
 A `{NAME}>file` (or `{NAME[sub]}>file`) redirect writes the descriptor it opens to `NAME`, and
 zsh does so before an external command starts, so `gh {GH_PAGER}>/dev/null pr view 1` runs a
-pager named by a number. The lexer records that `NAME` for any unquoted `{NAME}` word before a
-redirect operator, and it counts as any other write: a program var denies as `programEnv`, a
-search path as `searchPathEnv`, a shell startup variable as `shellStartupEnv`, and a
-`GIT_CONFIG_*` name as `gitConfigEnv` on any line, as a `GIT_CONFIG_*=` prefix does (CC-1630).
+pager named by a number. For any unquoted `{NAME}` word before a redirect operator, the lexer
+puts a prefix assignment `NAME=$$` in front of the command, with a value the guard cannot read.
+Every rule that reads assignment words then sees the write, with no rule of its own (CC-1630). A
+program var denies as `programEnv`, a search path as `searchPathEnv`, a shell startup variable as
+`shellStartupEnv`, a `GIT_CONFIG_*` name as `gitConfigEnv`, and gh's `HOME`, `XDG_CONFIG_HOME` or
+`GH_CONFIG_DIR` as `ghConfigHome`.
 `GIT_DIR` is no program var, so `exec {GIT_DIR}>/dev/null; git status` is allowed, as
 `GIT_DIR=x; git status` is.
 

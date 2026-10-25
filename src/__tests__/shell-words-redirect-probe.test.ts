@@ -136,4 +136,11 @@ describe('a {NAME} word before a redirect operator names the variable the shell 
   ])('reads %j as assigning %j', (line, names) => {
     expect(parseShell(line).flatMap(command => command.fdNames)).toEqual(names)
   })
+
+  it('leads the command with each name as a prefix assignment it cannot read', () => {
+    const [cmd] = parseShell('gh pr view 1 {GH_PAGER}>/dev/null {fd}<f')
+
+    expect(cmd?.words.slice(0, 3)).toEqual(['GH_PAGER=$$', 'fd=$$', 'gh'])
+    expect(cmd?.marked[0]).toBe(`GH_PAGER=${LIVE}$${LIVE}$`)
+  })
 })

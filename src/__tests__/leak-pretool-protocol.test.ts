@@ -654,6 +654,31 @@ describe('a {NAME}>file redirect, which writes a descriptor number to NAME (CC-1
   })
 
   it.each([
+    'gh pr create -t x -b ok {HOME}>&2',
+    'gh api "repos/o/r/commits/$SHA/check-runs" {XDG_CONFIG_HOME}>/dev/null',
+    'agent-chat gh-write {GH_CONFIG_DIR}>/dev/null -- pr comment 1 --body ok',
+  ])('denies %j, which may point gh at another config', command => {
+    expect(hookReason(command)).toBe(REASONS.ghConfigHome)
+  })
+
+  // Every rule that reads assignment words sees the fd name as one with a value it cannot read: the
+  // decision matches a NAME=$$ prefix with the same {NAME} word left as a plain argument.
+  it.each([
+    ['GH_HOST', 'gh api "repos/o/r/commits/$SHA/check-runs"'],
+    ['HTTPS_PROXY', 'gh api "repos/o/r/commits/$SHA/check-runs"'],
+    ['GH_PATH', 'gh pr create -t x -b ok'],
+    ['HOME', 'gh pr create -t x -b ok'],
+    ['GIT_CONFIG_GLOBAL', 'git fetch o'],
+    ['GH_PAGER', 'gh pr view 1'],
+    ['path', 'git fetch o'],
+  ])('denies {%s}> on %j as a NAME=$$ prefix is denied', (name, command) => {
+    const reason = hookReason(`${command} {${name}}>/dev/null`)
+
+    expect(reason).toBeDefined()
+    expect(reason).toBe(hookReason(`${name}=$$ ${command} {${name}} >/dev/null`))
+  })
+
+  it.each([
     'gh pr view 1 {fd}>/dev/null',
     'exec {fd}>/dev/null; git fetch o',
     'gh pr view 1 "{GH_PAGER}">/dev/null',

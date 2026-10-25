@@ -2701,8 +2701,6 @@ function checkSimple(
   outermost = true,
   lead?: Lead,
 ): string | undefined {
-  // A `{GIT_CONFIG_*}>file` redirect writes the variable as a `GIT_CONFIG_*=` prefix does (CC-1630).
-  if (cmd.fdNames.some(isGitConfigVar)) return REASONS.gitConfigEnv
   const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits, lead)
   if ('reason' in unwrapped)
     return !GATED_REASONS.has(unwrapped.reason) || lineMayReachGit(scope, ctx) ? unwrapped.reason : undefined
@@ -3293,10 +3291,6 @@ function unwrappedEnvUse(cmd: SimpleCommand, roles: readonly WordRole[]): EnvUse
   }
 }
 
-/** A `{NAME}>file` redirect writes a descriptor number to NAME, so it counts as any other write (CC-1630). */
-const fdNameEvents = (cmd: SimpleCommand): EnvEvent[] =>
-  cmd.fdNames.map(name => envEvent(name, 'arg')).filter((event): event is EnvEvent => event !== undefined)
-
 /** Every program-env event on one command, read from the words as written and from the unwrapped command. */
 function envUse(cmd: SimpleCommand): EnvUse {
   const roles = wordRoles(cmd)
@@ -3305,9 +3299,8 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const body = functionBody(cmd.marked)
   const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
   const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
-  const beside = [...expandedEvents(cmd), ...fdNameEvents(cmd)]
   return {
-    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed, ...beside],
+    events: [...written.events, ...unwrapped.events, ...hidden, ...hashed, ...expandedEvents(cmd)],
     scan: [...written.scan, ...unwrapped.scan],
   }
 }

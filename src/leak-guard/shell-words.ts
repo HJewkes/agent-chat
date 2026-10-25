@@ -39,7 +39,8 @@ export interface SimpleCommand {
   expanded: string[]
   /**
    * The NAME of each `{NAME}>file` redirect, to which bash and zsh assign the descriptor they open.
-   * zsh assigns it before an external command starts, so the command sees it (CC-1630).
+   * zsh assigns it before an external command starts, so the command sees it (CC-1630). Each also
+   * leads `words` and `marked` as a prefix assignment `NAME=$$`, which the guard cannot read.
    */
   fdNames: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
@@ -1252,6 +1253,7 @@ class ShellLexer {
     this.endWord()
     if (this.caseOpening !== undefined) this.budget.expansion = 'unreadable'
     this.caseOpening = undefined
+    assignFdNames(this.cur)
     const bare = this.cur.words.length === 0
     if (bare) appendAll(this.carried, this.cur.writes)
     if (!bare || this.readsStdin(this.cur) || this.expandsBeside(this.cur)) this.keep(this.cur, bare)
@@ -1438,6 +1440,16 @@ export function parseShell(src: string): SimpleCommand[] {
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
 const FD_NAME = new RegExp(`^\\{(${NAME})(?:\\[[^\\]]*\\])?\\}$`)
+
+/**
+ * Puts each `{NAME}>file` name in front of the command as `NAME=$$`, a prefix assignment of a value
+ * no one can read, so every rule that reads assignment words sees the write (CC-1630).
+ */
+function assignFdNames(cmd: SimpleCommand): void {
+  const assigns = cmd.fdNames.map(name => `${name}=$$`)
+  cmd.words.unshift(...assigns)
+  cmd.marked.unshift(...assigns.map(word => word.replaceAll('$', `${LIVE}$`)))
+}
 // zsh reads `$NAME:h` and `$NAME[1]` as a modifier and a subscript, even inside double quotes.
 const BARE = `\\$(${NAME})(?![A-Za-z0-9_]|${LIVE}?[:\\[])`
 const EXPANSION = new RegExp(`${LIVE}(?:\\$\\{(${NAME})\\}|${BARE}|~(?=/|$))`, 'g')
