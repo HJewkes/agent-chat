@@ -2916,7 +2916,8 @@ const INDIRECT_ASSIGN = new RegExp(`${LIVE}\\$\\{!(?:${NAME}|\\d+|[@*#?$!-])(?:\
 function expandedEvents(cmd: SimpleCommand): EnvEvent[] {
   const indirect = [...cmd.marked, ...cmd.expanded].some(text => INDIRECT_ASSIGN.test(text))
   const named = cmd.expanded.filter(liveExpandsProgramEnv).map(text => nameEvent(unmark(text), true))
-  return [...(indirect ? [NAME_HIDDEN] : []), ...named]
+  const hidden: EnvEvent[] = indirect ? [NAME_HIDDEN] : []
+  return [...hidden, ...named]
 }
 
 /** The commands `eval` runs from its words as written, so a nameref or hidden name there counts (TP-2499). */
