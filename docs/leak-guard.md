@@ -435,7 +435,7 @@ reach git or gh.
 | `gh api` whose `-f`, `-F` or `--input` values have a finding                                                                                                                                                                                    | the same text by another route                              |
 | a command word that is an expansion, followed by the words of one of those gh commands                                                                                                                                                          | `$G pr create` may run gh unscanned                         |
 | a command word that is an expansion, followed by a command that any row above denies                                                                                                                                                            | `$E gh pr create` runs gh when `E` is empty                 |
-| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                                                                                                                                                          | the text may be a push or a gh command                      |
+| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`; a `trap` action or `mapfile -C` callback it cannot read, on a line that may reach either                                                                | the text may be a push or a gh command                      |
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                                                                                                                                            | `git rebase -x` runs a shell command unseen                 |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)                                                                                                                                | git passes it on to every git that command runs             |
 | `git -c` on a key whose value git runs as a program, when the value is a line a row above denies (below)                                                                                                                                        | `core.pager="git push --no-verify"` runs on `git log`       |
@@ -934,12 +934,31 @@ name, or an expanded operand before its format; and a name in the `declare`, `ty
 since a nameref may point at any variable; so does any `${!X=}` or `${!X:=}`, which assigns the
 variable `X` names (TP-2499). These rules also read a command's redirect targets, here-strings
 and unquoted heredoc bodies, including those of a redirect-only command, whose assignments bash
-keeps, where a program var's `${NAME:=x}` denies too. They also read the text `eval` runs, past
-its `--` (zsh's `-` too), through the same reading the eval check uses; an option or expansion
-first denies as an unreadable eval on a line that names git or gh. Such a name may be any program var or `GIT_ALLOW_PROTOCOL`, so on a
-line that may reach git it denies as `programEnv`, after the line's other checks so a more
-specific reason wins. Words that `xargs` adds are read as unreadable (CC-1117, above); words
-that `find -exec` adds are not read here.
+keeps, where a program var's `${NAME:=x}` denies too. Such a name may be any program var or
+`GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the line's
+other checks so a more specific reason wins. Two rules carry this into the scripts a line runs:
+
+1. A hidden name in any script the line runs counts when the outer line may reach git. That
+   covers `eval`, `trap` and `mapfile -C` below, the text fed to `source /dev/stdin` or `.`, a
+   `sh -c` string, parallel's script, git's `-x` and alias scripts. A child shell cannot pass a
+   variable back, so `bash -c 'declare -n R=$A; R=x'; git fetch o` is a deny the guard accepts.
+2. The scripts a builtin hands the current shell are read as the shells read them, and checked
+   as nested scripts. One the guard cannot read denies as `hiddenScript`: for `eval` on a line
+   that names git or gh, for `trap` and `mapfile` on a line that may reach git or gh.
+
+| builtin                | script                                                 | not a script                                         | unreadable                               |
+| ---------------------- | ------------------------------------------------------ | ---------------------------------------------------- | ---------------------------------------- |
+| `eval`                 | its operands joined, past one `--` (zsh's `-` too)     |                                                      | an option or expansion as the first word |
+| `trap`                 | its action, the first operand past one `--`            | `-p`, `-l`, zsh's `-P`; an action `-`; a lone signal | an expanded action or another option     |
+| `mapfile`, `readarray` | the `-C` callback, which bash runs every quantum lines | no `-C`                                              | an expanded `-C` value                   |
+
+Not read by these rules, each a follow-up: assignments in arithmetic, `let`, `(( ))` and
+`declare -i` (TP-2507); zsh `print -v`, `set -A` and `vared` (TP-4224); `PS4` and `${x@P}`
+prompt expansion under `set -x` (TP-4227); zsh's `-` precommand modifier as a wrapper (TP-4225);
+ksh's `nameref` alias and zsh's `typeset -U` (TP-4226); a command word that is only an expansion
+counting as git (`declare -n R=$A; R=ext; $G fetch o`); and the contents of a file that `source` or `.` reads,
+unread by design. Words that `xargs` adds are read as unreadable (CC-1117, above); words that
+`find -exec` adds are not read here.
 The guard skips
 git's own value-taking options before the subcommand from one list, which includes
 `--attr-source` and `--shallow-file`, so their value is never read as the subcommand.
