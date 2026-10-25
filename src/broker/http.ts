@@ -7,7 +7,7 @@ import {
   type LifecycleReport,
 } from '../api-contract.js'
 import type { SlotUsage } from '../agents/semaphore.js'
-import { apiRoutes } from './api-routes.js'
+import { apiRoutes, type OwnerVerdicts } from './api-routes.js'
 import type { BrokerCore } from './core.js'
 import { dashboardRoutes, type DashboardOptions } from './dashboard-routes.js'
 import { buildHealthPayload } from './health.js'
@@ -56,6 +56,8 @@ export interface HttpAppOptions {
   slots?: () => SlotUsage
   /** CC-118's verifier: the last run for `/health`, a fresh one for `/api/lifecycle`. Absent while the shadow is off. */
   lifecycle?: { summary: () => LifecycleHealth | undefined; report: () => Promise<LifecycleReport> }
+  /** The socket server's permission arbiter (TP-1989); it owns the hook waits and session conns. Absent in tests. */
+  verdicts?: OwnerVerdicts
 }
 
 export function buildHttpApp({
@@ -65,6 +67,7 @@ export function buildHttpApp({
   dashboard = {},
   slots,
   lifecycle,
+  verdicts,
 }: HttpAppOptions): Hono {
   const app = new Hono()
 
@@ -95,7 +98,7 @@ export function buildHttpApp({
       : c.json(await lifecycle.report()),
   )
 
-  app.route('/api', apiRoutes(core))
+  app.route('/api', apiRoutes(core, verdicts))
 
   app.get('/events', c => {
     const cursor = readCursor(c.req.header('Last-Event-ID'), c.req.query('since'))

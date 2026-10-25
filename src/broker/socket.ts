@@ -27,9 +27,16 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
-import { type EntryView, type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
+import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
-import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
+import {
+  BrokerCore,
+  readoptRegistration,
+  type Conn,
+  type EndorseApproval,
+  type VerdictResult,
+} from './core.js'
+import type { OpenApproval } from './event-store.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { viewRoster } from '../agents/roster-filter.js'
@@ -67,6 +74,7 @@ import { brokerKeyFor, proofMatches } from './launcher-key.js'
 import { jobKickRequest, type JobKick } from './job-kick.js'
 import { noticeWakeCapped } from './codex-wake-cap.js'
 import { DeclaredCallers, declaredIdOf, resolveDeclared, type Caller } from './declared-callers.js'
+import { class2RequesterOf, isRefusal, type Class2Asker, type Class2Requester } from './class2-requester.js'
 import { classOf } from './frame-classes.js'
 
 /**
@@ -132,6 +140,10 @@ const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(scope.rid === undefined ? message : { ...message, rid: scope.rid }))
   scope.record?.(message)
 }
+
+/** A verdict from a non-socket human channel (TP-1989: `owner-console`) names it on the row it writes. */
+const auditMeta = (channel: string | undefined): { meta?: { channel: string } } =>
+  channel === undefined ? {} : { meta: { channel } }
 
 type KeyedReply = Extract<ServerMessage, { t: 'send_result' | 'spawn_result' }>
 interface KeyedJoiner {
@@ -292,7 +304,7 @@ const optionalHost = (host: string | undefined): { host?: string } => (host === 
 const optionalCallerHost = (callerHost: string | undefined): { callerHost?: string } =>
   callerHost === undefined ? {} : { callerHost }
 /** CC-1614: read from the requester's own entry, never from a frame. */
-const requesterBindingOf = (entry: EntryView | undefined): { requesterBinding?: IdentityBinding } =>
+const requesterBindingOf = (entry: Class2Requester | undefined): { requesterBinding?: IdentityBinding } =>
   entry?.binding === undefined ? {} : { requesterBinding: entry.binding }
 /** CC-1059: a launch report's verdict, with only a string reason kept. */
 const reportOf = (msg: { ok: unknown; reason?: unknown }): { ok: boolean; reason?: string } => ({
@@ -534,8 +546,9 @@ export class SocketServer {
     // without being a session, and the socket is 0600, so reaching it at all
     // already means being the user. They hold no registry entry and therefore no
     // anchor, which §5.4 resolves as the new-window fallback rather than an error.
-    const requestedBy = this.core.registry.nameOf(conn) ?? HUMAN
-    const requester = this.core.registry.entryFor(conn)
+    const requester = this.class2RequesterOf(conn)
+    if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
+    const requestedBy = requester?.name ?? HUMAN
     const anchor = this.core.registry.anchorFor(conn)
     const cwd = resolveSpawnCwd(msg, this.core.registry.cwdFor(conn))
     const observed = this.core.registry.observedFor(conn)
@@ -1154,7 +1167,8 @@ export class SocketServer {
     // CC-1492: dropped, a garbled host would resume locally, against a transcript nobody asked about.
     if (msg.host !== undefined && typeof msg.host !== 'string')
       return reply(conn, { t: 'spawn_result', ok: false, reason: 'resume host must be a machine name' })
-    const requester = this.core.registry.entryFor(conn)
+    const requester = this.class2RequesterOf(conn)
+    if (isRefusal(requester)) return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
     const anchor = this.core.registry.anchorFor(conn)
     const source = wakeSource(msg.source)
     const host = nonBlank(msg.host)
@@ -1175,7 +1189,8 @@ export class SocketServer {
 
   private async handleSurface(conn: Conn, name: string): Promise<void> {
     const anchor = this.core.registry.anchorFor(conn)
-    const requester = this.core.registry.entryFor(conn)
+    const requester = this.class2RequesterOf(conn)
+    if (isRefusal(requester)) return replySwitch(conn, { ok: false, reason: requester.refusal })
     const outcome = await this.supervisor.switchSurface({
       name,
       to: 'interactive',
@@ -1187,9 +1202,17 @@ export class SocketServer {
     replySwitch(conn, outcome)
   }
 
-  /** CC-1138: a registered requester's id and binding, for the retire ownership rule. */
-  private ownershipOf(conn: Conn): { requesterAgentId?: string; requesterBinding?: IdentityBinding } {
-    const requester = this.core.registry.entryFor(conn)
+  /** CC-1138 e: who `conn`'s Class 2 frame asks as; see `class2RequesterOf`. */
+  private class2RequesterOf(conn: Conn): Class2Asker {
+    const claimable = (agentId: string, name: string) => this.core.claimable(agentId, name).ok
+    return class2RequesterOf(this.core.registry.entryFor(conn), this.callerOf(conn), claimable)
+  }
+
+  /** CC-1138: the requester's id and binding, for the ownership rule. */
+  private ownershipOf(requester: Class2Requester | undefined): {
+    requesterAgentId?: string
+    requesterBinding?: IdentityBinding
+  } {
     return {
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
       ...requesterBindingOf(requester),
@@ -1610,49 +1633,80 @@ export class SocketServer {
           this.refusalHint(conn, 'approve_permission'),
       })
     }
-    const { core } = this
-    const request = core.events.openApproval(msgId)
+    reply(conn, { t: 'answer_result', ...this.permissionVerdict(msgId, behavior) })
+  }
+
+  /**
+   * The one permission arbiter, shared by the socket's `approve_permission` and
+   * the owner-console HTTP route (TP-1989). Who may reach it is the caller's
+   * check; whether the prompt is still open is this one's, so a second verdict
+   * loses here whichever channel sent it. `channel` labels the resolution row
+   * and the log line for audit and changes no check.
+   */
+  permissionVerdict(msgId: string, behavior: PermissionBehavior, channel?: string): VerdictResult {
+    const request = this.core.events.openApproval(msgId)
     if (!request) {
-      return reply(conn, {
-        t: 'answer_result',
+      return {
         ok: false,
         reason: `${msgId} is not an open permission prompt — it may have been answered already, or aged out`,
-      })
+      }
     }
-    if (request.source === 'hook') return this.answerHook(conn, msgId, request.toolName, behavior)
-    const target = core.registry.connFor(request.session)
+    if (request.source === 'hook') return this.answerHook(msgId, request.toolName, behavior, channel)
+    return this.answerSession(msgId, request, behavior, channel)
+  }
+
+  /** The verdict on a channel-raised row goes to the prompting session ALONE; see `handleApprovePermission`. */
+  private answerSession(
+    msgId: string,
+    request: Extract<OpenApproval, { source: 'channel' }>,
+    behavior: PermissionBehavior,
+    channel: string | undefined,
+  ): VerdictResult {
+    const target = this.core.registry.connFor(request.session)
     if (!target) {
-      return reply(conn, {
-        t: 'answer_result',
+      return {
         ok: false,
         reason: `${request.session} is no longer connected, so its prompt cannot be answered from here`,
-      })
+      }
     }
-    core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior })
+    this.core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior, ...auditMeta(channel) })
     reply(target, { t: 'permission_verdict', requestId: request.requestId, behavior })
-    core.registry.setAwaitingApproval(target, false)
-    logEvent('permission_verdict', { msgId, to: request.session, tool: request.toolName, behavior })
-    reply(conn, {
-      t: 'answer_result',
-      ok: true,
-      reason: `${request.toolName} ${behavior} sent to ${request.session}`,
+    this.core.registry.setAwaitingApproval(target, false)
+    logEvent('permission_verdict', {
+      msgId,
+      to: request.session,
+      tool: request.toolName,
+      behavior,
+      ...(channel === undefined ? {} : { channel }),
     })
+    return { ok: true, reason: `${request.toolName} ${behavior} sent to ${request.session}` }
   }
 
   /** The verdict on a hook-raised row goes to the hook's own connection; the session's MCP server never asked. */
-  private answerHook(conn: Conn, msgId: string, toolName: string, behavior: PermissionBehavior): void {
+  private answerHook(
+    msgId: string,
+    toolName: string,
+    behavior: PermissionBehavior,
+    channel: string | undefined,
+  ): VerdictResult {
     const wait = this.hooks.get(msgId)
     if (!wait) {
-      return reply(conn, {
-        t: 'answer_result',
+      return {
         ok: false,
         reason: `${msgId} has no hook waiting on it any more, so the verdict has nowhere to go`,
-      })
+      }
     }
-    this.core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior })
+    this.core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior, ...auditMeta(channel) })
     this.settleHook(msgId, behavior)
-    logEvent('permission_verdict', { msgId, to: wait.session, tool: toolName, behavior, source: 'hook' })
-    reply(conn, { t: 'answer_result', ok: true, reason: `${toolName} ${behavior} sent to ${wait.session}` })
+    logEvent('permission_verdict', {
+      msgId,
+      to: wait.session,
+      tool: toolName,
+      behavior,
+      source: 'hook',
+      ...(channel === undefined ? {} : { channel }),
+    })
+    return { ok: true, reason: `${toolName} ${behavior} sent to ${wait.session}` }
   }
 
   /** Release a waiting hook with `behavior`, if one is waiting on `msgId`. The row is closed by the caller. */
@@ -2213,12 +2267,13 @@ export class SocketServer {
       case 'resume':
         return this.keyed(conn, msg, () => this.handleResume(conn, msg))
       case 'park': {
-        const requester = this.core.registry.entryFor(conn)
+        const requester = this.class2RequesterOf(conn)
+        if (isRefusal(requester))
+          return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
         void this.supervisor
           .park(msg.name, {
             requestedBy: requester?.name ?? HUMAN,
-            ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
-            ...requesterBindingOf(requester),
+            ...this.ownershipOf(requester),
             ...(msg.noFixRoundCheck === true ? { noFixRoundCheck: true } : {}),
           })
           .then(result =>
@@ -2238,9 +2293,22 @@ export class SocketServer {
           requesterBinding: _binding,
           ...req
         } = msg as typeof msg & Record<'requesterAgentId' | 'requesterBinding', unknown>
-        const caller = this.core.registry.nameOf(conn)
+        const requester = this.class2RequesterOf(conn)
+        if (isRefusal(requester))
+          return reply(conn, {
+            t: 'retire_finished_result',
+            ok: false,
+            reason: requester.refusal,
+            plan: [],
+            results: [],
+          })
+        const caller = requester?.name
         void this.supervisor
-          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }), ...this.ownershipOf(conn) })
+          .retireFinished({
+            ...req,
+            ...(caller === undefined ? {} : { caller }),
+            ...this.ownershipOf(requester),
+          })
           .then(outcome => reply(conn, { t: 'retire_finished_result', ...outcome }))
           .catch((err: Error) =>
             reply(conn, {
@@ -2254,9 +2322,15 @@ export class SocketServer {
         return
       }
       case 'retire': {
-        const actor = this.core.registry.nameOf(conn) ?? (msg.caller || undefined)
+        const requester = this.class2RequesterOf(conn)
+        if (isRefusal(requester))
+          return reply(conn, { t: 'spawn_result', ok: false, reason: requester.refusal })
+        const actor = requester?.name ?? (msg.caller || undefined)
         const agentId = msg.agentId
-        const claim = { ...(actor === undefined ? {} : { requestedBy: actor }), ...this.ownershipOf(conn) }
+        const claim = {
+          ...(actor === undefined ? {} : { requestedBy: actor }),
+          ...this.ownershipOf(requester),
+        }
         void (
           agentId === undefined
             ? this.supervisor.retire(msg.name, msg.force === true, actor, claim)

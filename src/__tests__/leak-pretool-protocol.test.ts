@@ -466,6 +466,162 @@ describe('a process substitution is no variable name (TP-2371 final round)', () 
   )
 })
 
+describe('a nameref or an indirect default assignment, on a line that runs git (TP-2499)', () => {
+  it.each([
+    `declare -n R=$(printf 'GIT_ALLOW_%s' PROTOCOL); R=ext; git fetch o`,
+    'A=GIT_ALLOW_PROTO; declare -n R=${A}COL; R=ext; git fetch o',
+    'local -n R=$A; R=ext; git fetch o',
+    'typeset -n R=$A; R=ext; git fetch o',
+    'declare -gn R=$A; R=ext; git fetch o',
+    'declare -n R=GIT_ALLOW_PROTOCOL; R=ext; git fetch o',
+    'declare -n R; unset R; git fetch o',
+    'declare -n R; R="$A"; git fetch o',
+    'declare -n R; for R in $(cat f); do :; done; git fetch o',
+    'declare -x -n R=$A; R=ext; git fetch o',
+    'declare +n R; git fetch o',
+    'declare -$F R=$A; git fetch o',
+    'declare -x -- $A=ext; git fetch o',
+    'command declare -n R=$A; R=ext; git fetch o',
+    ': ${!A:=ext}; git fetch o',
+    ': ${!A=ext}; git fetch o',
+    'echo "${!A:=ext}"; git fetch o',
+    'mapfile -C export -c 1 a < f; git fetch o',
+    `mapfile -C 'declare -gx' -c 1 a < f; git fetch o`,
+    `readarray -C 'typeset -x' -c 1 a < f; git fetch o`,
+    `mapfile -C 'local -x' -c 1 a < f; git fetch o`,
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('denies a mapfile callback of eval, which runs the line bash hands it', () => {
+    expect(hookReason('mapfile -C eval -c 1 a < f; git fetch o')).toBe(REASONS.hiddenScript)
+  })
+
+  it.each([
+    'declare -a list=(a b); git fetch o',
+    'declare -A map; git fetch o',
+    'declare -i n=1; git fetch o',
+    'declare -r X=1; git fetch o',
+    'declare -gx FOO=$X; git fetch o',
+    'local line; git fetch o',
+    'local -r sha=$(git rev-parse HEAD)',
+    'typeset -i n; git fetch o',
+    'declare -p; git status',
+    'declare -n R=$A; R=x; ls',
+    'echo "${!A:-none}"; git status',
+    'echo "${!A}"; git status',
+    'echo "${!A#=x}"; git status',
+    `echo '\${!A:=x}'; git status`,
+    `mapfile -C 'rm -f x' -c 1 a < f; git status`,
+    'mapfile -t a < f; git status',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
+describe('assignments in redirects, heredocs and eval bodies (TP-2499 review)', () => {
+  it.each([
+    ': <<< ${!A:=ext}; git fetch o',
+    ': <<E\n${!A:=ext}\nE\ngit fetch o',
+    ': 3<<E\n${!A:=ext}\nE\ngit fetch o',
+    ': > ${!A:=x}; git fetch o',
+    'read x < ${!A:=x}; git fetch o',
+    ': <<< ${GIT_ALLOW_PROTOCOL:=ext}; git fetch o',
+    ': <<E\n${GIT_SSH_COMMAND:=x}\nE\ngit fetch o',
+    ': > ${GIT_PAGER:=x}; git log',
+    `eval 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval 'read $A <<< ext'; git fetch o`,
+    `eval ': \${!A:=ext}'; git fetch o`,
+    `eval -- 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval -- 'read $A <<< ext'; git fetch o`,
+    `eval -- 'printf -v $A ext'; git fetch o`,
+    `eval -- 'export $A=ext'; git fetch o`,
+    `eval - 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval 'eval -- "declare -n R=\\$A"'; R=ext; git fetch o`,
+    '> ${GIT_PAGER:=x}; git log',
+    '< ${!A:=x}; git fetch o',
+    `A=$(printf GIT_ALLOW_%s PROTOCOL); trap 'git fetch o' EXIT; > \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; > \${!A:=ext}`,
+    'git fetch o; > ${!A:=ext}',
+    `trap 'git fetch o' EXIT && > \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; 2> \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; 3<<<\${!A:=ext}`,
+    `trap 'git fetch o' EXIT; > \${GIT_SSH_COMMAND:=x}`,
+    `trap 'git fetch o' EXIT\n> \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; 3<<E\n\${!A:=ext}\nE`,
+    '3<<E\n${!A:=ext}\nE\ngit fetch o',
+    `trap 'git fetch o' EXIT; cat <<E; > \${!A:=ext}\nE`,
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'git log > out.txt',
+    ': <<< "$x"; git status',
+    `cat <<'E'\n\${!A:=ext}\nE\ngit status`,
+    'read -r sha <<< "$(git rev-parse HEAD)"',
+    `eval 'declare -a list=(a b)'; git status`,
+    `eval 'x=1'; git status`,
+    `eval -- 'x=1'; git status`,
+    '> out.txt; git status',
+    'rm -f x 2>/dev/null; git status',
+    `cat <<'E'\n\${!A:=ext}\nE\ngit fetch o`,
+  ])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+
+  it.each([
+    `CMD='declare -n R=$A'; eval "$CMD"; R=ext; git fetch o`,
+    `X=--; eval "$X" 'declare -n R=$A'; R=ext; git fetch o`,
+    `eval -x 'declare -n R=$A'; git fetch o`,
+  ])('denies an eval whose first word it cannot read: %j', command => {
+    expect(hookReason(command)).toBe(REASONS.hiddenScript)
+  })
+
+  it('reads the git eval runs past its --', () => {
+    expect(hookReason(`eval -- 'git push --no-verify'`)).toBe(REASONS.noVerify)
+  })
+})
+
+describe('a hidden name in a script the line runs, on a line that runs git (TP-2499 redesign)', () => {
+  it.each([
+    `A=GIT_ALLOW_PROTO; trap 'declare -n R=\${A}COL; R=ext' DEBUG; git fetch o`,
+    `trap 'read $A <<< ext' DEBUG; git fetch o`,
+    `trap ': \${!A:=ext}' DEBUG; git fetch o`,
+    `trap -- ': \${!A:=ext}' DEBUG; git fetch o`,
+    `trap 'declare -n R=$A; R=ext' RETURN; git fetch o`,
+    `bash -c "trap ': \\\${!A:=ext}' DEBUG; git fetch o"`,
+    `source /dev/stdin <<< 'declare -n R=$A; R=ext'; git fetch o`,
+    `. /dev/stdin <<< 'declare -n R=$A; R=ext'; git fetch o`,
+    `mapfile -C 'declare -n R=$A; :' -c 1 a < f; git fetch o`,
+  ])('denies %j', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it('denies a trap action it cannot read', () => {
+    expect(hookReason('trap "$T" DEBUG; git fetch o')).toBe(REASONS.hiddenScript)
+  })
+
+  it('checks a trap action as a script', () => {
+    expect(hookReason(`trap 'git push --no-verify' EXIT`)).toBe(REASONS.noVerify)
+  })
+
+  it('denies a nameref in a child shell on a git line, which cannot pass it back', () => {
+    expect(hookReason(`bash -c 'declare -n R=$A; R=x'; git fetch o`)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    `trap 'rm -f "$tmp"' EXIT; git fetch o`,
+    'trap - EXIT; git status',
+    'trap -p; git status',
+    `trap 'declare -n R=$A; R=x' DEBUG; ls`,
+    'eval "$(ssh-agent -s)"; npm test',
+    'mapfile -t a < f; git status',
+  ])('allows %j', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
 describe('git clone of a repository the guard cannot read (TP-2444)', () => {
   it.each([
     'git clone "$U"',

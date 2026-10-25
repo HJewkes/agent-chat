@@ -134,6 +134,10 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       : await bindHttp(core, options.port ?? defaultPort(), ensureToken(), undefined, undefined, {
           slots: () => socketServer.slotUsage(),
           ...(lifecycle === undefined ? {} : { lifecycle }),
+          verdicts: {
+            permission: (msgId, behavior, channel) =>
+              socketServer.permissionVerdict(msgId, behavior, channel),
+          },
         })
   recordBrokerState(http?.port ?? null)
 
@@ -432,7 +436,7 @@ export async function bindHttp(
   token: string | null = null,
   attempts: number = BIND_RETRY_ATTEMPTS,
   retryDelayMs: number = BIND_RETRY_DELAY_MS,
-  readings: Pick<HttpAppOptions, 'slots' | 'lifecycle'> = {},
+  readings: Pick<HttpAppOptions, 'slots' | 'lifecycle' | 'verdicts'> = {},
 ): Promise<{ server: ServerType; port: number } | null> {
   let bound: number | null = null
   const app = buildHttpApp({ core, port: () => bound, token, dashboard: { token: () => token }, ...readings })
