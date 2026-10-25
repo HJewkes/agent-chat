@@ -290,6 +290,8 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // posture inherited from the environment could never be answered by a human.
     // Visible surfaces deliberately emit no flag at all and inherit normally.
     args.push('--permission-mode', 'default')
+    // CC-1598: cwd, memory path and git status move to the first turn, so same-profile workers share a cached prefix.
+    if (roleOf(profile) === 'worker') args.push('--exclude-dynamic-system-prompt-sections')
   } else {
     // `claude [options] [prompt]` — the positional prompt is what makes an
     // interactive agent actually START. Without it the pane opened, Claude Code
