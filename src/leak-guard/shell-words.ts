@@ -47,6 +47,8 @@ export interface SimpleCommand {
   backslash: boolean
   /** The function name a `name ()` definition gives the body after it. */
   defines?: string | undefined
+  /** Its one word is the path a `<(…)` leaves, cut from the command it is an operand of, so it runs nothing. */
+  substitutionPath?: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
   before: string
   after: string
@@ -713,6 +715,8 @@ class ShellLexer {
     const op = OPERATOR_TOKENS.find(token => ahead.startsWith(token)) ?? c
     // An `esac` touching the operator is taken first, so it cannot clear the pattern the operator makes due.
     this.endWord()
+    // A `|` between a case's patterns joins them and runs no pipe, so later commands read no pipe's output.
+    if (op === '|' && this.patternNext) return void (this.accept(op), this.advance(1))
     // zsh's `;|` ends a pattern's commands; bash reads `;` and `|`, so the two shells disagree.
     if (op === ';|' && this.closable()) this.budget.expansion = 'unreadable'
     if (CASE_ENDS.has(op) && this.cases.length > 0) this.patternNext = true
@@ -743,6 +747,7 @@ class ShellLexer {
     const opensCommand = this.word === null && !fed
     const kind = this.parenKind(opensCommand)
     if (fed) this.pending = null
+    if (fed && this.cur.marked.length === 0) this.cur.substitutionPath = true
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
     this.endWord()
     const defined = this.cur.marked.length - 1

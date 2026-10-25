@@ -276,6 +276,9 @@ function readOptions(grammar: Grammar, words: readonly string[]): Options {
 /** Whether `name` has a grammar observed in a real shell; any other shell's options are read by guess. */
 export const observedShell = (name: string): boolean => Object.hasOwn(GRAMMARS, name)
 
+/** A name no grammar has: the call reads with the unobserved grammar, and every word may be its script. */
+export const UNOBSERVED_SHELL = ''
+
 /**
  * `name` is the shell's base name, `marked` its marked words after the name, and `assigns` the
  * `NAME=value` words the command runs with.
