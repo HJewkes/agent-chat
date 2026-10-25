@@ -64,6 +64,8 @@ const BYPASSES: [string, string][] = [
   [`linux32 -R ${P}`, 'setarch'],
   [`echo '${P}' | linux64`, 'setarch'],
   [`setarch x86_64 ${P}`, 'x86_64'],
+  // An arch with no setarch name of its own, so the guard must skip it to find the command.
+  [`setarch i686 -R ${P}`, 'x86_64'],
   [`x86_64 -R ${P}`, 'x86_64'],
   [`i386 ${P}`, 'x86_64'],
   [`echo '${P}' | setarch x86_64 bash`, 'x86_64'],
