@@ -15,6 +15,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/leak-git-shim-allowlist.test.ts',
   'src/__tests__/leak-shell-args.test.ts',
   'src/__tests__/leak-git-shim-protocol.test.ts',
+  'src/__tests__/leak-git-shim-protocol-config.test.ts',
   'src/__tests__/leak-git-config-differential.test.ts',
   'src/__tests__/gh-write.test.ts',
   'src/__tests__/gh-write-scan.test.ts',
