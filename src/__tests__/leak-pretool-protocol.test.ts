@@ -530,6 +530,17 @@ describe('assignments in redirects, heredocs and eval bodies (TP-2499 review)', 
     `eval 'eval -- "declare -n R=\\$A"'; R=ext; git fetch o`,
     '> ${GIT_PAGER:=x}; git log',
     '< ${!A:=x}; git fetch o',
+    `A=$(printf GIT_ALLOW_%s PROTOCOL); trap 'git fetch o' EXIT; > \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; > \${!A:=ext}`,
+    'git fetch o; > ${!A:=ext}',
+    `trap 'git fetch o' EXIT && > \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; 2> \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; 3<<<\${!A:=ext}`,
+    `trap 'git fetch o' EXIT; > \${GIT_SSH_COMMAND:=x}`,
+    `trap 'git fetch o' EXIT\n> \${!A:=ext}`,
+    `trap 'git fetch o' EXIT; 3<<E\n\${!A:=ext}\nE`,
+    '3<<E\n${!A:=ext}\nE\ngit fetch o',
+    `trap 'git fetch o' EXIT; cat <<E; > \${!A:=ext}\nE`,
   ])('denies %j', command => {
     expect(hookReason(command)).toBe(REASONS.programEnv)
   })
@@ -543,6 +554,8 @@ describe('assignments in redirects, heredocs and eval bodies (TP-2499 review)', 
     `eval 'x=1'; git status`,
     `eval -- 'x=1'; git status`,
     '> out.txt; git status',
+    'rm -f x 2>/dev/null; git status',
+    `cat <<'E'\n\${!A:=ext}\nE\ngit fetch o`,
   ])('allows %j', command => {
     expect(hookReason(command)).toBeUndefined()
   })

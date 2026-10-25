@@ -33,7 +33,8 @@ export interface SimpleCommand {
   writes: string[]
   /**
    * Marked text the shell expands beside the words, where an assigning expansion sticks for a builtin:
-   * every redirect target, here-string and unquoted heredoc body (TP-2499).
+   * every redirect target, here-string and unquoted heredoc body, including those of a redirect-only
+   * command, which is kept as `)` wherever it stands (TP-2499).
    */
   expanded: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
@@ -339,8 +340,6 @@ class ShellLexer {
   private pending: Pending | null = null
   /** Output redirects of a command with no words, which the next command inherits. */
   private carried: string[] = []
-  /** The `expanded` text of a command with no words that is not kept; bash keeps its assignments, so the next command inherits it. */
-  private carriedExpanded: string[] = []
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
@@ -1233,15 +1232,18 @@ class ShellLexer {
     this.caseOpening = undefined
     const bare = this.cur.words.length === 0
     if (bare) appendAll(this.carried, this.cur.writes)
-    if (!bare || this.readsStdin(this.cur)) this.keep(this.cur, bare)
-    else appendAll(this.carriedExpanded, this.cur.expanded)
+    if (!bare || this.readsStdin(this.cur) || this.expandsBeside(this.cur)) this.keep(this.cur, bare)
     this.cur = this.newCommand()
+  }
+
+  /** Text the shell expands beside the words: a redirect target, here-string, or an unquoted heredoc on any descriptor, whose body comes later. */
+  private expandsBeside(cmd: SimpleCommand): boolean {
+    return cmd.expanded.length > 0 || this.heredocs.some(doc => doc.target === cmd && !doc.quoted)
   }
 
   private keep(cmd: SimpleCommand, bare: boolean): void {
     if (bare) Object.assign(cmd, { words: [')'], marked: [')'], writes: [] })
     else cmd.writes = [...this.carried.splice(0), ...cmd.writes]
-    cmd.expanded = [...this.carriedExpanded.splice(0), ...cmd.expanded]
     cmd.before = this.joiner
     this.joiner = ''
     this.last = cmd

@@ -956,8 +956,10 @@ name, or an expanded operand before its format; and a name in the `declare`, `ty
 `aAfFgilprtux`, so any `-n` (alone or in a cluster such as `-gn`) or other option fails closed,
 since a nameref may point at any variable; so does any `${!X=}` or `${!X:=}`, which assigns the
 variable `X` names (TP-2499). These rules also read a command's redirect targets, here-strings
-and unquoted heredoc bodies, including those of a redirect-only command, whose assignments bash
-keeps, where a program var's `${NAME:=x}` denies too. Such a name may be any program var or
+and unquoted heredoc bodies on any descriptor, where a program var's `${NAME:=x}` denies too. The
+lexer drops none of that text: it keeps a redirect-only command that holds any, whose assignments
+bash keeps, as a `)` command wherever it stands, at the end of the line and before a heredoc body
+included. Such a name may be any program var or
 `GIT_ALLOW_PROTOCOL`, so on a line that may reach git it denies as `programEnv`, after the line's
 other checks so a more specific reason wins. Two rules carry this into the scripts a line runs:
 
@@ -979,7 +981,7 @@ Not read by these rules, each a follow-up: assignments in arithmetic, `let`, `((
 `declare -i` (TP-2507); zsh `print -v`, `set -A` and `vared` (TP-4224); `PS4` and `${x@P}`
 prompt expansion under `set -x` (TP-4227); zsh's `-` precommand modifier as a wrapper (TP-4225);
 ksh's `nameref` alias and zsh's `typeset -U` (TP-4226); a command word that is only an expansion
-counting as git (`declare -n R=$A; R=ext; $G fetch o`); and the contents of a file that `source` or `.` reads,
+counting as git (TP-4231; the `declare -n` and `${!A:=}` rows are TP-4234); and the contents of a file that `source` or `.` reads,
 unread by design. Words that `xargs` adds are read as unreadable (CC-1117, above); words that
 `find -exec` adds are not read here.
 The guard skips
