@@ -136,7 +136,7 @@ describe('section renames and unreadable verbs at the hook entry point (TP-2371 
   })
 
   it.each([
-    'git config foo.url "$U"; git config --rename-section foo remote.x',
+    'git config user.url "$U"; git config --rename-section user remote.x',
     'git config rename-section foo url.x',
     'git config --rename-section foo submodule.s',
     'git config --rename-section foo REMOTE.origin',
