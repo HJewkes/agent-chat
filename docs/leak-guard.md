@@ -442,7 +442,7 @@ Alpine's `/bin/ash`, is a checked shell like `sh` (CC-1342).
 | a command word that is an expansion, followed by the words of one of those gh commands                                                                                                                                                                                                                                                    | `$G pr create` may run gh unscanned                         |
 | a command word that is an expansion, followed by a command that any row above denies                                                                                                                                                                                                                                                      | `$E gh pr create` runs gh when `E` is empty                 |
 | a command word that is an expansion, then an expansion where git's subcommand sits, or a command word that may split (`${=X}`, unquoted `$X`), with a word anywhere after, even past a `--`, that is or may expand to `--no-verify` or a `core.hooksPath`, `alias.*`, `include.path` or `includeIf.*.path` key (`core.hooks$K`) (CC-1322) | `$X $Y --no-verify` is a push that skips the hook           |
-| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`; a `trap` action or `mapfile -C` callback it cannot read, on a line that may reach either                                                                                                                                                          | the text may be a push or a gh command                      |
+| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh` or runs a command word that is an expansion; a `trap` action, `mapfile -C` callback or `source` of stdin it cannot read, on a line that may reach either or runs such a command word (TP-4245)                                                     | the text may be a push or a gh command                      |
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                                                                                                                                                                                                                                      | `git rebase -x` runs a shell command unseen                 |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)                                                                                                                                                                                                                          | git passes it on to every git that command runs             |
 | `git -c` on a key whose value git runs as a program, when the value is a line a row above denies (below)                                                                                                                                                                                                                                  | `core.pager="git push --no-verify"` runs on `git log`       |
@@ -1105,8 +1105,9 @@ after it (TP-4231).
 
 Unchanged, and not findings against this rule:
 
-- eval or source of text the guard cannot read, with no visible hidden name (`eval "$A=ext"; $G …`,
-  `eval "$(cat f)"`, `. /dev/stdin <<< "$S"`). This is redesign-1 follow-up 1.
+- eval or source of text the guard cannot read, with no visible hidden name and no command word that
+  is an expansion (`eval "$(cat f)"`, `. /dev/stdin <<< "$S"`). With one (`eval "$A=ext"; $G …`) it
+  denies, since the script may set that word to git (TP-4245).
 - SEARCH_UNREAD (`PATH=$X make`, `hash -p "$X" make`).
 - Arithmetic or a subscript reading an env value with no hidden name on the line (`test -v "$C"`,
   `echo $((x))`). This is CC-1249's `arithSubscriptNames`.
@@ -1131,7 +1132,9 @@ Not covered, gap 1: a prefix env on a command the guard cannot follow into, such
 script, the same script-file gap as below. Also not covered: a program key written to repository or
 global config with `git config` in one call and used by a later git in another, and text read from
 a file at run time by `bash -c "$(cat f)"` or `eval "$(cat f)"`. The guard reads a `sh -c` string
-as written, and `eval` of text it cannot read is denied only when the line names `git` or `gh`. A
+as written, and `eval` of text it cannot read is denied only when the line names `git` or `gh` or
+runs a command word that is an expansion. A command word inside a `sh -c` string on such a line
+counts only once the guard reads that string, after the eval. A
 program env var whose value is already in the agent's environment, set by a shell startup file or
 an earlier tool call rather than on this command line, is not read, the same gap as any such
 variable.
