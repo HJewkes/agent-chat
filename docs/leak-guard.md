@@ -357,8 +357,13 @@ properties (`MemoryMax`, `CPUQuota`, `Nice` and the like), since others such as 
 without `-u` it reads as `su`. `machinectl shell [host] <command>` runs the words after the machine
 name; its other verbs run no command. `su -c '<line>'`, `doas -s`, `run0 -i` and `--via-shell`, and a
 bare `su`, `run0` or `pkexec` run a shell, so the guard checks that shell's script or its stdin, with
-the `$SHELL` rule below; xargs input to one denies. `sg`, `gosu`, `su-exec`, `chpst`, `setuidgid`,
-`s6-setuidgid` and `capsh --user` are not covered.
+the `$SHELL` rule below; xargs input to one denies. `sg <group> [-c] <command>` runs its one command
+in a shell, so the guard checks it as a script; a second candidate command (util-linux and shadow
+pick differently) or any word the shell expands denies. `newgrp`, the binary `sg` links to, is read
+the same way; with no command it runs a shell on stdin, which the guard checks. `capsh` runs nothing unless `--` or `-+`
+hands the words after it to bash or a `--shell=` shell, which the guard checks; a `--shell=` that is
+not a shell, an option capsh does not list, or an expanded word denies (CC-1602). `gosu`, `su-exec`,
+`chpst`, `setuidgid` and `s6-setuidgid` are not covered.
 
 Behind any of these wrappers, a `git push` (any flags, through `sh -c`, `eval`, xargs, env or
 `find -exec`) and any `gh` or `agent-chat gh-write`, reads included, deny outright. sudo's
