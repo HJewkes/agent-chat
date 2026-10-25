@@ -3293,13 +3293,14 @@ const workerConfigPaths = (env: NodeJS.ProcessEnv): string[] => {
     : fragments
 }
 
-const LAUNCHER_KEY_FILES = ['launcher.key', 'launcher-keys']
+const OWNER_ONLY_FILES = ['launcher.key', 'launcher-keys', 'seat-policy.json']
 
-// The per-host hello secrets (CC-1063) are owner-provisioned only, so every role is denied, coordinators included.
-const launcherKeyPaths = (env: NodeJS.ProcessEnv): string[] => {
-  const fragments = LAUNCHER_KEY_FILES.map(file => `.agent-chat/${file}`)
+// The per-host hello secrets (CC-1063) and the seat spawn policy (CC-1580) are owner-provisioned
+// only, so every role is denied, coordinators included.
+const ownerOnlyPaths = (env: NodeJS.ProcessEnv): string[] => {
+  const fragments = OWNER_ONLY_FILES.map(file => `.agent-chat/${file}`)
   const relocated = env.AGENT_CHAT_HOME
-  return relocated ? [...fragments, ...LAUNCHER_KEY_FILES.map(file => path.join(relocated, file))] : fragments
+  return relocated ? [...fragments, ...OWNER_ONLY_FILES.map(file => path.join(relocated, file))] : fragments
 }
 
 export function guardContext(
@@ -3321,7 +3322,7 @@ export function guardContext(
       '.agent-chat/git-hooks',
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
-      ...launcherKeyPaths(env),
+      ...ownerOnlyPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),
