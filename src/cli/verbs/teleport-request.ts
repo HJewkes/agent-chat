@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
-import { resolveMachines } from '../../config.js'
+import { knownMachineAliases } from '../../agents/machine-registry.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { defineVerb, Report } from '../command.js'
 
@@ -57,7 +57,7 @@ export const teleportRequestVerb = defineVerb({
     },
   },
   async run({ name, surface, to }, ctx) {
-    const blocked = to === undefined ? undefined : machineBlocker(to, resolveMachines())
+    const blocked = to === undefined ? undefined : machineBlocker(to, knownMachineAliases())
     if (blocked !== undefined) return { ok: false, lines: [], errors: [`Not requested: ${blocked}`] }
     const res = (await ctx.withBroker(b =>
       b.request({ t: 'human_send', to: name, text: teleportRequestText(surface, to) }, 'send_result'),

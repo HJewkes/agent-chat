@@ -1,5 +1,5 @@
 import { brokerHost, isLocalHost } from '../broker/host-guard.js'
-import { resolveMachines } from '../config.js'
+import { knownMachineAliases } from './machine-registry.js'
 import {
   remotePathBlocker,
   resolveDestination,
@@ -404,7 +404,7 @@ function routeFor(
     callerHost: subject.host as string,
     brokerHost: brokerHost(),
     launchers,
-    aliases: resolveMachines(),
+    aliases: knownMachineAliases(),
   })
   if (!resolved.ok) return resolved
   const { site, host } = resolved.destination

@@ -57,7 +57,8 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
-import { resolveDeciderAgentId, resolveHostProofMode, resolveMachines } from '../config.js'
+import { knownMachineAliases } from '../agents/machine-registry.js'
+import { resolveDeciderAgentId, resolveHostProofMode } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
@@ -1028,7 +1029,7 @@ export class SocketServer {
   private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
     const nonce = this.hosts.takeNonce(conn)
     if (this.refuseSessionLauncher(conn)) return
-    const machines = Object.values(resolveMachines())
+    const machines = Object.values(knownMachineAliases())
     const hello = launcherHello(msg, machines)
     if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
     const refusal = this.enforcedProofRefusal(hello.host, msg.proof, nonce)
