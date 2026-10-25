@@ -1565,10 +1565,16 @@ Not covered, by design or by cost:
   `diff <(git show a:f) <(git show b:f)` and a process substitution running no shell stay
   allowed.
 
-  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 and
-  CC-1412 track them, with a CC-1408 follow-up for the shells outside the list:
-  - a shell inside a command substitution that the pipe feeds (CC-1412): `echo P | $( bash )`,
-    the backtick form, and `x=$( bash )`;
+  A shell in a command substitution reads the stdin of the command it sits in (CC-1412):
+  `echo P | $(bash)`, the backtick form, `echo P | $( (bash) )`, `echo P | $( $(bash) )` and
+  `echo P | x=$(bash)`; real bash and dash run the push, while zsh runs a pipeline's last stage
+  in the shell itself. When that command has a pipe, heredoc, here-string or redirect of its own,
+  the substitution reads text the guard cannot read. This fails closed for a heredoc and a
+  redirect too (`$(bash) <<< TEXT`), though shells open those only after the substitution ran.
+  `x=$( (bash) ); git status` reads the line's own stdin and stays allowed.
+
+  Not covered: a shell the feed reaches indirectly. Each is still allowed, and CC-1411 tracks
+  them, with a CC-1408 follow-up for the shells outside the list:
   - a command word the guard cannot resolve (CC-1411): one filled by `read`, which bash
     word-splits and runs (`read -r l <<< TEXT; $l`, `while read -r l; do $l; done < file`), a
     variable such as `echo P | $b` or `echo P | ${SHELL:-bash}`, or a substitution such as
