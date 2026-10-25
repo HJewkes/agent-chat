@@ -30,7 +30,7 @@ import {
   PROGRAM_ENV,
   PROTOCOL_ENV,
 } from './git-programs.js'
-import { expandsUnknown, gitScripts, type ScriptSpan } from './git-scripts.js'
+import { expandsShell, gitScripts, type ScriptSpan } from './git-scripts.js'
 import {
   findClauses,
   parallelCall,
@@ -242,6 +242,7 @@ export const REASONS = {
   ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
   ghConfigHome: `leak-guard: a gh call that sets GH_CONFIG_DIR, XDG_CONFIG_HOME or HOME may read a gh config that sends its requests through a socket of the config's choosing (http_unix_socket). Drop the setting. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
+  shellExpansion: `leak-guard: git hands this text to a shell, and it expands a variable, $(...) or backquote whose value the guard cannot see, so it may run a program or add --no-verify. Write the value out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. ${HEREDOC_POST} Or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
@@ -1315,12 +1316,15 @@ function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth:
         ? run.tied
           ? REASONS.nestedScript
           : undefined
-        : expandsUnknown(script, span.vars)
-          ? REASONS.nestedScript
-          : checkAt(script, ctx, inner, depth + 1)
+        : checkShellText(script, ctx, inner, depth)
     if (reason !== undefined) return reason
   }
   return undefined
+}
+
+/** Text git runs through a shell: the guard cannot see that shell's variables, so any expansion denies (TP-2496). */
+function checkShellText(script: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  return expandsShell(script) ? REASONS.shellExpansion : checkAt(script, ctx, scope, depth + 1)
 }
 
 /** A git config file path, or `git config` on an alias or include key, anywhere on the line (TP-607). */

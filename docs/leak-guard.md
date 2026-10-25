@@ -811,8 +811,10 @@ It reads the command from:
   `archive`, and `--to-cmd`, `--cc-cmd`, `--header-cmd` and `--sendmail-cmd` on `send-email`.
 
 A git alias that expands to one of these is checked the same way. The command runs in another
-directory, and for `submodule foreach` in each submodule with variables git sets, so the guard
-trusts neither the directory nor any variable inside it. git passes its `-c` and `--config-env`
+directory, and for `submodule foreach` in each submodule with variables git sets. Any `$`
+expansion or backquote in the command is a deny, `$sha1` and the other variables foreach sets
+included: their values come from `.gitmodules`, commit data or the script itself, which the guard
+cannot see. git passes its `-c` and `--config-env`
 options on to every git the command runs, and the command may write an include file before git
 reads it. So an `include.path` or `includeIf.<cond>.path` on the outer git is a deny, whatever the
 file holds, and so is a `-c` or `--config-env` word the guard cannot read. A command word the guard

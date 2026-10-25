@@ -11,11 +11,6 @@ export interface ScriptSpan {
   offset: number
 }
 
-/** A script git hands to a shell; any expansion in it but `vars`, which git sets, is unreadable (TP-2496). */
-export interface GitScript extends ScriptSpan {
-  vars: readonly string[]
-}
-
 export interface ScriptOptions {
   /** Long options whose value is a script; git takes any unambiguous prefix of them. */
   long: readonly string[]
@@ -81,57 +76,28 @@ export function optionSpans(words: readonly string[], at: number, opts: ScriptOp
 /** `git clone -c`/`--config <key>=<value>`, beside clone's other short options that take a value. */
 export const CLONE_CONFIG: ScriptOptions = { long: ['--config'], short: 'c', shortValue: 'obuj' }
 
-/**
- * The variables `git submodule foreach` sets whose value git fixes: `$sha1` is always an object id.
- * `$name`, `$sm_path`, `$displaypath` and `$toplevel` come from `.gitmodules` and paths the agent
- * writes, so they are as unreadable as any other variable.
- */
-const FOREACH_VARS = ['sha1']
-
 /** The command after `foreach` or `run`, past the options git reads before it. */
-function trailingSpan(words: readonly string[], verbAt: number, vars: readonly string[]): GitScript[] {
+function trailingSpan(words: readonly string[], verbAt: number): ScriptSpan[] {
   let i = verbAt + 1
   while (i < words.length && (words[i] as string).startsWith('-')) i++
-  return i < words.length ? [{ from: i, to: words.length, offset: 0, vars }] : []
+  return i < words.length ? [{ from: i, to: words.length, offset: 0 }] : []
 }
 
 /** `git submodule [--quiet] [--cached] foreach [--recursive] <command>`. */
-function submoduleSpans(words: readonly string[], at: number): GitScript[] {
+function submoduleSpans(words: readonly string[], at: number): ScriptSpan[] {
   let i = at + 1
   while (i < words.length && (words[i] as string).startsWith('-')) i++
-  return words[i] === 'foreach' ? trailingSpan(words, i, FOREACH_VARS) : []
+  return words[i] === 'foreach' ? trailingSpan(words, i) : []
 }
 
-/** The scripts of `git <words>`, whose subcommand is at index `at`. */
-export function gitScripts(words: readonly string[], at: number): GitScript[] {
+/** The script spans of `git <words>`, whose subcommand is at index `at`. */
+export function gitScripts(words: readonly string[], at: number): ScriptSpan[] {
   const sub = words[at]
   if (sub === 'submodule') return submoduleSpans(words, at)
-  if (sub === 'bisect') return words[at + 1] === 'run' ? trailingSpan(words, at + 1, []) : []
+  if (sub === 'bisect') return words[at + 1] === 'run' ? trailingSpan(words, at + 1) : []
   const opts = sub === undefined ? undefined : OPTION_SCRIPTS.get(sub)
-  if (opts === undefined) return []
-  return optionSpans(words, at, opts).map(span => ({ ...span, vars: [] }))
+  return opts === undefined ? [] : optionSpans(words, at, opts)
 }
 
-/** A `$` expansion, with the name of a plain `$name` or `${name}`, or a backquote. */
-const EXPANSION = /\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))?|`/g
-
-/** Whether the script names `name` other than to expand it, as `sha1=x`, `read sha1` or `for sha1 in` do. */
-const rebinds = (script: string, name: string): boolean =>
-  new RegExp(`(?<![\\w$\\{])${name}(?!\\w)`).test(script)
-
-/**
- * Whether the script expands anything but the variables git sets for it. The guard cannot know
- * what the shell git starts finds there, so a program or `--no-verify` could hide in it. A
- * variable git sets counts only when no name character follows it (`${sha1}x` is a near miss)
- * and the script never sets it itself.
- */
-export function expandsUnknown(script: string, vars: readonly string[]): boolean {
-  if (vars.some(name => rebinds(script, name))) return true
-  for (const match of script.matchAll(EXPANSION)) {
-    if (match[0] === '$' && match.index + 1 === script.length) continue
-    const name = match[1] ?? match[2]
-    const next = script[match.index + match[0].length] ?? ''
-    if (name === undefined || !vars.includes(name) || /\w/.test(next)) return true
-  }
-  return false
-}
+/** Whether a script git hands to a shell expands anything: a `$` (but a trailing literal one) or a backquote. */
+export const expandsShell = (script: string): boolean => /`|\$(?!$)/.test(script)

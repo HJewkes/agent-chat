@@ -2035,7 +2035,7 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git bisect run sh -c '$S'",
     "git bisect run '$S'",
   ])('denies a shell expansion in the command (TP-2496): %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
   })
 
   it.each([
@@ -2045,7 +2045,7 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git submodule foreach '$names'",
     "git submodule foreach '${name}x'",
   ])('denies a near-miss of a variable foreach sets (TP-2496): %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
   })
 
   it.each([
@@ -2056,23 +2056,36 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git submodule foreach 'echo $toplevel $displaypath'",
     'git submodule foreach \'echo "${name}: $sm_path"\'',
   ])('denies a foreach variable read from files the agent writes (TP-2496): %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
   })
 
   it.each([
     "git submodule foreach 'sha1=git; $sha1 push --no-verify'",
     "git submodule foreach 'read sha1; $sha1 push'",
     "git submodule foreach 'for sha1 in git; do $sha1 push; done'",
-  ])('denies a foreach variable the script sets itself (TP-2496): %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+  ])('still denies a foreach variable the script sets itself (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
   })
 
-  it.each(["git submodule foreach 'echo $sha1'", "git submodule foreach 'git log -1 ${sha1}'"])(
-    'allows the object id foreach sets (TP-2496): %s',
-    command => {
-      expect(checkCommand(command, ctx())).toBeUndefined()
-    },
-  )
+  it.each([
+    "git submodule foreach 'echo $sha1'",
+    "git submodule foreach 'git log -1 ${sha1}'",
+    "git submodule foreach 'git push $sha1'",
+  ])('denies the object id foreach sets, which the script may rebind (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
+
+  it.each([
+    "git submodule foreach '. ./f; $sha1 --no-verify'",
+    'git submodule foreach \'read s""ha1 < f; $sha1 --no-verify\'',
+    "git submodule foreach 'read s\\ha1 < f; git push $sha1'",
+    'git submodule foreach \'export s""ha1="git push"; $sha1 --no-verify\'',
+    'git submodule foreach \'export s\\ha1="git push"; $sha1 --no-verify\'',
+    'git submodule foreach \'export s""ha1=--no-verify; git push $sha1\'',
+    "git submodule foreach 'export s\\ha1=--no-verify; git push origin $sha1'",
+  ])('denies a $sha1 the script rebinds through a split name or a file (TP-2496): %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
+  })
 
   it.each([
     "git filter-branch --msg-filter 'cat; echo $GIT_COMMIT' HEAD",
@@ -2080,7 +2093,7 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git filter-branch --msg-filter '$GIT_AUTHOR_NAME; cat' HEAD",
     "git filter-branch --env-filter 'GIT_COMMIT=git' --tree-filter '$GIT_COMMIT push --no-verify' HEAD",
   ])('denies a filter-branch variable that holds commit data (TP-2496): %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
   })
 
   it.each([
@@ -2109,7 +2122,7 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     "git archive --exec '$X' --remote=origin HEAD",
     "git send-email --to-cmd '$X' x.patch",
   ])('denies a shell expansion in every script option (TP-2496): %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+    expect(checkCommand(command, ctx())).toBe(REASONS.shellExpansion)
   })
 
   it('denies a plain alias that expands to a rebase exec', () => {
