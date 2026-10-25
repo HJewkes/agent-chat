@@ -15,7 +15,16 @@ import {
   type Command,
 } from '@titan-design/registry'
 import { createInterface } from 'node:readline/promises'
+import type { AccountUsage } from '../agents/account-budget.js'
+import type { RotationConfig } from '../agents/account-rotation.js'
 import { withBroker } from './client.js'
+
+/** CC-1592 c: the account usage a verb may pick from, injected so tests never read a real login. */
+export interface AccountPool {
+  readings(): AccountUsage[]
+  config(): RotationConfig
+  identify?(configDir: string): string | undefined
+}
 
 /** The person at the keyboard, if there is one: stdin a TTY, and a way to ask them a line. */
 export interface Terminal {
@@ -28,6 +37,8 @@ export interface VerbContext extends BaseContext {
   withBroker: typeof withBroker
   /** Absent means no terminal, so a verb that needs a typed confirm refuses. */
   terminal?: Terminal
+  /** Absent means the machine's own accounts. */
+  accountPool?: AccountPool
 }
 
 export const stdinTerminal = (): Terminal => ({

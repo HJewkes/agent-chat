@@ -1297,6 +1297,12 @@ export type ClientMessage =
    */
   | { t: 'account_move'; name: string; to: string; force?: boolean }
   /**
+   * CC-1592: `account_move`'s refusals with nothing ended, for a dry run. Its own frame, not a flag
+   * on `account_move`, so a broker that predates it drops it unanswered instead of moving the
+   * session. Human-only like `account_move`; answered with `teleport_result`.
+   */
+  | { t: 'account_move_check'; name: string; to: string; force?: boolean }
+  /**
    * CC-1545: `agent-chat codex run` reached its `--wake-cap`. Names the Codex process by pid
    * and machine, since a session without `--name` has a name only the broker knows. The
    * broker refuses it from a REGISTERED connection; answered with `send_result`.
@@ -1356,6 +1362,12 @@ export type ClientMessage =
    * for a heartbeat check, the seat; it carries no path, flag or env, and the broker reads nothing else.
    */
   | { t: 'job_kick'; job: JobKickName; seat?: string }
+  /**
+   * CC-1138: the first frame on every connection from a process that carries `AGENT_CHAT_AGENT_ID`,
+   * so the broker can tell an agent's shell from the human's. Self-declared, and never answered:
+   * a broker that predates it ignores it, so no client waits on it.
+   */
+  | { t: 'hello'; agentId: string }
 
 /** Broker -> session. */
 /** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */

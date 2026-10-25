@@ -30,10 +30,11 @@ frames by caller.
 This inventory comes from the `switch (msg.t)` dispatcher in `handleMessage`
 (`src/broker/socket.ts`), read with `git show origin/main:src/broker/socket.ts` at
 origin/main `d173e6c` (2026-10-12), and recounted at origin/main `907fed5` (2026-10-25).
-It lists all 56 cases there, and each case appears in exactly one class: 8 refused, 6
-requester mapped, 3 session bound and 39 out of scope. The recount added `account_move`
+It lists all 58 cases there, and each case appears in exactly one class: 9 refused, 6
+requester mapped, 3 session bound and 40 out of scope. The recount added `account_move`
 (Class 1), `codex_wake_capped` (Class 3), and `message_by_id` and `host_challenge`
-(Class 4).
+(Class 4). CC-1592 then added `account_move_check` (Class 1), and CC-1138's slice C
+added `hello` (Class 4).
 
 The same classes live in code as `FRAME_CLASSES` (`src/broker/frame-classes.ts`), typed
 over the whole `ClientMessage` union. `src/__tests__/frame-classes.test.ts` fails when a
@@ -54,9 +55,11 @@ These frames are guarded by `isHuman`, and they mean "the human decided".
 | `teleport_abort`     | `handleTeleportAbort`                                           |
 | `service_ask`        | `handleServiceAsk`                                              |
 | `account_move`       | `handleAccountMove`                                             |
+| `account_move_check` | `handleAccountMove`                                             |
 
 `account_move` moves a session to another account, which spends the human's quota on
 that account. Its handler already refuses a registered connection as the human's call.
+`account_move_check` (CC-1592) is its dry run, gated the same way in the same handler.
 
 `service_ask` is here because it asks the human under a service label that nothing
 vouches for. Profiles already deny agents `agent-chat ask` (CC-169, landed), and leaving
@@ -144,6 +147,7 @@ connection, checks something other than "unregistered", or only reads.
 | `host_probe_result`, `host_launch_result`                                                                                    | `HostDirectory.answer` settles only a request the broker sent on that same connection                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `spawn_launched`, `spawn_placed`                                                                                             | `remoteReportRefusal`: only the connection the broker handed that agent's remote launch may report on it                                                                                                                                                                                                                                                                                                                                                                                       |
 | `job_kick`                                                                                                                   | `handleJobKick`: a closed job set (`burndown_tick`, `seats_watchdog`, `seats_heartbeat_check`); the request is rebuilt from `job` and `seat` alone; a seat must be at most 64 characters and have a seat file in the broker's own autonomy root; single flight per job and seat. The broker launches the job detached with `jobEnv` of its own environment plus the user bus, never the caller's. It runs only what the timers run, so it is accepted from a declared connection too (CC-1151) |
+| `hello`                                                                                                                      | the declaration itself: it records the connection's agent id, and the first one stands. It grants nothing and is never answered                                                                                                                                                                                                                                                                                                                                                                |
 | `inbox`                                                                                                                      | reads the caller's own inbox; empty for an unnamed connection                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `list`, `queue`, `history`, `inbox_since`, `message_by_id`, `activity`, `reported`, `answers_since`, `agents`, `hosts`       | read-only. `inbox_since`, `message_by_id` and `answers_since` read any name's rows, which is a confidentiality question outside this gate                                                                                                                                                                                                                                                                                                                                                      |
 
