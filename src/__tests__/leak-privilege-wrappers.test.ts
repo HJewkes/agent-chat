@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropPrivilegeOptions, PRIVILEGE_OPTIONS } from '../leak-guard/privilege-wrappers.js'
+import { dropPrivilegeOptions, PRIVILEGE_OPTIONS, SUDO_NAMES } from '../leak-guard/privilege-wrappers.js'
 import { LIVE } from '../leak-guard/shell-words.js'
 
 /** Parses `words` as the wrapper in words[0] would, its options starting at words[1]. */
@@ -49,6 +49,48 @@ const SPEC = {
       ...['--on-timezone-change', '--on-clock-change'],
     ],
   },
+  'su-rs': {
+    value: [
+      ...['-c', '-g', '-G', '-s', '-w', '--command', '--shell', '--group', '--supp-group'],
+      '--whitelist-environment',
+    ],
+    flag: [
+      ...['-l', '-m', '-p', '-P', '-h', '-V', '--login', '--preserve-environment', '--pty', '--help'],
+      '--version',
+    ],
+  },
+  runuser: {
+    value: [
+      ...['-c', '-g', '-G', '-s', '-u', '-w', '--command', '--session-command', '--shell', '--group'],
+      ...['--supp-group', '--whitelist-environment', '--user'],
+    ],
+    flag: [
+      ...['-l', '-f', '-m', '-p', '-P', '-T', '-h', '-V', '--login', '--fast', '--preserve-environment'],
+      ...['--pty', '--no-pty', '--help', '--version'],
+    ],
+  },
+  setpriv: {
+    value: [
+      ...['--ambient-caps', '--inh-caps', '--bounding-set', '--ruid', '--euid', '--rgid', '--egid'],
+      ...['--reuid', '--regid', '--groups', '--securebits', '--pdeathsig', '--ptracer', '--selinux-label'],
+      ...['--apparmor-profile', '--landlock-access', '--landlock-rule', '--seccomp-filter'],
+    ],
+    flag: [
+      ...['-d', '-h', '-V', '--dump', '--nnp', '--no-new-privs', '--clear-groups', '--keep-groups'],
+      ...['--init-groups', '--reset-env', '--help', '--version'],
+    ],
+  },
+  machinectl: {
+    value: [
+      ...['-p', '-s', '-H', '-M', '-n', '-o', '-E', '--property', '--signal', '--kill-whom', '--host'],
+      ...['--machine', '--lines', '--output', '--setenv', '--uid', '--format', '--max-addresses', '--verify'],
+    ],
+    flag: [
+      ...['-h', '-a', '-l', '-q', '-V', '--help', '--version', '--no-pager', '--no-legend'],
+      ...['--no-ask-password', '--value', '--all', '--full', '--quiet', '--read-only', '--mkdir'],
+      ...['--force', '--now'],
+    ],
+  },
 } as const
 
 const SHELL_OPTIONS = {
@@ -57,6 +99,10 @@ const SHELL_OPTIONS = {
   pkexec: [],
   su: [],
   'systemd-run': ['-S', '--shell'],
+  'su-rs': [],
+  runuser: [],
+  setpriv: [],
+  machinectl: [],
 } as const
 
 type Wrapper = keyof typeof SPEC
@@ -70,12 +116,22 @@ const tableOptions = (name: Wrapper, kind: 'Value' | 'Flag' | 'Shell') => {
 /** A unit property must name an allow-listed property, so its decoy cannot look like an option. */
 const PROPERTY_OPTIONS = ['-p', '--property', '--path-property', '--socket-property', '--timer-property']
 
-/** Rows for every option the spec lists; su's -s takes a shell, so its decoy cannot look like an option. */
-const valueRows = WRAPPERS.flatMap(w =>
-  SPEC[w].value.filter(o => ![...PROPERTY_OPTIONS, '-s', '--shell'].includes(o)).map(o => [w, o] as const),
-)
+/** su, su-rs and runuser read their words alike: a `-c` value runs in a shell, wherever it sits. */
+const SU_LIKE: readonly Wrapper[] = ['su', 'su-rs', 'runuser']
+/** The words after the option under test, and what the wrapper runs from them. */
+const tail = (w: Wrapper) => (SU_LIKE.includes(w) ? ['-c', 'git push'] : ['git', 'push'])
+const expected = (w: Wrapper, at: number) => (SU_LIKE.includes(w) ? { shell: ['sh', '-c', 'git push'] } : { at })
+
+/**
+ * Rows for every option the spec lists. su's -s takes a shell, so its decoy cannot look like an option;
+ * runuser's -u clashes with -c; machinectl's -s is a signal and takes the decoy like any value.
+ */
+const decoyless = (w: Wrapper, o: string) =>
+  (w !== 'machinectl' && [...PROPERTY_OPTIONS, '-s', '--shell'].includes(o)) ||
+  (w === 'runuser' && ['-u', '--user'].includes(o))
+const valueRows = WRAPPERS.flatMap(w => SPEC[w].value.filter(o => !decoyless(w, o)).map(o => [w, o] as const))
 const flagRows = WRAPPERS.flatMap(w => SPEC[w].flag.map(o => [w, o] as const))
-const gluedRows = valueRows.filter(([w, o]) => w !== 'pkexec' && o !== '-s')
+const gluedRows = valueRows.filter(([w]) => w !== 'pkexec')
 
 describe('the option tables', () => {
   it.each(WRAPPERS)('%s lists exactly the spec options', w => {
@@ -87,16 +143,12 @@ describe('the option tables', () => {
 
 describe('a value option takes the next word even when it looks like an option', () => {
   it.each(valueRows)('%s %s -c', (w, o) => {
-    const expected = w === 'su' ? { shell: ['sh', '-c', 'git push'] } : { at: 3 }
-    const tail = w === 'su' ? ['-c', 'git push'] : ['git', 'push']
-    expect(run(w, o, '-c', ...tail)).toEqual(expected)
+    expect(run(w, o, '-c', ...tail(w))).toEqual(expected(w, 3))
   })
 
   it.each(gluedRows)('%s %s glued to -c', (w, o) => {
     const glued = isLong(o) ? `${o}=-c` : `${o}-c`
-    const expected = w === 'su' ? { shell: ['sh', '-c', 'git push'] } : { at: 2 }
-    const tail = w === 'su' ? ['-c', 'git push'] : ['git', 'push']
-    expect(run(w, glued, ...tail)).toEqual(expected)
+    expect(run(w, glued, ...tail(w))).toEqual(expected(w, 2))
   })
 
   it('su -s and --shell take the shell path', () => {
@@ -115,9 +167,7 @@ describe('a value option takes the next word even when it looks like an option',
 
 describe('a flag consumes nothing', () => {
   it.each(flagRows)('%s %s', (w, o) => {
-    const expected = w === 'su' ? { shell: ['sh', '-c', 'git push'] } : { at: 2 }
-    const tail = w === 'su' ? ['-c', 'git push'] : ['git', 'push']
-    expect(run(w, o, ...tail)).toEqual(expected)
+    expect(run(w, o, ...tail(w))).toEqual(expected(w, 2))
   })
 
   it('su - is a flag', () => {
@@ -244,6 +294,101 @@ describe('a unit property lands on the command only when allow-listed', () => {
     [['systemd-run', '--timer-property', 'MemoryMax=1G', 'ls']],
   ])('%j fails closed: a path, socket or timer property denies any value', words => {
     expect(run(...words)).toBeUndefined()
+  })
+})
+
+describe('runuser', () => {
+  it.each([
+    [['runuser', '-u', 'root', 'git', 'push']],
+    [['runuser', '-u', 'root', '--', 'git', 'push']],
+    [['runuser', '--user=root', 'git', 'push']],
+  ])('runs the words of %j with no shell', words => {
+    expect(run(...words)).toEqual({ shell: ['sh', '-c', 'git push'] })
+  })
+
+  it('reads options past the command, as getopt permutes', () => {
+    expect(run('runuser', '-u', 'root', 'git', '-c', 'push')).toBeUndefined()
+    expect(run('runuser', '-u', 'root', 'git', '--frob')).toBeUndefined()
+  })
+
+  it('reads as su without -u, and fails closed on -c or -s with it', () => {
+    expect(run('runuser', '-l', 'root', '-c', 'git push')).toEqual({ shell: ['sh', '-c', 'git push'] })
+    expect(run('runuser', '-u', 'root', '-c', 'git push')).toBeUndefined()
+    expect(run('runuser', '-u', 'root', '-s', '/bin/sh')).toBeUndefined()
+  })
+})
+
+describe('setpriv', () => {
+  it.each([
+    [['setpriv', '--reuid=0', '--init-groups', 'git', 'push'], 3],
+    [['setpriv', '--reuid', '0', '--', 'git', 'push'], 4],
+    [['setpriv', 'git', '--frob'], 1],
+  ])('finds the command in %j at %i', (words, at) => {
+    expect(run(...words)).toEqual({ at })
+  })
+
+  it.each([
+    [['setpriv', '--frob', 'git']],
+    [['setpriv', '-r', '0', 'git']],
+    [['setpriv', '--reuid']],
+    [['setpriv', '--nnp=1', 'git']],
+    [['setpriv', '--reuid', live('$U'), 'echo', 'git', 'push']],
+  ])('%j fails closed', words => {
+    expect(run(...words)).toBeUndefined()
+  })
+})
+
+describe('machinectl', () => {
+  it.each([
+    [['machinectl', 'shell', 'root@', 'git', 'push'], 3],
+    [['machinectl', '-q', 'shell', '--uid', 'root', '.host', 'git', '-c', 'x'], 6],
+    [['machinectl', 'list', '-a'], 1],
+    [['machinectl'], 1],
+  ])('finds the command in %j at %i', (words, at) => {
+    expect(run(...words)).toEqual({ at })
+  })
+
+  it.each([
+    [['machinectl', '--', 'shell', '-s', 'git', 'push'], 4],
+    [['machinectl', 'shell', '--', '-q', 'git', 'push'], 4],
+    [['machinectl', '-p', '--', 'shell', '-q', '.host', 'git', 'push'], 6],
+  ])('reads every word after -- in %j as an operand, the command at %i', (words, at) => {
+    expect(run(...words)).toEqual({ at })
+  })
+
+  it('runs a shell for shell with no command', () => {
+    expect(run('machinectl', 'shell')).toEqual({ shell: ['sh'] })
+    expect(run('machinectl', 'shell', 'root@')).toEqual({ shell: ['sh'] })
+  })
+
+  it('fails closed on an expanded verb or machine name', () => {
+    expect(run('machinectl', live('$V'), 'root@', 'git')).toBeUndefined()
+    expect(run('machinectl', 'shell', live('$H'), 'git')).toBeUndefined()
+    expect(run('machinectl', 'shell', '--', live('$H'), 'git')).toBeUndefined()
+    expect(run('machinectl', 'shell', '--uid', live('$U'), '.host', 'git')).toBeUndefined()
+  })
+})
+
+describe('su-rs', () => {
+  it.each([
+    [['su-rs', 'root', '-c', 'git push']],
+    [['su-rs', '--command=git push']],
+    [['su-rs', '-lcgit push']],
+  ])('runs the -c value in %j', words => {
+    expect(run(...words)).toEqual({ shell: ['sh', '-c', 'git push'] })
+  })
+
+  it.each([[['su-rs', '-f', '-c', 'x']], [['su-rs', '--session-command', 'x']], [['su-rs', '-T']]])(
+    '%j fails closed: su-rs refuses the util-linux su options it lacks',
+    words => {
+      expect(run(...words)).toBeUndefined()
+    },
+  )
+})
+
+describe('SUDO_NAMES', () => {
+  it('names sudo, sudo-rs and sudo.ws', () => {
+    expect([...SUDO_NAMES].sort()).toEqual(['sudo', 'sudo-rs', 'sudo.ws'])
   })
 })
 
