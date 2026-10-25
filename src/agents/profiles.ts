@@ -126,6 +126,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
+    pushPolicy: 'no-rewrite',
     promptPrelude: 'You are a read-only explorer. Report what you find; do not attempt to change anything.',
   },
   {
@@ -148,6 +149,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
+    pushPolicy: 'no-rewrite',
     // A reviewer finishes inside 5 minutes, so the 1 h cache write premium buys nothing.
     cacheTtl: '5m',
     promptPrelude:
@@ -165,6 +167,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     isolation: 'worktree',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
+    pushPolicy: 'no-rewrite',
     promptPrelude:
       'You are implementing in an isolated worktree. Keep diffs small and reviewable, and run the ' +
       "project's tests before reporting done.",
@@ -195,6 +198,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // checkout is exactly the agent whose last output someone is still reading
     // when it finishes. The others are dispatched, do a job and go.
     surfaceLifetime: 'keep',
+    pushPolicy: 'no-rewrite',
     promptPrelude:
       'You are a peer working alongside other sessions in a shared checkout. Coordinate over ' +
       'agent-chat before editing files someone else may be holding.',
@@ -221,6 +225,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     isolation: 'none',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
+    pushPolicy: 'no-rewrite',
     promptPrelude:
       'You are planning, not implementing. Write only the plan file named in your brief; Edit is ' +
       'denied and you must not modify existing files. You share this checkout, so never run a ' +
