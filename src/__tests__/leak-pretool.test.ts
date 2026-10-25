@@ -1340,7 +1340,8 @@ describe('a git alias already in config', () => {
         checkCommand(command, inAliased()),
       )
 
-      expect(reasons).toEqual([REASONS.aliasHidden, REASONS.noVerify])
+      // The word too deep to read may be push too, so the first command denies before the second (TP-4235).
+      expect(reasons).toEqual([REASONS.aliasHidden, REASONS.globPush])
       expect(performance.now() - started).toBeLessThan(2000)
     })
 
