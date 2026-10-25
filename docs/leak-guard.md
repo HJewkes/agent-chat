@@ -845,7 +845,7 @@ the scan off. With the hook in place, a post is scanned twice.
 
 ### The gh shim refuses writes not from gh-write (CC-1644)
 
-On a spawned agent's PATH, the `gh` shim runs a command only when it is a known read, or carries
+Under enforce (see "Staged rollout" below), the `gh` shim on a spawned agent's PATH runs a command only when it is a known read, or carries
 the ticket gh-write mints after its scan passes. Anything else exits 1 with stderr
 `gh-shim: refused (write)` and a pointer to `agent-chat gh-write -- <args>`, and never starts the
 real gh. The shim reads gh's argv after the shell expanded it, so a hidden head (`f() { "$@"; }; f gh …`,
@@ -872,8 +872,16 @@ bakes the key root on its exec line, so `AGENT_CHAT_GH_KEY_ROOT` set in the envi
 The shim takes the ticket out of the environment before the real gh starts, so neither gh nor what
 it runs sees it. `AGENT_CHAT_GH_SHIM_OFF=1` turns off the REST answers, never this check. A refusal
 appends one line to `leak-guard.log` naming the group and verb, or the api method and route
-template; free-text words log as `?`. With its build gone, the shim script runs a smaller read list
-as a POSIX `case` and refuses every `gh api` call and every write.
+template, then `caller=<AGENT_CHAT_NAME>` and, where `/proc` has it, `parent=` and the basenames
+of the calling process's first two argv words; free-text words log as `?`. With its build gone,
+the shim script runs a smaller read list as a POSIX `case` and refuses every `gh api` call and
+every write.
+
+**Staged rollout.** The gate ships in log mode: `GATE_MODE` in `src/gh-shim/write-gate.ts` is
+`'log'`, so a call it would refuse still runs, and the line reads `gh-shim: would-refuse (write)`.
+The census of those lines names the callers that must move to gh-write. Switching to `'enforce'`,
+which refuses as described above, is its own one-line pull request. The mode is a source constant
+and no environment variable or file changes it. The build-gone fallback refuses in both modes.
 
 Limit: the key is readable by the agent's uid. An agent that reads it by a spelling the
 `protectedPaths` substring check misses, or that imports agent-chat's own mint function under
