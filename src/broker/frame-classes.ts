@@ -77,3 +77,5 @@ export const FRAME_CLASSES: Readonly<Record<ClientMessage['t'], FrameClass>> = {
   agents: 4,
   hosts: 4,
 }
+
+export const classOf = (t: ClientMessage['t']): FrameClass => FRAME_CLASSES[t]
