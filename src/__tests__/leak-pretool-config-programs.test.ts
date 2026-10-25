@@ -38,6 +38,12 @@ describe('git config writes that persist a program value a later git runs (TP-42
     'git config alias.p "!$X"',
     'git config core.sshCommand "$(x)"',
     'git config rename-section user core',
+    'git config rename-section credential alias',
+    'git config rename-section remote.x alias',
+    'git config rename-section merge pager',
+    'git config --rename-section core core2',
+    'git config --rename-section protocol old-protocol',
+    'git config rename-section \'credential "h"\' alias',
   ])('denies configProgramWrite for %s', command => {
     expect(checkCommand(command, ctx)).toBeDefined()
     expect(checkCommand(command, ctx)).toBe(REASONS.configProgramWrite)
@@ -59,7 +65,8 @@ describe('git config writes that persist a program value a later git runs (TP-42
     'git config --get core.pager',
     'git config --unset core.pager',
     'git config rename-section alias.a alias.b',
-    'git config rename-section core core2',
+    'git config rename-section merge user',
+    'git config rename-section foo pager',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx)).toBeUndefined()
   })

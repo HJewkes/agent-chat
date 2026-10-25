@@ -881,9 +881,11 @@ A `git config` write to one of these keys persists the value for a later git, wh
 guard does not read, so the write is checked the same way (TP-4240). The written value is checked
 like a `-c` value: `git config core.pager '$X'`, ``git config core.editor '`x`'`` and
 `git config alias.p '!$X'` deny for the expansion, and a value the guard cannot read, as in
-`git config core.sshCommand "$S"`, denies as `configProgramWrite`. A section rename that moves
-keys from an inert section into one git may run, as in `git config rename-section user core`,
-denies too, since those keys were never checked. `git config user.name "$N"`,
+`git config core.sshCommand "$S"`, denies as `configProgramWrite`. A section rename can turn a
+key the write check skipped into one git runs, so a rename out of an inert section, or out of one
+holding an inert key, into any section not inert as a whole denies too: `git config rename-section
+user core`, `rename-section credential alias` (`credential.username` becomes `alias.username`) and
+`rename-section merge pager` (`merge.log` becomes `pager.log`). `git config user.name "$N"`,
 `git config core.pager less` and `git config alias.st 'status -s'` stay allowed.
 
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or

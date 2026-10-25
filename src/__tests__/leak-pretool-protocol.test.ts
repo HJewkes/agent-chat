@@ -154,7 +154,7 @@ describe('section renames and unreadable verbs at the hook entry point (TP-2371 
 
   it.each([
     'git config --rename-section foo bar',
-    'git config --rename-section protocol old-protocol',
+    'git config --rename-section protocol user',
     'git config --remove-section protocol',
     'git config set --comment="$C" protocol.ext.allow never',
     'git config --comment "$C" protocol.ext.allow never',

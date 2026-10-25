@@ -115,12 +115,22 @@ function scriptOf(word: ConfigWord): string | null | undefined {
 const programScript = (key: string, value: string): string | null =>
   !runsProgram(key) ? null : value.startsWith('!') ? value.slice(1) : value
 
-/** Whether a rename moves a section whose keys were never checked as programs into one git may run (TP-4240). */
-function renamesInertIntoProgram(names: readonly (string | undefined)[]): boolean {
+// Sections holding a key the write check skips: a whole inert section, or one with an entry in INERT_KEYS.
+const UNCHECKED_SECTIONS = new Set([
+  ...INERT_SECTIONS,
+  ...[...INERT_KEYS].map(key => key.split('.')[0] as string),
+])
+
+/**
+ * Whether a rename may move a key whose value was never checked as a program into a section git may
+ * run it in (TP-4240): `credential.username` renamed into `alias`, or `merge.log` into `pager`. Only
+ * a target inert as a whole keeps such a value unrun.
+ */
+function renamesUncheckedIntoProgram(names: readonly (string | undefined)[]): boolean {
   const [from, to] = names
   if (from === undefined || to === undefined) return true
-  const section = (name: string): string => (name.split('.')[0] as string).toLowerCase()
-  return INERT_SECTIONS.has(section(from)) && !INERT_SECTIONS.has(section(to))
+  const section = (name: string): string => (name.split(/[."\s]/)[0] as string).toLowerCase()
+  return UNCHECKED_SECTIONS.has(section(from)) && !INERT_SECTIONS.has(section(to))
 }
 
 /**
@@ -131,7 +141,7 @@ function renamesInertIntoProgram(names: readonly (string | undefined)[]): boolea
 export function configWriteScript(args: SubArgs): string | null | undefined {
   const call = readConfigCall(args)
   if (call.mode === 'option') return undefined
-  if (call.mode === 'rename') return renamesInertIntoProgram(call.names) ? undefined : null
+  if (call.mode === 'rename') return renamesUncheckedIntoProgram(call.names) ? undefined : null
   if (call.mode === 'other') return null
   const { key, value } = call
   if (key === undefined) return undefined
