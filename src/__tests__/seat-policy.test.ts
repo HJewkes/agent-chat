@@ -68,7 +68,12 @@ describe('loading the seat policy', () => {
     expect(readSeatPolicy()).toEqual({ status: 'invalid', reason: 'is a symlink' })
   })
 
-  it.each([0o666, 0o646, 0o664, 0o624])('grants nothing when mode %o lets others write it', mode => {
+  it.each([
+    ['0666', 0o666],
+    ['0646', 0o646],
+    ['0664', 0o664],
+    ['0624', 0o624],
+  ])('grants nothing when mode %s lets others write it', (_label, mode) => {
     writePolicy(VALID, mode)
 
     expect(loadSeatPolicy()).toEqual({ seats: {} })
