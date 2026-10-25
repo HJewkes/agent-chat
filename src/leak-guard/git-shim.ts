@@ -544,7 +544,7 @@ ${RESTORE_GIT_CONFIG}
 exec "$real" "$@"
 `
 
-const realpathOr = (file: string): string => {
+export const realpathOr = (file: string): string => {
   try {
     return fs.realpathSync(file)
   } catch {
@@ -552,7 +552,7 @@ const realpathOr = (file: string): string => {
   }
 }
 
-const isExecutableFile = (file: string): boolean => {
+export const isExecutableFile = (file: string): boolean => {
   try {
     fs.accessSync(file, fs.constants.X_OK)
     return fs.statSync(file).isFile()
