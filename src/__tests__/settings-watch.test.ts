@@ -23,6 +23,7 @@ const servers: SocketServer[] = []
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.useRealTimers()
   for (const server of servers.splice(0)) server.close()
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
@@ -187,16 +188,36 @@ describe('settings-watch reads only the same bounded regular file', () => {
   ]
 
   for (const [name, runs, swap] of swaps)
-    it.runIf(runs)(`latches state when a launch file is swapped for ${name}`, () => {
+    it.runIf(runs)(
+      `latches state when a launch file is swapped for ${name}`,
+      () => {
+        const { settings, notices } = setup()
+        fs.rmSync(settings)
+        swap(settings)
+
+        vi.advanceTimersByTime(TICK_MS)
+
+        expect(notices()).toHaveLength(1)
+        expect(notices()[0]).toMatchObject({ meta: { file: settings, field: 'state' } })
+      },
+      5_000,
+    )
+
+  it.runIf(process.platform !== 'win32')(
+    'never opens a FIFO swapped in for a launch file',
+    () => {
       const { settings, notices } = setup()
       fs.rmSync(settings)
-      swap(settings)
+      execFileSync('mkfifo', [settings])
+      const open = vi.spyOn(fs, 'openSync')
 
       vi.advanceTimersByTime(TICK_MS)
 
-      expect(notices()).toHaveLength(1)
+      expect(open.mock.calls.filter(([file]) => file === settings)).toEqual([])
       expect(notices()[0]).toMatchObject({ meta: { file: settings, field: 'state' } })
-    }, 5_000)
+    },
+    5_000,
+  )
 
   it('latches state when a launch file is replaced by another regular file with the same bytes', () => {
     const { settings, notices } = setup()
@@ -209,11 +230,15 @@ describe('settings-watch reads only the same bounded regular file', () => {
     expect(notices()[0]).toMatchObject({ meta: { file: settings, field: 'state' } })
   })
 
-  it.runIf(process.platform !== 'win32')('refuses to register a FIFO', () => {
-    const { server } = setup()
-    const fifo = path.join(dirs.at(-1) ?? '', 'pipe')
-    execFileSync('mkfifo', [fifo])
+  it.runIf(process.platform !== 'win32')(
+    'refuses to register a FIFO',
+    () => {
+      const { server } = setup()
+      const fifo = path.join(dirs.at(-1) ?? '', 'pipe')
+      execFileSync('mkfifo', [fifo])
 
-    expect(() => server.settingsWatch.register('e'.repeat(64), [fifo])).toThrow(/unreadable/)
-  }, 5_000)
+      expect(() => server.settingsWatch.register('e'.repeat(64), [fifo])).toThrow(/unreadable/)
+    },
+    5_000,
+  )
 })

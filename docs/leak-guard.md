@@ -1495,6 +1495,10 @@ the guard.
   re-hashes them on every `integrity_check` and on a 60 s timer, and the first changed, deleted or
   unreadable file quarantines that launch and files one owner notice. It detects; it does not
   prevent, restore, or stop the agent.
+- The watch reads only bounded regular files: it lstats first, and anything but the same regular
+  file (same dev and inode), such as a FIFO, a device, a symlink or a replacement file, latches
+  `state` without being opened. The read is non-blocking and no-follow, and it stops at the
+  baseline size plus 4 KiB.
 
 **What the watch cannot catch.**
 
@@ -1508,6 +1512,10 @@ the guard.
 - Files outside the agents dir that decide whether the hook runs: the agent-chat `dist/` or plugin
   install the hook command points at, the node binary, and carried user settings. Those need their
   own task.
+
+The Edit-route rule also leaves two known gaps. A hard link outside the agents dir to a launch file
+has a real path outside it; making it needs Bash, and the watch sees the change. And the case-fold applies only on darwin and win32, so a case-insensitive Linux mount (ext4 casefold,
+vfat) holding the agents dir is not folded for a leaf not made yet.
 
 **Reviewer scope.** In scope: whether the one prefix rule refuses every Edit-family write whose
 canonical real path is under the canonical agents dir (symlinks, a missing leaf, case on a

@@ -60,8 +60,7 @@ function observe(file: string, limit: (size: number) => number): Baseline | unde
 const firstChange = (baselines: readonly Baseline[]): Mismatch | undefined => {
   for (const baseline of baselines) {
     const now = observe(baseline.file, () => baseline.size + READ_MARGIN)
-    if (now === undefined || !sameFile(baseline, now))
-      return { file: baseline.file, field: 'state' }
+    if (now === undefined || !sameFile(baseline, now)) return { file: baseline.file, field: 'state' }
     if (now.sha256 !== baseline.sha256) return { file: baseline.file, field: 'sha256' }
   }
   return undefined
