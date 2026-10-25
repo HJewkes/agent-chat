@@ -859,7 +859,11 @@ class ShellLexer {
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
     if (this.emptyParens() || (word === null && this.opensCommand())) return false
     const end = this.groupEnd()
-    if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
+    const settled = end >= 0 && PLAIN_GROUP.test(this.src.slice(this.pos, end))
+    if (!settled) this.unsettled()
+    // zsh parses the group itself, past a line, a comment or a nested case pattern's `)`, so where a `)`
+    // can end the span, a close the splitter cannot be sure of could be the span's end (CC-1610).
+    if (!settled && this.closable()) this.budget.expansion = 'unreadable'
     if (end < 0) {
       this.split('(')
       this.pos++
@@ -901,12 +905,16 @@ class ShellLexer {
     return this.lastToken === 'for' && this.ahead(2) === '(('
   }
 
-  /** The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses a line. */
+  /**
+   * The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses
+   * a line. Where a `)` can end the span, any unquoted `#` also gives -1: zsh starts a comment after
+   * every character that ends a word, and one can hide the group's `)` (CC-1610).
+   */
   private groupEnd(): number {
     let depth = 0
     for (let i = this.pos; i < this.src.length; i++) {
       const c = this.src[i] as string
-      if (c === '\n') return -1
+      if (c === '\n' || (c === '#' && this.closable())) return -1
       if (c === '\\') i++
       else if (c === '$' && this.peek(i + 1) === "'") i = this.closeAnsi(this.unjoin(i + 1))
       else if (c === "'" || c === '"') i = this.closeQuote(i, c)
