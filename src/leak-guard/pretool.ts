@@ -21,7 +21,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { ghWriteKeysDir } from '../paths.js'
+import { agentDir, ghWriteKeysDir } from '../paths.js'
 import {
   configPrograms,
   configWriteScript,
@@ -3658,6 +3658,12 @@ const ownerOnlyPaths = (env: NodeJS.ProcessEnv): string[] => {
   return relocated ? [...fragments, ...OWNER_ONLY_FILES.map(file => path.join(relocated, file))] : fragments
 }
 
+// The hooks live in the agent's own settings.json; rewriting it would drop them (TP-4256 A5).
+const ownSettingsPaths = (env: NodeJS.ProcessEnv): string[] => {
+  const agentId = env.AGENT_CHAT_AGENT_ID
+  return agentId ? [path.join(agentDir(agentId), 'settings.json')] : []
+}
+
 export function guardContext(
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -3679,6 +3685,7 @@ export function guardContext(
       ...(hooksDir === undefined ? [] : [hooksDir]),
       ...workerConfigPaths(env),
       ...ownerOnlyPaths(env),
+      ...ownSettingsPaths(env),
     ],
     readFile: readText,
     readAlias: aliasReader(env),

@@ -43,6 +43,14 @@ export class IntegrityLedger {
     return this.store.get(nonce)?.agentId
   }
 
+  /** Quarantines a nonce for a change the hook cannot see (its own settings file); true only on the first latch. */
+  latch(nonce: string, mismatch: Mismatch): boolean {
+    const entry = this.store.get(nonce)
+    if (entry === undefined || entry.quarantine !== undefined) return false
+    this.store.put(nonce, { ...entry, quarantine: mismatch })
+    return true
+  }
+
   check(nonce: string, session: string, records: Records): CheckResult {
     const entry = this.store.get(nonce)
     if (entry === undefined) return { ok: false, reason: 'no baseline' }

@@ -16,6 +16,7 @@ import {
   type GuardContext,
   type TermsLoad,
 } from '../leak-guard/pretool.js'
+import { agentDir } from '../paths.js'
 import { aliasReader } from '../leak-guard/git-alias.js'
 import { includedHooksPathReader } from '../leak-guard/git-include.js'
 import { parseShell } from '../leak-guard/shell-words.js'
@@ -3055,5 +3056,23 @@ describe('an environment variable git runs as a program (TP-636)', () => {
     'GIT_PAGER=less git log && EDITOR=vim git commit',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
+
+describe('an agent may not rewrite its own hook settings (TP-4256 A5)', () => {
+  const env = { AGENT_CHAT_AGENT_ID: 'a1-synthetic' }
+  const own = path.join(agentDir('a1-synthetic'), 'settings.json')
+
+  it.each(['Edit', 'Write', 'MultiEdit'])("denies %s on the agent's settings.json", tool => {
+    expect(checkToolCall(tool, { file_path: own }, guardContext(env, '/work', '/home/example'))).toBe(
+      REASONS.protectedPath,
+    )
+  })
+
+  it('leaves another file in a different agent directory alone', () => {
+    const other = path.join(agentDir('a2-synthetic'), 'notes.txt')
+    expect(
+      checkToolCall('Write', { file_path: other }, guardContext(env, '/work', '/home/example')),
+    ).toBeUndefined()
   })
 })
