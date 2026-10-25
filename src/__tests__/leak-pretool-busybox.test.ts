@@ -37,6 +37,19 @@ const BUSYBOX_BYPASSES = [
   `busybox timeout 5 ${P}`,
   `busybox timeout -s KILL 5 ${P}`,
   `busybox xargs ${P} </dev/null`,
+  // Options after -c come before the string it runs.
+  `busybox sh -c -e '${P}'`,
+  `busybox sh -c -x '${P}'`,
+  `busybox sh -c -- '${P}'`,
+  `busybox ash -oc errexit '${P}'`,
+]
+
+// The same option orders under a plain shell, which runs the string after them too.
+const SHELL_BYPASSES = [
+  `sh -c -e '${P}'`,
+  `sh -c -- '${P}'`,
+  `bash -oc pipefail '${P}'`,
+  `dash -ec -- '${P}'`,
 ]
 
 const runsBusybox = (() => {
@@ -49,12 +62,15 @@ const runsBusybox = (() => {
 })()
 
 describe('a busybox applet is checked as the command it runs (CC-1342)', () => {
-  it.each([...BUSYBOX_BYPASSES, `/usr/bin/busybox sh -c '${P}'`, `ash -c '${P}'`, `/bin/ash -c '${P}'`])(
-    'denies %s',
-    line => {
-      expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
-    },
-  )
+  it.each([
+    ...BUSYBOX_BYPASSES,
+    ...SHELL_BYPASSES,
+    `/usr/bin/busybox sh -c '${P}'`,
+    `ash -c '${P}'`,
+    `/bin/ash -c '${P}'`,
+  ])('denies %s', line => {
+    expect(checkCommand(line, ctx)).toBe(REASONS.noVerify)
+  })
 
   it.each([
     `busybox hush -c '${P}'`,
@@ -83,7 +99,7 @@ afterAll(real.cleanup)
 const SH = real.shells.find(([shell]) => shell.endsWith('bash'))
 
 describe.skipIf(!runsBusybox || SH === undefined)('real busybox runs the push behind each applet', () => {
-  it.each(BUSYBOX_BYPASSES)('%s pushes', line => {
+  it.each([...BUSYBOX_BYPASSES, ...SHELL_BYPASSES])('%s pushes', line => {
     const [shell, args] = SH as [string, string[]]
     expect(real.gitCalls(shell, args, line)).toBe(PUSHED)
   })

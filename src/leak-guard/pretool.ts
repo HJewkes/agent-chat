@@ -2197,11 +2197,20 @@ function checkShell(
       ? checkUnknownFeed(call, cmd.stdin, ctx, scope, depth)
       : checkFed(fed.texts, ctx, scope, depth)
   if (reason !== undefined) return reason
-  const args = call.marked.map(unmark)
-  const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
   // A shell the `-c` string runs reads this shell's own stdin (CC-1408).
   const inner = fed === scope.stdin ? scope : { ...scope, stdin: fed }
-  return flag >= 0 ? checkAt(args[flag + 1] ?? '', ctx, inner, depth + 1) : undefined
+  return firstReason(commandTexts(call), text => checkAt(text, ctx, inner, depth + 1))
+}
+
+/**
+ * The texts a shell may run as its `-c` string, at the place its options leave it (`sh -c -e TEXT`,
+ * `bash -oc pipefail TEXT`, CC-1342). Where the options hide the call, every word may be it.
+ */
+function commandTexts({ name, marked, assigns }: ShellRun): string[] {
+  const { script } = readShellCall(name, marked, assigns)
+  if (script.from === 'hidden') return marked.map(unmark)
+  if (script.from !== 'command') return []
+  return [script.at === undefined ? '' : unmark(marked[script.at] as string)]
 }
 
 /** A shell's base name, its marked words after the name, and the assignments it runs with. */
