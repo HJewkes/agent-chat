@@ -129,12 +129,13 @@ const profileEnv = (profile: AgentProfile): Record<string, string> =>
 /**
  * The leak guard's pre-push hook (CC-268), in every repo the agent pushes from, with no repo config
  * written, and the push-time git shim (TP-596) that checks that same hooks path; AGENT_CHAT_ keeps a
- * profile from moving it. A no-rewrite profile gets the dir whose hook also bakes in the push policy (CC-1633).
+ * profile from moving it. Every profile gets the dir whose hook also bakes in the push policy (CC-1633)
+ * unless it opts out with `scan-only` by name, so a profile file that omits the field fails closed (CC-1650).
  */
 function guardEnv(input: LaunchPlanInput): Record<string, string> {
   if (input.gitHooksDir === undefined) return {}
   const dir =
-    input.profile.pushPolicy === 'no-rewrite' ? noRewriteHooksDir(input.gitHooksDir) : input.gitHooksDir
+    input.profile.pushPolicy === 'scan-only' ? input.gitHooksDir : noRewriteHooksDir(input.gitHooksDir)
   return { ...gitHooksEnv(dir), [GIT_SHIM_DIR_ENV]: gitShimDirFor(dir) }
 }
 
