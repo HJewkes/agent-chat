@@ -1191,7 +1191,7 @@ describe('the shared prompt-cache prefix a headless worker launches with (CC-159
   const argsFor = (over: Partial<AgentProfile>): string[] =>
     buildLaunchPlan(input({ profile: profile(over) })).args
 
-  // Mutation caught: emitting the flag on every surface, which also moves a pane's cwd and git status out.
+  // Mutation caught: dropping the role check, which moved a headless coordinator's sections out too.
   it('moves the dynamic sections out only for a headless worker', () => {
     expect(argsFor({ surface: 'headless' })).toContain(FLAG)
     expect(argsFor({ surface: 'iterm-pane' })).not.toContain(FLAG)
