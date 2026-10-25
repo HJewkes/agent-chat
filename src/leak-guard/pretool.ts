@@ -174,8 +174,6 @@ interface Scope {
   deferrable: boolean
   /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
   hiddenStarts: { left: number; reachesGit?: boolean }
-  /** Every command of the outermost line, which a hidden variable name on any nested line is judged against (TP-4231). */
-  call?: readonly SimpleCommand[] | undefined
   /** What a command with no pipe or heredoc of its own reads: the stdin of the shell running the line. */
   stdin: Feed
   /** What this command reads on stdin. */
@@ -3330,15 +3328,16 @@ function envUse(cmd: SimpleCommand): EnvUse {
  * is used anywhere on a line that may reach git, by the same test the hidden-command budget uses
  * (CC-478), so a command word such as `${G}t` counts, a plain literal assignment's value is checked
  * as text git runs through a shell, where any expansion denies (TP-2496), and any other use denies. Both the uses and the git test read the unwrapped
- * command too, so a wrapper or an `env -S` split hides neither.
+ * command too, so a wrapper or an `env -S` split hides neither. A name the shell builds denies on
+ * any line, since no command after it is proven safe (TP-4231).
  */
 function checkProgramEnvLine(
-  cmds: readonly SimpleCommand[],
+  command: string,
   ctx: GuardContext,
   scope: Scope,
   depth: number,
 ): string | DeferredEnv | undefined {
-  const uses = cmds.map(envUse)
+  const uses = parseShell(command).map(envUse)
   const events = resolveHome(
     uses.flatMap(use => use.events),
     scope,
@@ -3348,7 +3347,7 @@ function checkProgramEnvLine(
   const scan = uses.flatMap(use => use.scan).join(' ')
   // A nested script cannot show the git its outer line runs, so it is judged by that line (TP-2499).
   const reaches = mayReachGit(scan, ctx.env) || (depth > 0 && lineMayReachGit(scope, ctx))
-  if (!reaches) return hiddenUnlessInert(events, ctx, scope)
+  if (!reaches) return events.includes(NAME_HIDDEN) ? NAME_HIDDEN : undefined
   const inner: Scope = { ...scope, cwd: undefined, env: undefined }
   for (const event of events) {
     if (event === null) return REASONS.programEnv
@@ -3367,79 +3366,6 @@ const DEFERRED_REASONS: ReadonlyMap<DeferredEnv, string> = new Map<DeferredEnv, 
   [NAME_HIDDEN, REASONS.programEnv],
   [SEARCH_UNREAD, REASONS.searchPathEnv],
 ])
-
-// Commands that never run a word or their stdin as a program or shell text. A missing name over-denies,
-// it never lets a line through; a PATH the hidden name sets runs a file, which no rule here reads.
-const INERT_COMMANDS: ReadonlySet<string> = new Set([
-  ...ENV_DECL,
-  ...NAME_OPERAND_BUILTINS,
-  ...['echo', 'printf', 'true', 'false', ':', 'cd', 'pwd', 'test', '[', 'shift'],
-  ...['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'cut', 'tr', 'basename', 'dirname', 'date', 'sleep'],
-  ...['mkdir', 'touch', 'rm', 'cp', 'mv', 'tee', 'stat', 'realpath'],
-])
-
-/**
- * The text eval or a trap action runs in this shell, when the guard reads every word of it. A new
- * shell is left out: the hidden name may be BASH_ENV, ENV or ZDOTDIR, exported now or already, so
- * the shell may run a file whatever text it is given.
- */
-function runsText(
-  words: readonly string[],
-  cmd: SimpleCommand,
-  ctx: GuardContext,
-  scope: Scope,
-): string | undefined {
-  const [head, ...rest] = words.map(word => resolveWord(word, cmd, ctx, scope))
-  if (rest.some(word => word === undefined)) return undefined
-  if (head === 'eval') return rest.join(' ')
-  if (head === 'trap' && rest.length > 1) return rest[0]
-  return undefined
-}
-
-/** The words that run after the guard's own unwrap, or undefined where it cannot read a wrapper. */
-function runWords(cmd: SimpleCommand): readonly string[] | undefined {
-  const unwrapped = unwrap(functionBody(cmd.marked), cmd.splits)
-  return 'reason' in unwrapped ? undefined : unwrapped.words
-}
-
-/** `cmd` and every command it runs: those of its substitutions and of any eval or trap text. */
-function ranCommands(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): SimpleCommand[] {
-  const words = runWords(cmd)
-  const text = words === undefined ? undefined : runsText(words, cmd, ctx, scope)
-  const inner = [
-    ...cmd.substitutions.flatMap(sub => sub.commands),
-    ...(text === undefined ? [] : parseShell(text)),
-  ]
-  return [cmd, ...inner.flatMap(c => ranCommands(c, ctx, scope))]
-}
-
-/** One command, read alone, is allowlisted or runs eval or trap text, whose commands `ranCommands` lists. */
-function provenInert(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
-  if (cmd.defines !== undefined) return false
-  const words = runWords(cmd)
-  if (words === undefined) return false
-  const [first] = words
-  if (first === undefined) return true
-  const head = testHead(words) ?? resolveWord(first, cmd, ctx, scope)
-  if (head === undefined) return false
-  return INERT_COMMANDS.has(head) || runsText(words, cmd, ctx, scope) !== undefined
-}
-
-/**
- * A variable name the shell builds may be any name, so on a line that shows no git it denies unless
- * every command of the call is proven inert (TP-4231). The proof reads no env value: the hidden name
- * may have changed any of them.
- */
-function hiddenUnlessInert(
-  events: readonly EnvEvent[],
-  ctx: GuardContext,
-  scope: Scope,
-): DeferredEnv | undefined {
-  if (!events.includes(NAME_HIDDEN)) return undefined
-  const blind: Scope = { ...scope, env: undefined }
-  const ran = (scope.call ?? []).flatMap(cmd => ranCommands(cmd, ctx, blind))
-  return ran.every(cmd => provenInert(cmd, ctx, blind)) ? undefined : NAME_HIDDEN
-}
 
 /** An unreadable `${...}` hides what follows it, so it denies any line; an operator one only beside gh (CC-718). */
 function deniesExpansion(command: string): boolean {
@@ -3498,11 +3424,10 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const cdpath = scope.cdpath || command.includes('CDPATH')
   const namesGit = scope.namesGit || MENTIONS_GIT.test(command)
   const said = `${scope.said}\n${unreferenced(command)}`
-  const cmds = parseShell(command)
-  const env = scope.env && knownEnv(command, scope.env)
-  let at: Scope = { ...scope, cdpath, namesGit, said, env, call: depth === 0 ? cmds : scope.call }
-  const envReason = checkProgramEnvLine(cmds, ctx, at, depth)
+  let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
+  const envReason = checkProgramEnvLine(command, ctx, at, depth)
   if (typeof envReason === 'string') return envReason
+  const cmds = parseShell(command)
   const indirect = indirectFeed(cmds, commandHead)
   if (!isNothing(indirect)) at = { ...at, stdin: joinFeeds(at.stdin, indirect) }
   const line = lineFeeds(cmds)
