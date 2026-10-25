@@ -120,7 +120,8 @@ const PROPERTY_OPTIONS = ['-p', '--property', '--path-property', '--socket-prope
 const SU_LIKE: readonly Wrapper[] = ['su', 'su-rs', 'runuser']
 /** The words after the option under test, and what the wrapper runs from them. */
 const tail = (w: Wrapper) => (SU_LIKE.includes(w) ? ['-c', 'git push'] : ['git', 'push'])
-const expected = (w: Wrapper, at: number) => (SU_LIKE.includes(w) ? { shell: ['sh', '-c', 'git push'] } : { at })
+const expected = (w: Wrapper, at: number) =>
+  SU_LIKE.includes(w) ? { shell: ['sh', '-c', 'git push'] } : { at }
 
 /**
  * Rows for every option the spec lists. su's -s takes a shell, so its decoy cannot look like an option;

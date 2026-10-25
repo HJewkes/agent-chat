@@ -333,7 +333,8 @@ function readSystemdRun(t: OptionTable, words: readonly string[], i: number): Pr
  */
 function readMachinectl(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
   const verb = nextOperand(t, words, i, false)
-  if (verb === undefined || words[verb.at] !== 'shell') return verb === undefined ? undefined : { at: verb.at }
+  if (verb === undefined || words[verb.at] !== 'shell')
+    return verb === undefined ? undefined : { at: verb.at }
   const host = nextOperand(t, words, verb.at + 1, verb.ended)
   if (host === undefined) return undefined
   return host.at + 1 >= words.length ? { shell: ['sh'] } : { at: host.at + 1 }
@@ -346,7 +347,12 @@ interface Operand {
 }
 
 /** The first operand at or after `words[i]`, past the options, or undefined when one cannot be read. */
-function nextOperand(t: OptionTable, words: readonly string[], i: number, ended: boolean): Operand | undefined {
+function nextOperand(
+  t: OptionTable,
+  words: readonly string[],
+  i: number,
+  ended: boolean,
+): Operand | undefined {
   for (; i < words.length; i++) {
     const a = words[i] as string
     if (a.includes(LIVE)) return undefined
