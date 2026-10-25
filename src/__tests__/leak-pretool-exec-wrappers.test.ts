@@ -22,7 +22,12 @@ const ctx: GuardContext = {
 
 const P = 'git push --no-verify origin HEAD:main'
 const PUSHED = 'push --no-verify origin HEAD:main'
-const USERNS = 'unshare -U sleep 5 & nsenter -t $! -U --preserve-credentials'
+// The child marks `ready` from inside its new user namespace, so nsenter never races the unshare.
+const USERNS = [
+  `rm -f ready; unshare -U sh -c 'touch ready; exec sleep 5' &`,
+  'i=0; while [ ! -e ready ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done;',
+  'nsenter -t $! -U --preserve-credentials',
+].join(' ')
 
 // A line each wrapper runs `git probe` with, where the host lets it run unprivileged.
 const PROBES: Record<string, string> = {
