@@ -357,7 +357,7 @@ function redirectKind(op: string): Pending {
  * expansion included, may name a file, which bash writes for `>&` and `1>&` and zsh for every form
  * on any descriptor (TP-4257).
  */
-function duplicateKind(word: string, marked: string): Pending {
+function duplicateKind(word: string, marked: string): 'discard' | 'write' {
   const descriptor = word === '-' || (word !== '' && [...word].every(c => c >= '0' && c <= '9'))
   return descriptor && !marked.includes(LIVE) ? 'discard' : 'write'
 }
