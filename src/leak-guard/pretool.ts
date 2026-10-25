@@ -30,7 +30,7 @@ import {
   PROGRAM_ENV,
   PROTOCOL_ENV,
 } from './git-programs.js'
-import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { expandsUnknown, gitScripts, type ScriptSpan } from './git-scripts.js'
 import {
   findClauses,
   parallelCall,
@@ -1280,7 +1280,9 @@ function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth:
         ? run.tied
           ? REASONS.nestedScript
           : undefined
-        : checkAt(script, ctx, inner, depth + 1)
+        : span.vars !== undefined && expandsUnknown(script, span.vars)
+          ? REASONS.nestedScript
+          : checkAt(script, ctx, inner, depth + 1)
     if (reason !== undefined) return reason
   }
   return undefined

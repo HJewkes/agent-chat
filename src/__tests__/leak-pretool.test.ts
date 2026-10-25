@@ -2048,7 +2048,7 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   it.each([
     "git submodule foreach 'echo $name'",
     "git submodule foreach 'echo $sm_path $sha1 $toplevel $displaypath'",
-    "git submodule foreach 'echo \"${name}: $sm_path\"'",
+    'git submodule foreach \'echo "${name}: $sm_path"\'',
     "git submodule foreach '$name'",
     "git submodule foreach '$sm_path push'",
     "git submodule foreach 'git push $sm_path'",

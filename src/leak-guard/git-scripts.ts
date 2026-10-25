@@ -9,6 +9,8 @@ export interface ScriptSpan {
   from: number
   to: number
   offset: number
+  /** The variables git sets for the script; when given, any other expansion in it is unreadable (TP-2496). */
+  vars?: readonly string[]
 }
 
 export interface ScriptOptions {
@@ -76,25 +78,47 @@ export function optionSpans(words: readonly string[], at: number, opts: ScriptOp
 /** `git clone -c`/`--config <key>=<value>`, beside clone's other short options that take a value. */
 export const CLONE_CONFIG: ScriptOptions = { long: ['--config'], short: 'c', shortValue: 'obuj' }
 
+/** The variables `git submodule foreach` sets for its command. */
+const FOREACH_VARS = ['name', 'sm_path', 'displaypath', 'sha1', 'toplevel']
+
 /** The command after `foreach` or `run`, past the options git reads before it. */
-function trailingSpan(words: readonly string[], verbAt: number): ScriptSpan[] {
+function trailingSpan(words: readonly string[], verbAt: number, vars: readonly string[]): ScriptSpan[] {
   let i = verbAt + 1
   while (i < words.length && (words[i] as string).startsWith('-')) i++
-  return i < words.length ? [{ from: i, to: words.length, offset: 0 }] : []
+  return i < words.length ? [{ from: i, to: words.length, offset: 0, vars }] : []
 }
 
 /** `git submodule [--quiet] [--cached] foreach [--recursive] <command>`. */
 function submoduleSpans(words: readonly string[], at: number): ScriptSpan[] {
   let i = at + 1
   while (i < words.length && (words[i] as string).startsWith('-')) i++
-  return words[i] === 'foreach' ? trailingSpan(words, i) : []
+  return words[i] === 'foreach' ? trailingSpan(words, i, FOREACH_VARS) : []
 }
 
 /** The script spans of `git <words>`, whose subcommand is at index `at`. */
 export function gitScripts(words: readonly string[], at: number): ScriptSpan[] {
   const sub = words[at]
   if (sub === 'submodule') return submoduleSpans(words, at)
-  if (sub === 'bisect') return words[at + 1] === 'run' ? trailingSpan(words, at + 1) : []
+  if (sub === 'bisect') return words[at + 1] === 'run' ? trailingSpan(words, at + 1, []) : []
   const opts = sub === undefined ? undefined : OPTION_SCRIPTS.get(sub)
-  return opts === undefined ? [] : optionSpans(words, at, opts)
+  const spans = opts === undefined ? [] : optionSpans(words, at, opts)
+  return sub === 'rebase' ? spans.map(span => ({ ...span, vars: [] })) : spans
+}
+
+/** A `$` expansion, with the name of a plain `$name` or `${name}`, or a backquote. */
+const EXPANSION = /\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))?|`/g
+
+/**
+ * Whether the script expands anything but the variables git sets for it. The guard cannot know
+ * what the shell git starts finds there, so a program or `--no-verify` could hide in it. A
+ * variable git sets counts only when no name character follows it: `${name}x` is a near miss.
+ */
+export function expandsUnknown(script: string, vars: readonly string[]): boolean {
+  for (const match of script.matchAll(EXPANSION)) {
+    if (match[0] === '$' && match.index + 1 === script.length) continue
+    const name = match[1] ?? match[2]
+    const next = script[match.index + match[0].length] ?? ''
+    if (name === undefined || !vars.includes(name) || /\w/.test(next)) return true
+  }
+  return false
 }
