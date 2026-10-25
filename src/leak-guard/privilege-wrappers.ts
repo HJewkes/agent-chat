@@ -1,11 +1,12 @@
 /**
- * Option parsers for the privilege wrappers other than sudo: doas, run0, pkexec and su (CC-1218).
+ * Option parsers for the privilege wrappers other than sudo: doas, run0 and systemd-run (one
+ * binary), pkexec and su (CC-1218).
  * Each returns where the command it runs starts, or the words of the shell it runs instead, so
  * the guard can read that command. An option a table here does not know, an option with no value,
  * and any option word or value the shell expands give undefined: the caller denies rather than
  * guess where the command starts (an empty unquoted `-u $U` shifts every word after it).
- * Tables: run0 (systemd 259) and su (util-linux) from `--help`, pkexec (polkit 127) from its usage,
- * doas from the OpenBSD and opendoas getopt string `+a:C:Lnsu:` (UNVERIFIED on this box).
+ * Tables: run0 and systemd-run (systemd 259) and su (util-linux) from `--help`, pkexec (polkit 127)
+ * from its usage, doas from the OpenBSD and opendoas getopt string `+a:C:Lnsu:` (UNVERIFIED on this box).
  */
 
 import { LIVE } from './shell-words.js'
@@ -25,6 +26,35 @@ export interface OptionTable {
   gluedLong: boolean
   /** Whether the wrapper with no command runs the target user's shell. */
   bareShell: boolean
+  /** Whether an option's value may stand; a unit property not allow-listed may set what runs. */
+  allows?: (key: string, value: string) => boolean
+  /** How the wrapper's words read, when not as getopt stopping at the first operand. */
+  read?: Reader
+}
+
+type Reader = (t: OptionTable, words: readonly string[], i: number) => PrivilegeRun | undefined
+
+/**
+ * Unit properties that bound resources or timing only: none sets what runs, its stdin, environment,
+ * working directory or user. Growing this set is a reviewed table edit.
+ */
+const ALLOWED_PROPERTIES: ReadonlySet<string> = new Set([
+  ...['CPUQuota', 'CPUWeight', 'StartupCPUWeight', 'AllowedCPUs', 'MemoryMin', 'MemoryLow'],
+  ...['MemoryHigh', 'MemoryMax', 'MemorySwapMax', 'TasksMax', 'IOWeight', 'Nice'],
+  ...['CPUSchedulingPolicy', 'CPUSchedulingPriority', 'RuntimeMaxSec', 'TimeoutStopSec'],
+])
+const PROPERTY_KEYS: ReadonlySet<string> = new Set(['p', '--property'])
+const OTHER_UNIT_PROPERTIES: ReadonlySet<string> = new Set([
+  '--path-property',
+  '--socket-property',
+  '--timer-property',
+])
+
+/** The property name is the text before the first `=`, compared exactly, so `' ExecStart=…'` is not `ExecStart`. */
+function allowedProperty(key: string, value: string): boolean {
+  if (OTHER_UNIT_PROPERTIES.has(key)) return false
+  const end = value.indexOf('=')
+  return !PROPERTY_KEYS.has(key) || (end > 0 && ALLOWED_PROPERTIES.has(value.slice(0, end)))
 }
 
 const DOAS: OptionTable = {
@@ -71,6 +101,31 @@ const RUN0: OptionTable = {
   longShell: new Set(['--via-shell']),
   gluedLong: true,
   bareShell: true,
+  allows: allowedProperty,
+}
+
+const SYSTEMD_RUN: OptionTable = {
+  shortValue: 'HMEpu',
+  shortFlag: 'hrtTPqvGdR',
+  shortShell: 'S',
+  longValue: new Set([
+    ...['--host', '--machine', '--unit', '--property', '--description', '--slice'],
+    ...['--expand-environment', '--service-type', '--uid', '--gid', '--nice', '--working-directory'],
+    ...['--root-directory', '--setenv', '--json', '--job-mode', '--background', '--path-property'],
+    ...['--socket-property', '--timer-property', '--on-active', '--on-boot', '--on-startup'],
+    ...['--on-unit-active', '--on-unit-inactive', '--on-calendar'],
+  ]),
+  longFlag: new Set([
+    ...['--help', '--version', '--no-ask-password', '--user', '--system', '--scope', '--slice-inherit'],
+    ...['--no-block', '--remain-after-exit', '--wait', '--send-sighup', '--same-dir', '--same-root-dir'],
+    ...['--pty', '--pty-late', '--pipe', '--quiet', '--verbose', '--collect', '--ignore-failure'],
+    ...['--no-pager', '--on-timezone-change', '--on-clock-change'],
+  ]),
+  longShell: new Set(['--shell']),
+  gluedLong: true,
+  bareShell: false,
+  allows: allowedProperty,
+  read: readSystemdRun,
 }
 
 const PKEXEC: OptionTable = {
@@ -108,11 +163,13 @@ const SU: OptionTable = {
   longShell: new Set(),
   gluedLong: true,
   bareShell: true,
+  read: readSu,
 }
 
 export const PRIVILEGE_OPTIONS: ReadonlyMap<string, OptionTable> = new Map([
   ['doas', DOAS],
   ['run0', RUN0],
+  ['systemd-run', SYSTEMD_RUN],
   ['pkexec', PKEXEC],
   ['su', SU],
 ])
@@ -127,7 +184,7 @@ export function dropPrivilegeOptions(
 ): PrivilegeRun | undefined {
   const table = PRIVILEGE_OPTIONS.get(name)
   if (table === undefined) return undefined
-  const run = name === 'su' ? readSu(words, i) : readGetopt(table, words, i)
+  const run = (table.read ?? readGetopt)(table, words, i)
   // The shell argv is new words the caller cannot trace back to a quoted or split word, so none may be expanded.
   return run !== undefined && 'shell' in run && run.shell.some(word => word.includes(LIVE)) ? undefined : run
 }
@@ -149,9 +206,10 @@ function readOption(t: OptionTable, words: readonly string[], i: number): Option
   const a = words[i] as string
   const option = a.startsWith('--') ? longOption(t, a) : shortCluster(t, a)
   if (option === undefined || a.includes(LIVE)) return undefined
-  if (option.width === 0) return option
-  const value = words[i + 1]
-  return value === undefined || value.includes(LIVE) ? undefined : { ...option, value }
+  const value = option.width === 0 ? option.value : words[i + 1]
+  if (option.width > 0 && (value === undefined || value.includes(LIVE))) return undefined
+  if (value === undefined) return option
+  return t.allows === undefined || t.allows(option.key, value) ? { ...option, value } : undefined
 }
 
 function longOption(t: OptionTable, option: string): Option | undefined {
@@ -201,6 +259,14 @@ function readGetopt(t: OptionTable, words: readonly string[], i: number): Privil
   return { at: i }
 }
 
+/**
+ * systemd-run expands `$NAME` and `${NAME}` in the command from the unit's environment, which `-E`
+ * sets, so a word holding `$` may be any word, quoted or not.
+ */
+function readSystemdRun(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
+  return words.slice(i).some(word => word.includes('$')) ? undefined : readGetopt(t, words, i)
+}
+
 const SU_KEYS: ReadonlyMap<string, string> = new Map([
   ['--command', 'c'],
   ['--session-command', 'c'],
@@ -212,7 +278,7 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
  * util-linux su permutes, so options after the user still count. Its first operand is the user and
  * the rest are arguments to the shell, which runs -c's value when one is given.
  */
-function readSu(words: readonly string[], i: number): PrivilegeRun | undefined {
+function readSu(t: OptionTable, words: readonly string[], i: number): PrivilegeRun | undefined {
   const values = new Map<string, string>()
   const operands: string[] = []
   for (; i < words.length; i++) {
@@ -230,7 +296,7 @@ function readSu(words: readonly string[], i: number): PrivilegeRun | undefined {
       if (a !== '-') operands.push(a)
       continue
     }
-    const option = readOption(SU, words, i)
+    const option = readOption(t, words, i)
     if (option === undefined) return undefined
     if (option.value !== undefined) values.set(SU_KEYS.get(option.key) ?? option.key, option.value)
     i += option.width
