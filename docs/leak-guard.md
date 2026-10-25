@@ -498,6 +498,13 @@ unreadable, so it is denied, whatever it runs:
   redirection included, is unreadable (CC-1609).
 
 A case at the top level, outside any such span, is read as before: there a pattern's `)` ends nothing.
+These rules hold for a case inside backticks, `$(( ))` and `$[ ]`, and in `select`, `repeat` and zsh's
+short `for`, `foreach`, `while` and `until` bodies (CC-1610).
+
+An argument-position `(` with no close on its line, or one holding a `#` after a blank, `(` or `|`,
+makes the line unreadable inside such a span (CC-1610). zsh reads a group or a short loop's list, as in
+`for v (a` and a newline and then `)`, on past the line and past a comment, so the `)` the splitter
+would take for the span's end is the group's.
 
 A brace expansion after any git subcommand is read like such a glob group (CC-1427, CC-1434), since
 the guard denies options of `fetch`, `pull`, `difftool` and `init` as well as `push`, as in

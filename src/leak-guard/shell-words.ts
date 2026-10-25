@@ -847,6 +847,8 @@ class ShellLexer {
     if (this.emptyParens() || (word === null && this.opensCommand())) return false
     const end = this.groupEnd()
     if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
+    // zsh reads on to a `)` past the line, as in `for v (a` and a newline, which then could end the span (CC-1610).
+    if (end < 0 && this.closable()) this.budget.expansion = 'unreadable'
     if (end < 0) {
       this.split('(')
       this.pos++
@@ -888,12 +890,15 @@ class ShellLexer {
     return this.lastToken === 'for' && this.ahead(2) === '(('
   }
 
-  /** The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses a line. */
+  /**
+   * The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced, crosses
+   * a line, or holds a `#` after a blank, `(` or `|`, where zsh starts a comment that can hide a `)`.
+   */
   private groupEnd(): number {
     let depth = 0
     for (let i = this.pos; i < this.src.length; i++) {
       const c = this.src[i] as string
-      if (c === '\n') return -1
+      if (c === '\n' || (c === '#' && /[\s(|]/.test(this.src[i - 1] ?? ''))) return -1
       if (c === '\\') i++
       else if (c === '$' && this.peek(i + 1) === "'") i = this.closeAnsi(this.unjoin(i + 1))
       else if (c === "'" || c === '"') i = this.closeQuote(i, c)
