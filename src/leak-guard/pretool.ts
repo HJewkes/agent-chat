@@ -2888,6 +2888,25 @@ function printfHidesName(args: readonly string[]): boolean {
   return false
 }
 
+const DECLARE_BUILTINS = new Set(['declare', 'typeset', 'local'])
+// Attribute letters that leave each operand naming its own variable. Any other, `-n` above all,
+// may make an operand a nameref whose target is any program var (TP-2499).
+const PLAIN_DECLARE_OPTIONS = /^[-+][aAfFgilprtux]+$/
+
+/** Whether declare's words hide a variable name: an option outside the plain set, or an operand with a built name. */
+function declareHidesName(args: readonly string[]): boolean {
+  for (const [i, word] of args.entries()) {
+    const text = unmark(word)
+    if (text === '--') return args.slice(i + 1).some(hiddenName)
+    if (!/^[-+]./.test(text)) return args.slice(i).some(hiddenName)
+    if (word.includes(LIVE) || !PLAIN_DECLARE_OPTIONS.test(text)) return true
+  }
+  return false
+}
+
+// `${!A=x}` and `${!A:=x}` assign the variable A names, which may be any program var (TP-2499).
+const INDIRECT_ASSIGN = /\$\{![^}=:]*:?=/
+
 /** Whether a command, past the builtin at its head, takes a variable name the shell builds. */
 // The word a `<(...)` or `>(...)` redirection leaves: the shell passes a `/dev/fd` path, never a variable name.
 const isProcessSubstitution = (word: string): boolean => word === LIVE
@@ -2895,6 +2914,7 @@ const isProcessSubstitution = (word: string): boolean => word === LIVE
 function operandsHideName(name: string, written: readonly string[]): boolean {
   const args = written.filter(word => !isProcessSubstitution(word))
   if (NAME_OPERAND_BUILTINS.has(name)) return args.some(word => word.includes(LIVE))
+  if (DECLARE_BUILTINS.has(name)) return declareHidesName(args)
   if (ENV_DECL.has(name)) return args.some(hiddenName)
   return name === 'printf' && printfHidesName(args)
 }
@@ -3064,7 +3084,8 @@ function envUse(cmd: SimpleCommand): EnvUse {
   const written = writtenEnvUse(cmd, roles)
   const unwrapped = unwrappedEnvUse(cmd, roles)
   const body = functionBody(cmd.marked)
-  const hidden: EnvEvent[] = hidesVariableName(body) ? [NAME_HIDDEN] : []
+  const indirect = cmd.marked.some(word => INDIRECT_ASSIGN.test(unmark(word)))
+  const hidden: EnvEvent[] = indirect || hidesVariableName(body) ? [NAME_HIDDEN] : []
   const hashed: EnvEvent[] = hashesUnread(body) ? [SEARCH_UNREAD] : []
   return {
     events: [...written.events, ...unwrapped.events, ...hidden, ...hashed],

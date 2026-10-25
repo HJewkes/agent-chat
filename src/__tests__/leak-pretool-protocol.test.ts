@@ -466,6 +466,46 @@ describe('a process substitution is no variable name (TP-2371 final round)', () 
   )
 })
 
+describe('a nameref or an indirect default assignment, on a line that runs git (TP-2499)', () => {
+  it.each([
+    `declare -n R=$(printf 'GIT_ALLOW_%s' PROTOCOL); R=ext; git fetch o`,
+    'A=GIT_ALLOW_PROTO; declare -n R=${A}COL; R=ext; git fetch o',
+    'local -n R=$A; R=ext; git fetch o',
+    'typeset -n R=$A; R=ext; git fetch o',
+    'declare -gn R=$A; R=ext; git fetch o',
+    'declare -n R=GIT_ALLOW_PROTOCOL; R=ext; git fetch o',
+    'declare -n R; unset R; git fetch o',
+    'declare -n R; R="$A"; git fetch o',
+    'declare -n R; for R in $(cat f); do :; done; git fetch o',
+    'declare -x -n R=$A; R=ext; git fetch o',
+    'declare +n R; git fetch o',
+    'declare -$F R=$A; git fetch o',
+    'command declare -n R=$A; R=ext; git fetch o',
+    ': ${!A:=ext}; git fetch o',
+    ': ${!A=ext}; git fetch o',
+    'echo "${!A:=ext}"; git fetch o',
+  ])('denies %s', command => {
+    expect(hookReason(command)).toBe(REASONS.programEnv)
+  })
+
+  it.each([
+    'declare -a list=(a b); git fetch o',
+    'declare -A map; git fetch o',
+    'declare -i n=1; git fetch o',
+    'declare -r X=1; git fetch o',
+    'declare -gx FOO=$X; git fetch o',
+    'local line; git fetch o',
+    'local -r sha=$(git rev-parse HEAD)',
+    'typeset -i n; git fetch o',
+    'declare -p; git status',
+    'declare -n R=$A; R=x; ls',
+    'echo "${!A:-none}"; git status',
+    'echo "${!A}"; git status',
+  ])('allows %s', command => {
+    expect(hookReason(command)).toBeUndefined()
+  })
+})
+
 describe('git clone of a repository the guard cannot read (TP-2444)', () => {
   it.each([
     'git clone "$U"',
