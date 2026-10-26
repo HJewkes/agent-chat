@@ -34,6 +34,7 @@ import { readLaunchPlan } from './launch-files.js'
 import { holderOf } from './launch-guard.js'
 import { continueStarted } from './launch-plan.js'
 import { findTranscript } from './transcript.js'
+import { relaunchRefusal } from './relaunch-integrity.js'
 import { reviewerScratchDir, withScratchAddDir } from './reviewer-tree.js'
 
 /**
@@ -148,7 +149,12 @@ export function planConfigDir(plan: LaunchPlan, base: NodeJS.ProcessEnv = proces
 }
 
 /** `agent-chat run-agent <id>`: the verb every stored relaunch script calls. */
-export function runAgentVerb(agentId: string): void {
+export async function runAgentVerb(agentId: string): Promise<void> {
+  const refusal = await relaunchRefusal(agentId)
+  if (refusal !== undefined) {
+    process.stderr.write(`${refusal}\n`)
+    process.exit(77)
+  }
   const stored = readLaunchPlan(agentId)
   const dir = planConfigDir(stored)
   const continued = continueStarted(stored, id => findTranscript(stored.cwd, id, dir).exists)

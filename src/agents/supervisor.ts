@@ -41,6 +41,7 @@ import {
   markSuperseded,
   writeLaunchFiles,
   writeRuntimeState,
+  type LaunchIntegrity,
 } from './launch-files.js'
 import {
   agentLiveness,
@@ -994,6 +995,8 @@ export interface SupervisorOptions {
   seatTeleport?: SeatTeleportDeps
   /** CC-951: the host launchers a teleport can land a successor through, owned by the socket layer. */
   hosts?: LauncherSite
+  /** TP-4256 A3: the broker's shell-file ledger and launch-file watch. Absent, a launch is written without `--integrity`. */
+  integrity?: LaunchIntegrity
   /** CC-892: the account checks and transcript move behind `account_move`. Faked in tests. */
   accountMoves?: AccountMoves
   /**
@@ -1259,6 +1262,7 @@ export class Supervisor implements TeleportHost {
   /** CC-1059: spawns recorded here for a requester on another host to launch. */
   private readonly remoteSpawns: RemoteSpawns
   private readonly hosts: LauncherSite | undefined
+  private readonly launchIntegrity: LaunchIntegrity | undefined
   /** CC-1592: the one seam both a move and its dry run read, so they refuse alike. */
   private readonly accountMoves: AccountMoves
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
@@ -1296,6 +1300,7 @@ export class Supervisor implements TeleportHost {
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
+    this.launchIntegrity = options.integrity
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
     this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
@@ -2965,6 +2970,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agentId, allocation, isolationName),
+      this.launchIntegrity,
     )
     const provenance = await spawnProvenance(allocation, req, profile.name)
 
@@ -4481,6 +4487,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agent.agentId, allocation, isolation),
+      this.launchIntegrity,
     )
     const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
@@ -4616,6 +4623,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agent.agentId, allocation, isolation),
+      this.launchIntegrity,
     )
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
@@ -4829,6 +4837,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(input.profile, cliEntry(), plan.surface),
       this.createdWorktree(input.agentId, allocation, isolation),
+      this.launchIntegrity,
     )
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
@@ -5213,6 +5222,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(input.profile, cliEntry(), plan.surface),
       this.createdWorktree(input.agentId, allocation, isolation),
+      this.launchIntegrity,
     )
   }
 

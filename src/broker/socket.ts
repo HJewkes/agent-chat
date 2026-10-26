@@ -31,6 +31,7 @@ import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { integrityFrameRefusal } from './integrity-frame.js'
 import { IntegrityLedger } from './integrity-ledger.js'
 import { SettingsWatch } from './settings-watch.js'
+import type { LaunchIntegrity } from '../agents/launch-files.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
 import { sanitizeCarried, type CarriedFlags } from './host-channels.js'
@@ -489,7 +490,11 @@ export class SocketServer {
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
-    this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
+    this.supervisor = new Supervisor(core, {
+      ...supervisorOptions,
+      hosts: this.hosts,
+      integrity: this.launchIntegrity(),
+    })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
     this.settingsWatch.start()
@@ -1903,6 +1908,27 @@ export class SocketServer {
   }
 
   /**
+   * TP-4256 A3, Class 4: a read. The sweep runs first, so a launch file changed since the last tick
+   * (a plan.json that drops `--settings`) quarantines the launch before the relaunch is answered.
+   */
+  private handleIntegrityRelaunch(conn: Conn, agentId: unknown): void {
+    this.settingsWatch.sweep()
+    const quarantine = typeof agentId === 'string' ? this.integrity.quarantineOf(agentId) : undefined
+    if (quarantine === undefined) return reply(conn, { t: 'integrity_relaunch_result', ok: true })
+    reply(conn, { t: 'integrity_relaunch_result', ok: false, ...quarantine })
+  }
+
+  /** The port `writeLaunchFiles` registers each launch through: the shell-file baseline and the launch files. */
+  private launchIntegrity(): LaunchIntegrity {
+    return {
+      register: (nonce, agentId, startup, files) => {
+        this.integrity.registerLaunch(nonce, agentId, startup)
+        this.settingsWatch.register(nonce, files)
+      },
+    }
+  }
+
+  /**
    * Appended as the broker, like `noteBuildMismatch`: `enqueueForHuman` needs a registered sender and
    * answers with `send_result`, and the hook is neither.
    */
@@ -2284,6 +2310,8 @@ export class SocketServer {
         return this.handleServiceAsk(conn, msg)
       case 'integrity_check':
         return this.handleIntegrityCheck(conn, msg)
+      case 'integrity_relaunch':
+        return this.handleIntegrityRelaunch(conn, msg.agentId)
       case 'answers_since':
         return reply(conn, this.answersSince(msg))
       case 'spawn':

@@ -1,0 +1,49 @@
+import { BrokerClient } from '../client/broker-client.js'
+import type { ServerMessage } from '../protocol.js'
+
+/**
+ * TP-4256 A3: `run-agent` starts claude from the launch files on disk, and a quarantined launch's
+ * files may be the very ones that changed (a plan.json without `--settings` starts a hookless
+ * agent). So it asks the broker first, and a quarantined launch is not started again.
+ *
+ * A broker it cannot reach lets the launch go on, with a line on stderr: the broker that comes up
+ * next holds no baseline for this agent, so refusing here would protect nothing.
+ */
+
+type RelaunchResult = Extract<ServerMessage, { t: 'integrity_relaunch_result' }>
+export type AskRelaunch = (agentId: string) => Promise<RelaunchResult>
+
+const askBroker: AskRelaunch = async agentId => {
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  try {
+    await client.connect()
+    return (await client.request(
+      { t: 'integrity_relaunch', agentId },
+      'integrity_relaunch_result',
+    )) as RelaunchResult
+  } finally {
+    client.close()
+  }
+}
+
+/** Why the launch must not start, or undefined to start it. */
+export async function relaunchRefusal(
+  agentId: string,
+  ask: AskRelaunch = askBroker,
+  warn: (line: string) => void = line => void process.stderr.write(line),
+): Promise<string | undefined> {
+  let result: RelaunchResult
+  try {
+    result = await ask(agentId)
+  } catch (err) {
+    warn(`agent-chat run-agent: integrity relaunch check skipped: ${(err as Error).message}\n`)
+    return undefined
+  }
+  if (result.ok) return undefined
+  return (
+    `agent-chat run-agent: this launch is quarantined: ${result.file} changed (${result.field}). ` +
+    'Its launch files are not run again; `agent-chat agent resume` writes new ones under a fresh baseline.'
+  )
+}

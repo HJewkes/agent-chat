@@ -1,7 +1,8 @@
 import { Worker } from 'node:worker_threads'
 import { decideWithin, failOpenLogger } from '../../leak-guard/failopen.js'
-import { crashDenial, timeoutDenial } from '../../leak-guard/pretool.js'
+import { crashDenial, denyOutput, timeoutDenial } from '../../leak-guard/pretool.js'
 import { leakGuardLogPath } from '../../paths.js'
+import { integrityDenial } from './leak-integrity.js'
 import { readStdin } from './permission-hook.js'
 
 /**
@@ -52,9 +53,30 @@ const processIo: PretoolIo = {
  * `agent-chat leak-guard pretool`: the PreToolUse hook every spawned agent runs (CC-270). It exits
  * from the write callback: worker.terminate() cannot interrupt a native sync call, so a worker
  * stuck in one would otherwise keep the process alive past the harness deadline (CC-1409).
+ * With `nonce` the shell-file check runs beside the guard, and a deny from either one denies.
  */
-export async function leakPretool(io: PretoolIo = processIo): Promise<void> {
-  const out = await decidePretool(await io.readInput(), leakGuardLogPath())
+export async function leakPretool(
+  io: PretoolIo = processIo,
+  nonce?: string,
+  check: typeof integrityDenial = integrityDenial,
+): Promise<void> {
+  const raw = await io.readInput()
+  const [guard, integrity] = await Promise.all([
+    decidePretool(raw, leakGuardLogPath()),
+    nonce === undefined ? undefined : check(nonce, raw),
+  ])
+  const out = integrity === undefined ? guard : denyOutput(integrity)
   if (out === '') io.exit(0)
   else io.write(`${out}\n`, () => io.exit(0))
+}
+
+/** `agent-chat leak-guard posttool --integrity <nonce>`: the same check after the call, told to the model as a block. */
+export async function leakPosttool(
+  nonce: string,
+  io: PretoolIo = processIo,
+  check: typeof integrityDenial = integrityDenial,
+): Promise<void> {
+  const reason = await check(nonce, await io.readInput())
+  if (reason === undefined) io.exit(0)
+  else io.write(`${JSON.stringify({ decision: 'block', reason })}\n`, () => io.exit(0))
 }
