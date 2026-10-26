@@ -469,6 +469,13 @@ export class SocketServer {
   readonly settingsWatch = new SettingsWatch(this.integrity, (nonce, mismatch) =>
     this.noticeQuarantine(nonce, mismatch),
   )
+  /** TP-4256 A3: what `writeLaunchFiles` registers each launch through: its shell-file baseline and launch files. */
+  readonly launchIntegrity: LaunchIntegrity = {
+    register: (nonce, agentId, startup, files) => {
+      this.integrity.registerLaunch(nonce, agentId, startup)
+      this.settingsWatch.register(nonce, files)
+    },
+  }
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -493,7 +500,7 @@ export class SocketServer {
     this.supervisor = new Supervisor(core, {
       ...supervisorOptions,
       hosts: this.hosts,
-      integrity: this.launchIntegrity(),
+      integrity: this.launchIntegrity,
     })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
@@ -1916,16 +1923,6 @@ export class SocketServer {
     const quarantine = typeof agentId === 'string' ? this.integrity.quarantineOf(agentId) : undefined
     if (quarantine === undefined) return reply(conn, { t: 'integrity_relaunch_result', ok: true })
     reply(conn, { t: 'integrity_relaunch_result', ok: false, ...quarantine })
-  }
-
-  /** The port `writeLaunchFiles` registers each launch through: the shell-file baseline and the launch files. */
-  private launchIntegrity(): LaunchIntegrity {
-    return {
-      register: (nonce, agentId, startup, files) => {
-        this.integrity.registerLaunch(nonce, agentId, startup)
-        this.settingsWatch.register(nonce, files)
-      },
-    }
   }
 
   /**
