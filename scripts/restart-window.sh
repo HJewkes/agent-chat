@@ -71,6 +71,27 @@ rollback_cmd() { # rollback_cmd <checkout> <old head, or empty when unknown>
   echo "$cmd && agent-chat service restart"
 }
 
+# CC-1653: the restarted broker inherits this shell's env, and an agent session's shim dirs on its
+# PATH get baked into every later launch's git shim as the real git, which refuses every push.
+shim_on_path() {
+  local dir name dirs
+  IFS=: read -r -a dirs <<< "$PATH"
+  for dir in "${dirs[@]}"; do
+    for name in git gh; do
+      if grep -qa '^# Written by agent-chat' < <(head -c 512 "$dir/$name" 2>/dev/null); then
+        echo "$dir/$name"
+        return
+      fi
+    done
+  done
+}
+agent_session=""
+shim="$(shim_on_path)"
+[ -z "$shim" ] || agent_session="agent-chat shim $shim is on PATH"
+[ -z "${AGENT_CHAT_NAME:-}" ] || agent_session="AGENT_CHAT_NAME is set ($AGENT_CHAT_NAME)"
+[ -z "$agent_session" ] ||
+  blockers+=("this is an agent session ($agent_session), and the broker would inherit its shims; run it from the owner's terminal, or with a clean env: systemd-run --user --wait --pipe $(readlink -f "$0")")
+
 pids="$(running "$PUSH_RE")"
 [ -z "$pids" ] || blockers+=("a git push is running (pid $pids)")
 pids="$(running "$MERGE_RE")"

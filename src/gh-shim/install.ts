@@ -4,6 +4,7 @@ import path from 'node:path'
 
 import { GH_GROUPS } from '../gh-write/gh-groups.js'
 import { posixShell } from '../leak-guard/posix-shell.js'
+import { SHIM_HEADER } from '../leak-guard/shim-header.js'
 import { READ_SUBCOMMANDS } from './rate-limit.js'
 import { AUTH_READS, DOWNLOAD_GROUPS } from './read-shape.js'
 import { GH_WRITE_TICKET_ENV } from './ticket.js'
@@ -76,7 +77,7 @@ export const ghShimScript = (
 ): string =>
   [
     `#!${shell}`,
-    '# Written by agent-chat at each spawn (CC-395); answers read-only gh commands from REST.',
+    `${SHIM_HEADER} at each spawn (CC-395); answers read-only gh commands from REST.`,
     `if [ -x ${quote(node)} ] && [ -f ${quote(main)} ]; then`,
     `  ${GH_SHIM_DIR_ENV}=${quote(dir)} ${GH_KEY_ROOT_ENV}=${quote(keyRoot)} exec ${quote(node)} ${quote(main)} "$@"`,
     'fi',

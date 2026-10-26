@@ -6,7 +6,7 @@ import { probeHealth } from '../broker/doctor.js'
 import { activeHold, clearHold, writeHold } from '../broker/hold.js'
 import { exitWithWatchedPid } from '../broker/parent-watch.js'
 import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } from '../broker/lifecycle.js'
-import { recordLoginPath, resolveBasePath } from '../agents/base-path.js'
+import { clearInheritedShimEnv, recordLoginPath, resolveBasePath } from '../agents/base-path.js'
 import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
 import { withoutLaunchIdentity } from '../launch-identity.js'
@@ -82,7 +82,9 @@ export async function start(options: { port?: number; foreground?: boolean }): P
     // Exactly what `agent-chat broker` has always done, and still the same code
     // path: the hidden alias and this flag must not drift apart.
     if (port !== undefined) process.env.AGENT_CHAT_PORT = String(port)
-    // Every auto-start lands here, so the broker's own children get a full PATH (CC-456).
+    // Every auto-start lands here, so the broker's own children get a full PATH (CC-456), and
+    // none of the push guard of an agent session that started it (CC-1653).
+    clearInheritedShimEnv(process.env)
     process.env.PATH = resolveBasePath({ env: process.env, stateDir: home() })
     exitWithWatchedPid(process.env)
     installCrashLog()
