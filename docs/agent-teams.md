@@ -2354,6 +2354,13 @@ Mitigations to build:
   the complexity this design earns its way out of (README: "no heartbeats, no
   TTLs, no stale-entry reaper").
 
+**Leak-guard integrity baselines after a restart (TP-4256).** The broker holds every spawned
+agent's shell-file baseline in memory only, by design. After a restart, every live agent's next
+Bash, Edit or Write call denies with `integrity check refused: no baseline`. As the last step of a
+planned restart window, run `agent-chat agent resume` for each live spawned agent. The resume
+mints a new nonce and a fresh baseline. See `docs/leak-guard.md`, "Files a later shell sources:
+run-time check".
+
 **Checking a rollback target before a restart.** `scripts/rollback-check.sh <sha> [port] [--home <seed>]`
 answers "if this restart goes wrong, can the broker come back up on the old revision?"
 without touching the live one. It exports the revision with `git archive` into a temp dir,

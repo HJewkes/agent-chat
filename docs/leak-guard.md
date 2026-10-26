@@ -1489,9 +1489,9 @@ the guard.
   no list of file names, and coordinators are refused too.
 - A Bash write is never refused up front: the guard does not match command text against path
   spellings (CC-1643).
-- The guarantee is the broker's watch (`src/broker/settings-watch.ts`) over every launch file,
-  **from A3 on**: until A3 calls `SettingsWatch.register` from the launcher, nothing is registered
-  and the watch sees nothing. Once registered, it keeps the sha256 of each file a launch wrote,
+- The guarantee is the broker's watch (`src/broker/settings-watch.ts`) over every launch file.
+  `writeLaunchFiles` registers every file it wrote (A3) when the broker wrote them; a launch written
+  anywhere else is not watched (see the A3 section below). It keeps the sha256 of each file a launch wrote,
   re-hashes them on every `integrity_check` and on a 60 s timer, and the first changed, deleted or
   unreadable file quarantines that launch and files one owner notice. It detects; it does not
   prevent, restore, or stop the agent.
@@ -1504,9 +1504,9 @@ the guard.
 
 - A file edited and restored between two sweeps (the A3 follow-up: mtime, ctime and inode, or
   `fs.watch`).
-- Anything within its latency of up to 60 s. A hookless agent sends no `integrity_check`, so until
-  A3 refuses to relaunch a quarantined nonce, the notice is the only consequence. Whether Claude Code
-  re-reads a `--settings` file mid-session is UNVERIFIED.
+- Anything within its latency of up to 60 s. A hookless agent sends no `integrity_check`, so the
+  notice and the refused relaunch (A3) are the only consequences. Whether Claude Code re-reads a
+  `--settings` file mid-session is UNVERIFIED.
 - A change made while the broker is down, or after a restart and before re-registration: the
   ledger and the watch are memory only.
 - Files outside the agents dir that decide whether the hook runs: the agent-chat `dist/` or plugin
@@ -1525,6 +1525,54 @@ Out of scope: Bash-route prevention (CC-1643), wiring `register` and refusing a 
 relaunch (A3), edit-then-restore (A3 follow-up), persistence across restarts (owner), and hook
 binary or `dist/` integrity (a new task). A finding that is another spelling of a path under the
 agents dir is a defect in the rule's canonicalisation: fix it there, and add no new rule or name.
+
+### Files a later shell sources: run-time check (TP-4256 A3)
+
+The launcher and the hooks carry out TP-4232's option R1. No step reads shell line text: the check
+stats and hashes files, and decides by nonce, ledger and real path.
+
+- **Launch.** `writeLaunchFiles`, when the broker calls it, mints a 32-byte hex nonce per call. It
+  writes the launch files, then registers the nonce with the broker's ledger: the startup record
+  (the shell startup files in `HOME` and `ZDOTDIR`, plus absolute `BASH_ENV` and `ENV`, read from
+  the broker's env under the plan's) and every file it wrote, for the watch. A resume or a mode
+  switch calls it again, so it gets a new nonce and a fresh baseline. The old nonce stays
+  quarantined.
+- **Hooks.** The guard's PreToolUse hook runs `leak-guard pretool --integrity <nonce>`, and a
+  PostToolUse twin with the same matcher runs `leak-guard posttool --integrity <nonce>`. Each reads
+  `session_id` from stdin and builds the current records from its own `HOME`, `ZDOTDIR`,
+  `CLAUDE_CONFIG_DIR`, `CLAUDE_ENV_FILE`, `BASH_ENV` and `ENV`
+  (`src/leak-guard/integrity/env-records.ts`). It sends `integrity_check`. Pretool denies when
+  either the guard or the check denies. Posttool prints `{"decision":"block","reason":...}`, so
+  the model learns that the call it just made changed a sourced file.
+- **No fail-open.** An unreachable broker, a reply past 12 s, a crash and a nonce the broker did not
+  mint all deny. The first three deny with `leak-guard: integrity baseline unreachable`. The
+  check's error path never reaches the pretool fail-open logger.
+- **Relaunch.** `run-agent` asks the broker (`integrity_relaunch`, a read) before it starts claude
+  from the files on disk. The broker sweeps the watch first, so a `plan.json` rewritten to drop
+  `--settings` is caught even when no tool call has reported it. A quarantined launch exits 77.
+  Only `agent-chat agent resume`, which writes new files under a new nonce, gets past a
+  quarantine. If `run-agent` cannot reach the broker, it starts the launch with a line on
+  stderr: the next broker holds no baseline for the agent, so refusing would protect nothing.
+- **Without the flag.** A settings file with no `--integrity` skips the check, so owner sessions
+  and settings written before A3 work as before.
+- **Launches written off the broker.** A remote spawn (`src/server/remote-launch.ts`), a host
+  launcher (`src/server/host-launcher.ts`) and a caller teleport (`src/server/caller-teleport.ts`)
+  run `writeLaunchFiles` in another process, which may serve another broker. They pass no port,
+  so their hooks carry no `--integrity` and those agents are not checked.
+
+**A broker restart quarantines every live agent.** The ledger is memory only (accepted design,
+plan risk 1). After a restart, every running agent's next guarded call denies with `integrity check
+refused: no baseline`. The restart runbook step: after a planned restart window, `agent-chat agent
+resume` each live spawned agent; the resume writes new files under a new nonce. A change made while
+the broker is down is not seen.
+
+**Known gaps, not fixed here.** A launch file edited and restored to the same inode and bytes
+between two calls (S15) is not seen, because the watch keeps no ctime. That is the A3 follow-up.
+The startup and session files do keep ctime, so a restore there is caught. If the shell
+that runs `run-agent` has a different `HOME`, `ZDOTDIR`, `BASH_ENV` or `ENV` than the broker, the
+records differ and the first call quarantines. That over-denies, which is the safe direction. Whether
+Claude Code rewrites a session snapshot mid-session (which would quarantine falsely) has been seen
+for one session only; the 1 h stat-diff run is still owed.
 
 ### Config the guard cannot read (TP-630)
 
