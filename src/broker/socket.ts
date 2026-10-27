@@ -31,6 +31,7 @@ import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { integrityFrameRefusal } from './integrity-frame.js'
 import { IntegrityLedger } from './integrity-ledger.js'
 import { INTEGRITY_WIRED } from './integrity-wired.js'
+import { INTEGRITY_WIRED_SINCE } from './event-log.js'
 import { SettingsWatch } from './settings-watch.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
@@ -521,8 +522,24 @@ export class SocketServer {
       ...(INTEGRITY_WIRED ? { integrity: this.integrity } : {}),
     })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
+    if (INTEGRITY_WIRED) this.markIntegrityWired()
     this.closeOrphanedHookRows()
     this.settingsWatch.start()
+  }
+
+  /**
+   * TP-4341: written once, at the first wired start. A launch unarmed before it was written by an
+   * unwired broker; one changed at or after it had its nonce stripped.
+   */
+  private markIntegrityWired(): void {
+    if (this.core.events.integrityWiredSince() !== undefined) return
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: 'agent-chat',
+      body: 'the integrity ledger is wired from here on',
+      meta: { event: INTEGRITY_WIRED_SINCE },
+    })
   }
 
   attachJobKick(port: JobKick): void {

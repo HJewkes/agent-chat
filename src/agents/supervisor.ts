@@ -3654,7 +3654,7 @@ export class Supervisor implements TeleportHost {
     if (agent === undefined || DEPARTED.has(agent.state)) return
     this.readmitting.add(agentId)
     try {
-      const survivor = survivingLaunch(agentId)
+      const survivor = survivingLaunch(agentId, this.core.events.integrityWiredSince())
       if (survivor === undefined) return
       const parent = this.ledgerParent(this.recordedParent(agentId))
       if (parent === HUMAN_ROOT || this.ledger.knows(parent))

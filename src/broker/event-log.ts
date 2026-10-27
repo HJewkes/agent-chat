@@ -108,6 +108,9 @@ const QUEUE_KINDS = ["'message'", "'question'", "'notice'", "'approval_request'"
  */
 export const APPROVAL_TTL_MS = 10 * 60 * 1000
 
+/** The `meta.event` of the one row that marks the first broker start with `INTEGRITY_WIRED` on. */
+export const INTEGRITY_WIRED_SINCE = 'integrity_wired_since'
+
 /**
  * Hook-raised approvals (CC-144) are exempt from the TTL: the hook is still blocking
  * while the row is open, and the broker closes the row itself when the hook withdraws or
@@ -548,6 +551,17 @@ export class EventLog implements EventStore {
     const row = this.db
       .prepare(`SELECT ts FROM events WHERE ref = ? AND kind = ? ORDER BY id DESC LIMIT 1`)
       .get(ref, kind) as { ts: number } | undefined
+    return row?.ts
+  }
+
+  /** TP-4341: when a broker first ran with the ledger wired; the first such row wins, so the mark never moves. */
+  integrityWiredSince(): number | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT ts FROM events WHERE kind = 'notice'
+           AND json_extract(meta, '$.event') = '${INTEGRITY_WIRED_SINCE}' ORDER BY id ASC LIMIT 1`,
+      )
+      .get() as { ts: number } | undefined
     return row?.ts
   }
 

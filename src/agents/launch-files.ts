@@ -505,16 +505,27 @@ function parsed<T>(read: () => T): T | undefined {
   }
 }
 
+/** A file whose content and inode were both last changed before `mark`; none is, without a mark. */
+function changedBefore(file: string, mark: number | undefined): boolean {
+  const stat = fs.statSync(file)
+  return mark !== undefined && stat.mtimeMs < mark && stat.ctimeMs < mark
+}
+
 /**
  * TP-4341: the launch an agent that outlived its broker is running, checked against what a broker
- * writes. Undefined when this broker never wrote one for it (a hand-started or remote agent).
+ * writes. Undefined when this broker never wrote one for it (a hand-started or remote agent). An
+ * unarmed guard is a launch an unwired broker wrote only while every file predates `wiredSince`,
+ * the first wired start; one touched since then had its nonce stripped.
  */
-export function survivingLaunch(agentId: string): Survivor | undefined {
+export function survivingLaunch(agentId: string, wiredSince: number | undefined): Survivor | undefined {
   if (!fs.existsSync(agentDir(agentId))) return undefined
   const fault = launchFault(agentId)
   if ('intact' in fault) return fault
   const files = launchFilesOf(agentId)
-  if (fault.nonce === undefined) return { intact: true, startup: {}, files }
+  if (fault.nonce === undefined) {
+    const late = files.find(file => !changedBefore(file, wiredSince))
+    return late === undefined ? { intact: true, startup: {}, files } : tampered(late, 'unarmed since wiring')
+  }
   const plan = readPlanFile(planPath(agentId))
   return { intact: true, nonce: fault.nonce, startup: startupRecords(launchEnv(plan)), files }
 }

@@ -5,7 +5,7 @@ import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { autoAttach } from './broker-harness.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
-import { EventLog } from '../broker/event-log.js'
+import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { HUMAN_ROOT, IntegrityLedger } from '../broker/integrity-ledger.js'
 import { Supervisor } from '../agents/supervisor.js'
@@ -137,6 +137,18 @@ async function exitResumable(agentId: string): Promise<void> {
   fs.writeFileSync(file, '{}\n')
 }
 
+/** The first wired start, after every launch so far: those unwired launches predate it (TP-4341). */
+async function markWired(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 20))
+  core.append({
+    kind: 'notice',
+    actor: 'agent-chat',
+    target: 'agent-chat',
+    body: 'wired',
+    meta: { event: INTEGRITY_WIRED_SINCE },
+  })
+}
+
 /** An exited, resumable agent whose spawn row names `parent`, written straight to the log. */
 function recordedExited(agentId: string, name: string, parent: string): void {
   const meta = {
@@ -187,6 +199,7 @@ describe('resume after a broker restart', () => {
     const lead = await spawned(before, 'lead', DESK)
     const scout = await spawned(before, 'scout', lead)
     await exitResumable(scout)
+    await markWired()
     const ledger = restartedLedger()
     const admit = vi.spyOn(ledger, 'admit')
 

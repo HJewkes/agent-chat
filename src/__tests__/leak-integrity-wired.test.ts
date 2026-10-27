@@ -7,11 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { autoAttach } from './broker-harness.js'
 import { hookSettingsPath } from '../agents/launch-files.js'
 import { relaunchRefusal } from '../agents/relaunch-integrity.js'
-import { RELAUNCH_RETRY_MS, type Supervisor } from '../agents/supervisor.js'
+import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { AgentProfile } from '../agents/types.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
-import { EventLog } from '../broker/event-log.js'
+import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
 import { SocketServer } from '../broker/socket.js'
@@ -534,6 +534,21 @@ describe.skipIf(!BUILT_WIRED)('FF3/4: run-agent with no broker to ask', () => {
   })
 })
 
+/** A coordinator's spawn of `name` under `parentAgentId`: its id, or why it was refused. */
+async function spawnUnder(supervisor: Supervisor, root: string, name: string, parentAgentId?: string) {
+  const result = await supervisor.spawn({
+    name,
+    profile: 'lead',
+    brief: 'read the log',
+    cwd: path.join(root, 'work'),
+    isolation: 'none',
+    surface: 'headless',
+    requestedBy: parentAgentId === undefined ? 'human' : 'coord',
+    ...(parentAgentId === undefined ? {} : { parentAgentId }),
+  })
+  return result.ok ? (result.agentId as string) : `refused: ${result.reason}`
+}
+
 /**
  * TP-4341: a restart leaves the ledger empty while the agents run on. Broker two is a new
  * `SocketServer` over the same event log and home, so only what is on disk carries across.
@@ -551,19 +566,8 @@ function restarted(wired: Wired) {
       INTEGRITY_DEADLINE_MS,
       inline,
     )
-  const spawn = async (name: string, parentAgentId: string) => {
-    const result = await next.supervisor.spawn({
-      name,
-      profile: 'lead',
-      brief: 'read the log',
-      cwd: path.join(wired.root, 'work'),
-      isolation: 'none',
-      surface: 'headless',
-      requestedBy: 'coord',
-      parentAgentId,
-    })
-    return result.ok ? (result.agentId as string) : `refused: ${result.reason}`
-  }
+  const spawn = (name: string, parentAgentId: string) =>
+    spawnUnder(next.supervisor, wired.root, name, parentAgentId)
   return { ...next, hook, spawn }
 }
 
@@ -679,5 +683,86 @@ describe('TP-4341: coordinators that outlive a wired broker restart', () => {
 
     expect(child).not.toMatch(/^refused/)
     expect(after.server.integrity.parentOf(lead)).toBe(HUMAN_ROOT)
+  })
+})
+
+/** A lead an unwired broker launched in `root`, before any wired broker ran there: its guard is unarmed. */
+async function unwiredLead(root: string): Promise<string> {
+  const core = new BrokerCore(() => undefined, {
+    events: new EventLog(path.join(root, 'events.db')),
+    registry: new Registry<Conn>(),
+  })
+  const stopAttach = autoAttach(core)
+  const supervisor = new Supervisor(core, {
+    nameFreeMs: 50,
+    launcherRunning: async () => false,
+    surface: {
+      platform: 'darwin',
+      spawn: (() => ({ pid: 4243, unref: () => undefined, once: () => undefined })) as never,
+    },
+  })
+  const lead = await spawnUnder(supervisor, root, 'lead')
+  await settle()
+  stopAttach()
+  supervisor.close()
+  return lead
+}
+
+/** The lead's settings rewritten to the unarmed shape an unwired broker writes. */
+function stripNonce(agentId: string): void {
+  const file = hookSettingsPath(agentId)
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+    hooks: Record<string, { hooks: { command: string }[] }[]>
+  }
+  settings.hooks.PostToolUse = (settings.hooks.PostToolUse ?? []).filter(
+    entry => !entry.hooks.some(hook => hook.command.includes('leak-guard posttool')),
+  )
+  for (const entry of settings.hooks.PreToolUse ?? [])
+    for (const hook of entry.hooks) hook.command = hook.command.replace(/ --integrity '[0-9a-f]{64}'/, '')
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2))
+}
+
+const wiredMarks = (core: BrokerCore) =>
+  core.events.since(0, 500).filter(row => row.meta?.event === INTEGRITY_WIRED_SINCE)
+
+describe('TP-4341: an unarmed launch is accepted once, as the migration to a wired ledger', () => {
+  it('admits a coordinator an unwired broker launched before the first wired start', async () => {
+    const { root } = syntheticHome()
+    const lead = await unwiredLead(root)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const wired = broker(root)
+
+    const child = await spawnUnder(wired.supervisor, root, 'child', lead)
+
+    expect(child).not.toMatch(/^refused/)
+    expect(wired.server.integrity.parentOf(lead)).toBe(HUMAN_ROOT)
+  })
+
+  it('quarantines a coordinator whose nonce was stripped after the first wired start, mtime backdated', async () => {
+    const wired = await setup()
+    stripNonce(wired.lead)
+    // touch -d sets mtime, never ctime, so the ctime half of the check still sees the rewrite.
+    fs.utimesSync(hookSettingsPath(wired.lead), new Date(0), new Date(0))
+    const after = restarted(wired)
+
+    const child = await after.spawn('child', wired.lead)
+
+    expect(child).toMatch(/^refused: .*quarantined/)
+    expect(after.server.integrity.verdict(wired.lead)).toMatchObject({
+      reason: 'quarantined',
+      field: 'unarmed since wiring',
+    })
+  })
+
+  it('keeps the first mark through later restarts', async () => {
+    const wired = await setup()
+    const mark = wired.core.events.integrityWiredSince()
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    const after = restarted(wired)
+
+    expect(mark).toBeDefined()
+    expect(after.core.events.integrityWiredSince()).toBe(mark)
+    expect(wiredMarks(after.core)).toHaveLength(1)
   })
 })
