@@ -9,7 +9,7 @@ import { SocketServer } from '../broker/socket.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { BUILTIN_PROFILES, parseProfile } from '../agents/profiles.js'
-import { carriesContract, contractOf, withReturnContract } from '../agents/return-contract.js'
+import { carriesContract, contractOf, visibilityLine, withReturnContract } from '../agents/return-contract.js'
 import {
   BODY_FILE_RULE,
   FOLLOW_UPS_RULE,
@@ -22,6 +22,7 @@ import {
   REVIEWER_BODY_FILE_RULE,
   REVIEWER_WITHOUT_SHEPHERD,
   SHEPHERD_NONE_MARKER,
+  VISIBILITY_PLACEHOLDER,
 } from '../agents/return-contract-blocks.js'
 import { identityTranscript } from '../agents/resume-session.js'
 import { SESSION_RULES, SPAWNED_RULES } from '../agents/standing-rules.js'
@@ -113,8 +114,12 @@ async function delivered(over: Record<string, unknown> = {}): Promise<{ text: st
   return { text: readLaunchPlan(result.agentId as string).stdin ?? '', warnings: result.warnings ?? [] }
 }
 
+/** As delivered by a broker with no visibility reader, which is every spawn here but CC-1384's own. */
+const filled = (text: string, spawner = 'coord'): string =>
+  text.split('<spawner>').join(spawner).replace(VISIBILITY_PLACEHOLDER, visibilityLine())
+
 const block = (contract: ReturnContract, spawner = 'coord'): string =>
-  RETURN_CONTRACT_BLOCKS[contract].split('<spawner>').join(spawner)
+  filled(RETURN_CONTRACT_BLOCKS[contract], spawner)
 
 const flat = (text: string): string => text.replace(/\s+/g, ' ')
 
@@ -214,9 +219,7 @@ describe('the check-run rule (CC-357)', () => {
   it('has the implementer paste each check-run at the head instead of reporting "green"', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
-    expect(text).toContain(
-      'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
-    )
+    expect(text).toContain('CI: <paste of: gh pr checks <n> --repo <owner>/<repo>>')
     expect(text).toContain('never "green" alone')
     expect(text).toContain('`gh run watch` covers only one workflow')
     expect(text).toContain('a skipped check (std / compat) is no failure')
@@ -229,9 +232,60 @@ describe('the check-run rule (CC-357)', () => {
     const text = flat(REVIEWER_WITHOUT_SHEPHERD)
 
     expect(text).toContain('Before MERGE, confirm every required check-run (one branch protection names)')
-    expect(text).toContain('commits/<head>/check-runs" --paginate')
+    expect(text).toContain('`gh pr checks <n> --repo <owner>/<repo> --required`')
     expect(text).toContain('FIX_FIRST if a required one failed')
     expect(text).toContain('A skipped check (std / compat) is not a failure')
+  })
+})
+
+describe('the repo visibility the broker states (CC-1384)', () => {
+  const withReader = (read: (cwd: string) => Promise<'public' | 'private'>): void => {
+    supervisor.close()
+    supervisor = new Supervisor(core, { surface: SURFACE, repoVisibility: read })
+  }
+
+  // Mutation caught: the supervisor never passing the read visibility to the contract.
+  it('tells an implementer the visibility it read at spawn, in place of a gh api probe', async () => {
+    const cwds: string[] = []
+    withReader(async cwd => {
+      cwds.push(cwd)
+      return 'public'
+    })
+
+    // The synthetic-data line keeps the brief lint from reading too, so every read counted is the contract's.
+    const { text } = await delivered({ brief: 'add the parser; synthetic data only' })
+
+    expect(text).toContain('Repo visibility, read at spawn: PUBLIC. If public, no real data')
+    expect(text).not.toContain('<repo visibility>')
+    expect(text).not.toContain('--jq .visibility')
+    expect(cwds).toHaveLength(1)
+  })
+
+  // Mutation caught: a failed read dropping the spawn or the line instead of saying "treat it as public".
+  it('tells the implementer to treat the repo as public when the read fails', async () => {
+    withReader(() => Promise.reject(new Error('gh timed out')))
+
+    const { text } = await delivered({ brief: 'add the parser; synthetic data only' })
+
+    expect(text).toContain('Repo visibility unread at spawn: treat it as public. If public, no real data')
+  })
+
+  it('says the same when the broker has no reader at all', async () => {
+    const { text } = await delivered()
+
+    expect(text).toContain('treat it as public')
+  })
+
+  it('reads nothing for a reviewer, whose block states no visibility', async () => {
+    const cwds: string[] = []
+    withReader(async cwd => {
+      cwds.push(cwd)
+      return 'private'
+    })
+
+    await delivered({ profile: 'reviewer', brief: 'review PR 7; synthetic data only' })
+
+    expect(cwds).toEqual([])
   })
 })
 
