@@ -2,7 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BASE_PATH_ENV, recordLoginPath, resolveBasePath } from '../agents/base-path.js'
+import {
+  BASE_PATH_ENV,
+  clearInheritedShimEnv,
+  recordLoginPath,
+  resolveBasePath,
+} from '../agents/base-path.js'
 import { agentBaseEnv, withShims } from '../agents/launch-agent.js'
 import type { LaunchPlan } from '../agents/types.js'
 
@@ -94,5 +99,73 @@ describe('a headless agent launched from a minimal-PATH broker', () => {
     expect(dirs[1]).toContain(path.join(stateDir, 'gh-shim'))
     expect(dirs).toContain('/opt/homebrew/bin')
     expect(dirs).toContain('/usr/sbin')
+  })
+})
+
+describe('a broker started from an agent session (CC-1653)', () => {
+  let stateDir: string
+  const shimAt = (dir: string, name: string): string => {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, name), '#!/bin/sh\n# Written by agent-chat at each spawn.\n', {
+      mode: 0o755,
+    })
+    return dir
+  }
+
+  beforeEach(() => {
+    stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-base-path-')))
+  })
+
+  afterEach(() => {
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  })
+
+  it('drops every inherited and recorded dir holding an agent-chat shim', () => {
+    const shared = shimAt(path.join(stateDir, 'git-bin'), 'git')
+    const noRewrite = shimAt(path.join(stateDir, 'git-hooks', 'git-bin'), 'git')
+    const gh = shimAt(path.join(stateDir, 'gh-shim', 'abc'), 'gh')
+    const env = { PATH: `${noRewrite}:${gh}:${shared}:/usr/bin`, HOME: '/h' }
+
+    const dirs = resolveBasePath({ env, stateDir, isDir: onThisMachine, readFirstLine: () => shared }).split(
+      ':',
+    )
+
+    expect(dirs).not.toContain(shared)
+    expect(dirs).not.toContain(noRewrite)
+    expect(dirs).not.toContain(gh)
+    expect(dirs[0]).toBe('/usr/bin')
+  })
+
+  it("clears the agent's shim dir, mirror exec path and hooks-path pair", () => {
+    const shimDir = shimAt(path.join(stateDir, 'git-hooks', 'git-bin'), 'git')
+    const mirror = path.join(shimDir, 'core')
+    fs.mkdirSync(mirror)
+    fs.symlinkSync(path.join(shimDir, 'git'), path.join(mirror, 'git'))
+    const env: NodeJS.ProcessEnv = {
+      AGENT_CHAT_GIT_SHIM_DIR: shimDir,
+      GIT_EXEC_PATH: mirror,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: path.join(stateDir, 'git-hooks', 'no-rewrite'),
+      HOME: '/h',
+    }
+
+    clearInheritedShimEnv(env)
+
+    expect(env).toEqual({ HOME: '/h' })
+  })
+
+  it("keeps an owner's own GIT_EXEC_PATH and GIT_CONFIG pair", () => {
+    const env: NodeJS.ProcessEnv = {
+      GIT_EXEC_PATH: '/usr/lib/git-core',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'user.name',
+      GIT_CONFIG_VALUE_0: 'me',
+    }
+    const before = { ...env }
+
+    clearInheritedShimEnv(env)
+
+    expect(env).toEqual(before)
   })
 })

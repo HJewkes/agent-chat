@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { HOST_PATH } from './helpers/git-shim-fixture.js'
 
 const SCRIPT = path.resolve(import.meta.dirname, '../../scripts/restart-window.sh')
 
@@ -38,7 +39,7 @@ const run = (lines: string[], env: Record<string, string>) => {
     cwd: dir,
     encoding: 'utf8',
     env: {
-      PATH: `${path.join(dir, 'bin')}:${process.env.PATH}`,
+      PATH: `${path.join(dir, 'bin')}:${HOST_PATH}`,
       HOME: dir,
       RESTART_WINDOW_PROCS: procs,
       ...env,

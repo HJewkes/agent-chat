@@ -5,6 +5,7 @@ import { SAFE_GIT_PROTOCOLS } from '../git.js'
 import { ALIAS_NAME } from './git-alias.js'
 import { probeGit, writeGitMirror } from './git-mirror.js'
 import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
+import { isAgentChatShim, SHIM_HEADER } from './shim-header.js'
 
 /** Names the dir holding the agent's `git` shim in the launch plan; `run-agent` puts it first on PATH. */
 export const GIT_SHIM_DIR_ENV = 'AGENT_CHAT_GIT_SHIM_DIR'
@@ -500,7 +501,7 @@ export const gitShimScript = (
   mirror = '',
 ): string =>
   `${hardenedShebang(shell)}
-# Written by agent-chat at each spawn (TP-596); local edits are overwritten.
+${SHIM_HEADER} at each spawn (TP-596); local edits are overwritten.
 ${ENVIRONMENT_SCRUB}mirror=${shQuote(mirror)}
 ${PIN_MIRROR}
 ${HIDE_GIT_CONFIG}
@@ -561,14 +562,19 @@ export const isExecutableFile = (file: string): boolean => {
   }
 }
 
-/** The first `git` on PATH that is not the shim; kept unresolved so a package upgrade does not strand it. */
+/**
+ * The first `git` on PATH that is not an agent-chat shim, this one or any other (CC-1653: another
+ * shim baked as the real git runs its own guard's checks against this shim's hooks dir). Kept
+ * unresolved so a package upgrade does not strand it.
+ */
 export function findRealGit(pathValue: string, shimDir: string): string | undefined {
   const shim = realpathOr(path.join(shimDir, 'git'))
   const ownDir = realpathOr(shimDir)
   for (const dir of pathValue.split(path.delimiter)) {
     if (!path.isAbsolute(dir) || realpathOr(dir) === ownDir) continue
     const candidate = path.join(dir, 'git')
-    if (isExecutableFile(candidate) && realpathOr(candidate) !== shim) return candidate
+    if (isExecutableFile(candidate) && realpathOr(candidate) !== shim && !isAgentChatShim(candidate))
+      return candidate
   }
   return undefined
 }
