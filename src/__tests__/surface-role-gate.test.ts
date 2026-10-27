@@ -6,6 +6,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import type { Supervisor } from '../agents/supervisor.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
+import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
 import { Registry } from '../broker/registry.js'
 import type { ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
@@ -142,6 +143,13 @@ describe('surface asked for over the socket', () => {
       target: 'lead',
       meta: legacyRow,
     }).msgId
+    // TP-4256: launched by this broker, so the ledger vouches for the scout it spawns.
+    const leadSettings = path.join(tmp('agent-chat-lead-'), 'settings.json')
+    fs.writeFileSync(leadSettings, '{}')
+    server.integrity.admit({ agentId: leadId, parent: HUMAN_ROOT }, () => ({
+      startup: {},
+      files: [leadSettings],
+    }))
     const lead = registerAs('lead', leadId)
     await spawnOver('scout', 'explorer', lead)
     writeLeadProfile()

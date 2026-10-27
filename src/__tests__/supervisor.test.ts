@@ -2634,6 +2634,162 @@ describe('spawn privilege', () => {
       expect(result.reason).toMatch(/not granted \(WebFetch\)/)
     })
   })
+
+  /**
+   * CC-1654: a coordinator holding bare Bash and Read already holds every scoped form of them, so
+   * the shipped researcher is a strict subset of it. Only containment is claimed: each child grant
+   * is held by the parent, and each parent deny is still denied to the child.
+   */
+  describe('coordinator spawns researcher (CC-1654)', () => {
+    const OPUS_COORDINATOR = [
+      'Read',
+      'Write',
+      'Edit',
+      'Bash',
+      'Grep',
+      'Glob',
+      'Monitor',
+      'mcp__active-work__*',
+      'Bash(agent-chat burndown unstall:*)',
+      'WebSearch',
+      'WebFetch',
+    ]
+    const AGENT_CHAT_VERBS = ['endorse', 'dismiss', 'send', 'answer', 'approve', 'inbox', 'ask', 'teleport']
+    const OPUS_COORDINATOR_DENIED = [
+      ...AGENT_CHAT_VERBS.map(verb => `Bash(agent-chat ${verb}:*)`),
+      'Bash(agent-chat debug send:*)',
+      'AskUserQuestion',
+    ]
+    const REPO_RESEARCHER = path.resolve(
+      path.dirname(new URL(import.meta.url).pathname),
+      '../../profiles/researcher.json',
+    )
+
+    type ProfileBody = { allowedTools: string[]; disallowedTools: string[] } & Record<string, unknown>
+    const repoResearcher = (): ProfileBody =>
+      JSON.parse(fs.readFileSync(REPO_RESEARCHER, 'utf8')) as ProfileBody
+
+    const writeProfile = (name: string, body: Record<string, unknown>): void => {
+      fs.writeFileSync(path.join(profilesDirFor(), `${name}.json`), JSON.stringify(body))
+    }
+
+    const parentRow = (cwd: string, tools: string[], denied: string[]): string => {
+      const { msgId } = core.append({
+        kind: 'agent_spawned',
+        actor: 'human',
+        target: 'coord-agent',
+        meta: {
+          name: 'coord-agent',
+          depth: '1',
+          role: 'coordinator',
+          allowed_tools: tools.join(','),
+          disallowed_tools: denied.join(','),
+        },
+      })
+      core.register(fakeConn(), { t: 'register', name: 'coord-agent', workingOn: '', cwd, pid: 1 })
+      return msgId
+    }
+
+    const spawnFrom = async (tools: string[], denied: string[], profile: string) => {
+      const sup = withStubbedSurface()
+      const cwd = workspace()
+      const parentAgentId = parentRow(cwd, tools, denied)
+      return sup.spawn(spawnReq({ profile, requestedBy: 'coord-agent', parentAgentId, cwd }))
+    }
+
+    const scopedChild = (allowedTools: string[], disallowedTools: string[] = []): void =>
+      writeProfile('scoped-child', {
+        model: 'sonnet',
+        allowedTools,
+        disallowedTools,
+        isolation: 'none',
+        surface: 'headless',
+      })
+
+    /** A live copy may add a scoped Read of its pdfs directory; bare Read covers that too. */
+    it('lets an opus-shaped coordinator spawn the shipped researcher, recording the covered grants', async () => {
+      const researcher = repoResearcher()
+      const allowedTools = [...researcher.allowedTools, 'Read(//data/pdfs/**)']
+      writeProfile('researcher', { ...researcher, allowedTools })
+
+      const result = await spawnFrom(OPUS_COORDINATOR, OPUS_COORDINATOR_DENIED, 'researcher')
+
+      expect(result.ok).toBe(true)
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.target === 'scout')
+      expect(row?.meta.covered_by_bare_grant).toBe('Bash(fetch-pdf *),Read(//data/pdfs/**)')
+      expect(row?.meta.granted_by_exemption).toBeUndefined()
+    })
+
+    it('refuses the researcher without the agent-chat denies its coordinator carries', async () => {
+      const researcher = repoResearcher()
+      const disallowedTools = researcher.disallowedTools.filter(tool => !tool.startsWith('Bash(agent-chat '))
+      writeProfile('researcher', { ...researcher, disallowedTools })
+
+      const result = await spawnFrom(OPUS_COORDINATOR, OPUS_COORDINATOR_DENIED, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/weaker deny list/)
+      for (const verb of ['endorse', 'dismiss', 'send', 'answer', 'approve'])
+        expect(result.reason).toContain(`Bash(agent-chat ${verb}:*)`)
+    })
+
+    it('does not let a scoped Read grant cover a child asking for bare Read', async () => {
+      scopedChild(['Read', 'Grep'])
+
+      const result = await spawnFrom(['Read(//proj/**)', 'Grep'], [], 'scoped-child')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(Read\)/)
+    })
+
+    it('does not let one scoped Bash grant cover a narrower scope of it', async () => {
+      scopedChild(['Read', 'Bash(git push:*)'])
+
+      const result = await spawnFrom(['Read', 'Bash(git:*)'], [], 'scoped-child')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(Bash\(git push:\*\)\)/)
+    })
+
+    it('does not let a bare grant cover a different tool whose name it prefixes', async () => {
+      scopedChild(['Read', 'BashX'])
+
+      const result = await spawnFrom(['Read', 'Bash'], [], 'scoped-child')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(BashX\)/)
+    })
+
+    it('still refuses a coordinator that lacks the web tools', async () => {
+      writeProfile('researcher', repoResearcher())
+      const withoutWeb = OPUS_COORDINATOR.filter(tool => !tool.startsWith('Web'))
+
+      const result = await spawnFrom(withoutWeb, OPUS_COORDINATOR_DENIED, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(WebSearch, WebFetch\)/)
+    })
+
+    /** A worker row never reaches this check (CC-163 refuses it first), so the shape rides on a coordinator row. */
+    it('still refuses an implementer-shaped grant holding bare Bash but no web tools', async () => {
+      writeProfile('researcher', repoResearcher())
+
+      const result = await spawnFrom(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob'], [], 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(WebSearch, WebFetch\)/)
+    })
+
+    it('refuses a scoped grant the parent holds through bare Bash but was denied', async () => {
+      scopedChild(['Read', 'Bash(git push:*)'])
+
+      const result = await spawnFrom(['Read', 'Bash'], ['Bash(git push:*)'], 'scoped-child')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/weaker deny list/)
+      expect(result.reason).toContain('Bash(git push:*)')
+    })
+  })
 })
 
 /** CC-451: the exemption rule itself, apart from the spawn path that reaches it. */

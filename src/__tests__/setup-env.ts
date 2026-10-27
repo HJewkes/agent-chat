@@ -4,7 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { EXIT_WITH_PID_VAR } from '../broker/parent-watch.js'
-import { withoutInjectedHooksPath } from './helpers/git-config-env.js'
+import { withoutGitShim, withoutInjectedHooksPath } from './helpers/git-config-env.js'
 
 /**
  * Strip the ambient session's identity out of the test environment (CC-55, CC-90).
@@ -56,10 +56,11 @@ delete process.env.ACTIVE_ROOT
  * push to a temp-dir origin runs that hook, which refuses without the owner's term list (CC-335).
  * Only the hooks-path pair goes; the launch-plan and leak-pre-push specs set it on their own env.
  */
-const scrubbed = withoutInjectedHooksPath(process.env)
+const scrubbed = withoutGitShim(withoutInjectedHooksPath(process.env))
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('GIT_CONFIG_') && !(key in scrubbed)) delete process.env[key]
 }
+if (!('GIT_EXEC_PATH' in scrubbed)) delete process.env.GIT_EXEC_PATH
 Object.assign(process.env, scrubbed)
 
 /**

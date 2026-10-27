@@ -492,6 +492,8 @@ interface Resolved {
   executionId?: string
   /** CC-451: tools granted past the escalation check by the coordinator exemption. */
   exempted?: string[]
+  /** CC-1654: scoped tools admitted because the parent holds their bare name. */
+  covered?: string[]
 }
 
 /** CC-1059: a spawn the requester launches on its own host. */
@@ -511,6 +513,7 @@ interface RemoteGated {
   brief: string
   warnings: string[]
   exempted: string[]
+  covered: string[]
 }
 
 interface RemoteDraft extends RemoteGated {
@@ -607,7 +610,7 @@ function remoteSpawnMeta(
     ...(account.unset ? { config_dir_unset: 'true' } : {}),
     allowed_tools: profile.allowedTools.join(','),
     disallowed_tools: (profile.disallowedTools ?? []).join(','),
-    ...(draft.exempted.length > 0 ? { granted_by_exemption: draft.exempted.join(',') } : {}),
+    ...grantMeta(draft),
     perm_mode: permModeFor(draft.surface),
     surface_lifetime: lifetimeOf(profile),
     depth: String(lineage.depth),
@@ -1100,8 +1103,8 @@ const isHumanResume = (req: ResumeRequest): boolean =>
   req.humanUnproven === undefined &&
   req.forChild === undefined
 
-/** The ledger's two calls a launch needs; `SocketServer` passes its own ledger. */
-export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict'>
+/** The ledger calls a launch needs; `SocketServer` passes its own ledger. */
+export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict' | 'knows' | 'parentOf'>
 
 /**
  * TP-4256 A3: an agent's ledger parent, from its own `agent_spawned` meta. A teleport successor's
@@ -1164,6 +1167,34 @@ function burndownReportTo(): string[] {
     return reportTo === undefined ? [] : [reportTo]
   } catch {
     return []
+  }
+}
+
+/**
+ * CC-1654: the allow-side mirror of `stillDenied`. A parent granted a tool's bare
+ * name holds every scoped form of it, so `Bash` covers `Bash(fetch-pdf *)`. One
+ * level and one way: a scoped grant never covers the bare tool or another scope.
+ */
+function held(granted: Set<string>, tool: string): boolean {
+  if (granted.has(tool)) return true
+  const base = tool.split('(')[0] ?? tool
+  return base !== tool && granted.has(base)
+}
+
+/** What the allow side admitted that the parent does not hold by name: CC-451's exemption, CC-1654's bare grants. */
+interface Admitted {
+  exempted: string[]
+  covered: string[]
+}
+
+const NOTHING_ADMITTED: Admitted = { exempted: [], covered: [] }
+
+/** CC-1654: the spawn row's record of how the allow side admitted what the parent did not hold by name. */
+function grantMeta(admitted: { exempted?: string[]; covered?: string[] }): Record<string, string> {
+  const { exempted = [], covered = [] } = admitted
+  return {
+    ...(exempted.length > 0 ? { granted_by_exemption: exempted.join(',') } : {}),
+    ...(covered.length > 0 ? { covered_by_bare_grant: covered.join(',') } : {}),
   }
 }
 
@@ -2406,10 +2437,12 @@ export class Supervisor implements TeleportHost {
    * requester's own; this is that check, at the one enforcement point a spawn
    * has to pass through.
    *
-   * Matching is on the tool STRING, deliberately not on what it means: a parent
-   * scoped to `Bash(git:*)` does not satisfy a child asking for plain `Bash`,
-   * and a mismatch nobody here can reason about refuses. Over-refusing costs a
-   * human one explicit spawn; under-refusing hands out a shell.
+   * CC-1654: a bare grant covers its scoped forms (see `held`), one level and one
+   * way, and nothing else: a parent scoped to `Bash(git:*)` does not satisfy a
+   * child asking for plain `Bash` or for `Bash(git push:*)`, and a mismatch
+   * nobody here can reason about refuses. Over-refusing costs a human one
+   * explicit spawn; under-refusing hands out a shell. What a bare grant covered
+   * comes back so the spawn row can record it.
    *
    * CC-40: the allow-side check above is not the whole story. `profiles.ts`
    * itself says the deny list is what actually confines a profile — allowedTools
@@ -2422,44 +2455,49 @@ export class Supervisor implements TeleportHost {
    * grant the configured web-read tools it lacks; what was exempted comes back
    * so the spawn row can record it.
    */
-  private checkEscalation(
-    req: SpawnRequest,
-    profile: AgentProfile,
-  ): { refusal: string } | { exempted: string[] } {
-    if (req.requestedBy === HUMAN) return { exempted: [] }
+  private checkEscalation(req: SpawnRequest, profile: AgentProfile): { refusal: string } | Admitted {
+    if (req.requestedBy === HUMAN) return NOTHING_ADMITTED
     const { seat } = this.requesterFor(req)
     if (seat !== undefined) return this.checkCeiling(seat, profile)
 
-    let exempted: string[] = []
+    const admitted = this.allowSide(req, profile)
+    if ('refusal' in admitted) return admitted
+    const relaxed = this.relaxedDenies(req, profile)
+    return relaxed ?? admitted
+  }
+
+  /** CC-39 and CC-451: every tool the child allows is held by the parent, or exempted for it. */
+  private allowSide(req: SpawnRequest, profile: AgentProfile): { refusal: string } | Admitted {
     const granted = this.grantedTools(req.parentAgentId)
-    if (granted !== undefined) {
-      const missing = profile.allowedTools.filter(tool => !granted.has(tool))
-      const exempt = this.exemptionFor(req, profile)
-      exempted = missing.filter(tool => exempt.has(tool))
-      const escalated = missing.filter(tool => !exempt.has(tool))
-      if (escalated.length > 0) {
-        return {
-          refusal:
-            `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
-            'an agent cannot spawn a peer more capable than itself — ask the human to spawn it',
-        }
+    if (granted === undefined) return NOTHING_ADMITTED
+    const missing = profile.allowedTools.filter(tool => !held(granted, tool))
+    const exempt = this.exemptionFor(req, profile)
+    const escalated = missing.filter(tool => !exempt.has(tool))
+    if (escalated.length > 0) {
+      return {
+        refusal:
+          `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
+          'an agent cannot spawn a peer more capable than itself — ask the human to spawn it',
       }
     }
+    return {
+      exempted: missing.filter(tool => exempt.has(tool)),
+      covered: profile.allowedTools.filter(tool => !granted.has(tool) && held(granted, tool)),
+    }
+  }
 
+  /** CC-40: the refusal when the child does not deny every tool its parent was denied. */
+  private relaxedDenies(req: SpawnRequest, profile: AgentProfile): { refusal: string } | undefined {
     const parentDenied = this.toolSetOf(req.parentAgentId, 'disallowed_tools')
-    if (parentDenied !== undefined) {
-      const childDenied = new Set(profile.disallowedTools ?? [])
-      const relaxed = [...parentDenied].filter(tool => !stillDenied(childDenied, tool))
-      if (relaxed.length > 0) {
-        return {
-          refusal:
-            `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
-            'a spawned peer cannot have a weaker deny list than its parent — ask the human to spawn it',
-        }
-      }
+    if (parentDenied === undefined) return undefined
+    const childDenied = new Set(profile.disallowedTools ?? [])
+    const relaxed = [...parentDenied].filter(tool => !stillDenied(childDenied, tool))
+    if (relaxed.length === 0) return undefined
+    return {
+      refusal:
+        `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
+        'a spawned peer cannot have a weaker deny list than its parent — ask the human to spawn it',
     }
-
-    return { exempted }
   }
 
   /**
@@ -2467,7 +2505,7 @@ export class Supervisor implements TeleportHost {
    * name means trusting its file, so a ceiling profile changed since broker start is refused under
    * any `profileDrift` mode.
    */
-  private checkCeiling(seat: string, profile: AgentProfile): { refusal: string } | { exempted: string[] } {
+  private checkCeiling(seat: string, profile: AgentProfile): { refusal: string } | Admitted {
     const entry = policySeat(loadSeatPolicy(), seat)
     if (entry === undefined) return { refusal: `seat "${seat}" is no longer in ${seatPolicyPath()}` }
     const outside = ceilingRefusal(seat, entry, profile.name)
@@ -2475,7 +2513,7 @@ export class Supervisor implements TeleportHost {
     const { source } = loadProfileSource(profile.name)
     const drift = this.profileBaseline.drift(profile.name, source)
     if (drift !== undefined) return { refusal: ceilingDriftRefusal(seat, profile.name, drift) }
-    return { exempted: [] }
+    return NOTHING_ADMITTED
   }
 
   private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
@@ -2714,6 +2752,7 @@ export class Supervisor implements TeleportHost {
         ...(predecessor ? { predecessor: predecessor.text } : {}),
         ...(executionId ? { executionId } : {}),
         ...(escalation.exempted.length > 0 ? { exempted: escalation.exempted } : {}),
+        ...(escalation.covered.length > 0 ? { covered: escalation.covered } : {}),
       })
     } catch (err) {
       this.semaphore.release(agentId)
@@ -2816,6 +2855,7 @@ export class Supervisor implements TeleportHost {
       brief,
       warnings,
       exempted: escalation.exempted,
+      covered: escalation.covered,
     }
   }
 
@@ -3106,7 +3146,7 @@ export class Supervisor implements TeleportHost {
         // the deny list is the half that actually confines (see `profiles.ts`),
         // so a row that names one and not the other under-describes the agent.
         disallowed_tools: (profile.disallowedTools ?? []).join(','),
-        ...(resolved.exempted ? { granted_by_exemption: resolved.exempted.join(',') } : {}),
+        ...grantMeta(resolved),
         perm_mode: permModeFor(surface),
         // Recorded rather than carried in memory so the exit path can read it
         // after a broker restart, and so `agent ls`/the log can show what an
@@ -3548,7 +3588,29 @@ export class Supervisor implements TeleportHost {
   ): void {
     const config = buildMcpConfig(profile, cliEntry(), plan.surface)
     if (this.ledger === undefined) writeLaunchFiles(plan, config, created, OFF_BROKER)
-    else this.ledger.admit(req, admission => writeLaunchFiles(plan, config, created, admission))
+    else
+      this.ledger.admit({ ...req, parent: this.admittedParent(req) }, admission =>
+        writeLaunchFiles(plan, config, created, admission),
+      )
+  }
+
+  /**
+   * The ledger enrols a parent once and latches any later admit naming another, while
+   * `ledgerParent` can change its answer when an adopted parent is admitted; so an agent the
+   * ledger knows keeps the parent it was enrolled under.
+   */
+  private admittedParent(req: AdmitRequest): Parent {
+    return this.ledger?.parentOf(req.agentId) ?? this.ledgerParent(req.parent)
+  }
+
+  /**
+   * A session the human started by hand is adopted at register and never admitted, so it has no
+   * launch for the ledger to check (plan risk 6). Its children root at the human; once the ledger
+   * admits it (an `agent resume` of it), the chain of a child enrolled after that counts.
+   */
+  private ledgerParent(parent: Parent): Parent {
+    if (parent === HUMAN_ROOT || this.ledger?.knows(parent)) return parent
+    return this.spawnEventOf(parent)?.meta.origin === 'adopted' ? HUMAN_ROOT : parent
   }
 
   /** The parent an agent's spawn row recorded, so every relaunch of it admits under the same one. */
@@ -3556,9 +3618,13 @@ export class Supervisor implements TeleportHost {
     return ledgerParentOf(this.spawnEventOf(agentId)?.meta)
   }
 
-  /** TP-4313: a parent is unadmitted only while the ledger has no baseline for it; a quarantined one stays the ledger's call. */
+  /**
+   * TP-4313: a parent is unadmitted only while the ledger has no baseline for it; a quarantined one
+   * stays the ledger's call, and a hand-started session the ledger roots at the human is never one.
+   */
   private unadmitted(parent: Parent): parent is string {
     if (parent === HUMAN_ROOT || this.ledger === undefined) return false
+    if (this.ledgerParent(parent) === HUMAN_ROOT) return false
     const verdict = this.ledger.verdict(parent)
     return !verdict.ok && verdict.reason === 'no baseline'
   }

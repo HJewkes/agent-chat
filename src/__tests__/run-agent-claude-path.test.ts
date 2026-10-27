@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { LaunchPlan } from '../agents/types.js'
+import { startVerdictBroker } from './helpers/verdict-broker.js'
 
 /**
  * CC-132, against the built CLI rather than the resolver in isolation: proves
@@ -26,15 +27,18 @@ let stateDir: string
 let fakeClaude: string
 // Per test, because run-agent refuses an id any process on the machine already runs as (CC-1164).
 let agentId: string
+let stopBroker: () => void
 
-beforeEach(() => {
+beforeEach(async () => {
   agentId = `agt-${randomUUID().slice(0, 8)}`
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-run-agent-'))
   fakeClaude = path.join(stateDir, 'fake-claude.js')
   fs.writeFileSync(fakeClaude, "process.stdout.write('fake-claude-ran')\n")
+  stopBroker = await startVerdictBroker(stateDir)
 })
 
 afterEach(() => {
+  stopBroker()
   fs.rmSync(stateDir, { recursive: true, force: true })
 })
 
