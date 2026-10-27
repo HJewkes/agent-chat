@@ -1573,9 +1573,13 @@ it on the call that made it.
   contact (TP-4341) through `readmit`. The supervisor checks its launch files against what a broker
   writes. Intact files enrol it under its recorded lineage, with the nonce its hook still sends.
   Anything else latches a quarantine. Until then, its `--integrity` calls deny with `no baseline`.
-  A quarantine latched before the restart is lost, as is a change made while no broker watched.
-  The re-admit catches a launch file left not as a broker writes it. It cannot catch a startup
-  file that changed before the restart. An unarmed guard is a one-time migration. The first broker
+  A quarantine latched before the restart survives it. Each latch writes a durable
+  `integrity_quarantine` notice as `agent-chat`. `readmit` latches again when such a notice for
+  the agent is newer than its last human resume, which the human's own `agent_resumed` row marks
+  with `integrity_cleared: human`. Other resumes do not clear. A change made while no broker
+  watched is lost. The re-admit checks the shape of the guard, not every byte of `settings.json`
+  and `mcp.json`, so an extra key added then passes. It cannot catch a startup file that changed
+  before the restart. An unarmed guard is a one-time migration. The first broker
   start with `INTEGRITY_WIRED` on writes one `integrity_wired_since` notice to the event store, and
   later starts never move it. An unarmed launch is re-admitted, with no nonce, only while all four
   launch files have mtime and ctime before that mark. One changed at or after it had its nonce

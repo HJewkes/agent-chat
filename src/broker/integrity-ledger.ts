@@ -129,14 +129,16 @@ export class IntegrityLedger {
   /**
    * TP-4341: enrols a running agent a previous broker admitted, under the nonce its hook still
    * asks with. The ledger is memory only, so a restart proves nothing; a launch file that is not
-   * as a broker writes it does, and latches. It never clears, and leaves a known principal as is.
+   * as a broker writes it does, and latches, as does a quarantine a previous broker `recorded`
+   * that no human resume has cleared. It never clears, and leaves a known principal as is.
    */
-  readmit(req: Omit<AdmitRequest, 'humanProof'>, survivor: Survivor): void {
+  readmit(req: Omit<AdmitRequest, 'humanProof'>, survivor: Survivor, recorded?: Mismatch): void {
     if (this.knows(req.agentId)) return
     if (survivor.intact) this.watch.replace(req.agentId, survivor.files)
     this.enrol(req.agentId, req.parent)
-    if (!survivor.intact) return void this.latch(req.agentId, survivor.mismatch)
-    if (survivor.nonce === undefined) return
+    const mismatch = survivor.intact ? recorded : survivor.mismatch
+    if (mismatch !== undefined) return void this.latch(req.agentId, mismatch)
+    if (!survivor.intact || survivor.nonce === undefined) return
     if (this.store.launch(survivor.nonce) !== undefined)
       return void this.latch(req.agentId, { file: LINEAGE, field: 'nonce in use' })
     this.store.putLaunch(survivor.nonce, { agentId: req.agentId, startup: survivor.startup, sessions: {} })

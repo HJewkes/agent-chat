@@ -110,6 +110,12 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000
 
 /** The `meta.event` of the one row that marks the first broker start with `INTEGRITY_WIRED` on. */
 export const INTEGRITY_WIRED_SINCE = 'integrity_wired_since'
+/** The `meta.event` of the notice the broker writes when the integrity ledger latches a quarantine. */
+export const INTEGRITY_QUARANTINE = 'integrity_quarantine'
+/** The `agent_resumed` meta key, set to `human` on the human's own resume, the one that clears (TP-4341). */
+export const INTEGRITY_CLEARED = 'integrity_cleared'
+/** The actor of the rows the broker writes as itself, such as the two notices above. */
+const BROKER_ACTOR = 'agent-chat'
 
 /**
  * Hook-raised approvals (CC-144) are exempt from the TTL: the hook is still blocking
@@ -558,11 +564,31 @@ export class EventLog implements EventStore {
   integrityWiredSince(): number | undefined {
     const row = this.db
       .prepare(
-        `SELECT ts FROM events WHERE kind = 'notice'
+        `SELECT ts FROM events WHERE kind = 'notice' AND actor = '${BROKER_ACTOR}'
            AND json_extract(meta, '$.event') = '${INTEGRITY_WIRED_SINCE}' ORDER BY id ASC LIMIT 1`,
       )
       .get() as { ts: number } | undefined
     return row?.ts
+  }
+
+  /**
+   * TP-4341: the newest quarantine the broker recorded for `agentId` after the human last resumed
+   * it, the one act that clears; the ledger forgets it on restart, the log does not.
+   */
+  quarantineOnRecord(agentId: string): { file: string; field: string } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT json_extract(meta, '$.file') AS file, json_extract(meta, '$.field') AS field
+         FROM events WHERE kind = 'notice' AND actor = '${BROKER_ACTOR}'
+           AND json_extract(meta, '$.event') = '${INTEGRITY_QUARANTINE}'
+           AND json_extract(meta, '$.agent_id') = ?
+           AND id > COALESCE((SELECT MAX(id) FROM events WHERE kind = 'agent_resumed' AND ref = ?
+             AND json_extract(meta, '$.${INTEGRITY_CLEARED}') = '${HUMAN}'), 0)
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(agentId, agentId) as { file: unknown; field: unknown } | undefined
+    if (row === undefined) return undefined
+    return { file: String(row.file ?? '<unknown>'), field: String(row.field ?? '<unknown>') }
   }
 
   humanContactSince(name: string, since: number): boolean {

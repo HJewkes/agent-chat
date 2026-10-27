@@ -31,7 +31,7 @@ import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { integrityFrameRefusal } from './integrity-frame.js'
 import { IntegrityLedger } from './integrity-ledger.js'
 import { INTEGRITY_WIRED } from './integrity-wired.js'
-import { INTEGRITY_WIRED_SINCE } from './event-log.js'
+import { INTEGRITY_QUARANTINE, INTEGRITY_WIRED_SINCE } from './event-log.js'
 import { SettingsWatch } from './settings-watch.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
@@ -1983,7 +1983,7 @@ export class SocketServer {
         'whatever it relaunches as. Nothing was restored. Inspect the file, then your own ' +
         '`agent-chat agent resume` re-baselines.',
       meta: {
-        event: 'integrity_quarantine',
+        event: INTEGRITY_QUARANTINE,
         agent,
         agent_id: agentId,
         file: mismatch.file,

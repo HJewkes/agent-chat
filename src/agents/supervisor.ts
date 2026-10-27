@@ -6,7 +6,7 @@ import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
 import type { IdentityBinding } from '../broker/registry.js'
 import type { ArgvReader } from '../broker/host-channels.js'
-import { newMsgId } from '../broker/event-log.js'
+import { INTEGRITY_CLEARED, newMsgId } from '../broker/event-log.js'
 import {
   HUMAN_ROOT,
   type AdmitRequest,
@@ -3658,7 +3658,7 @@ export class Supervisor implements TeleportHost {
       if (survivor === undefined) return
       const parent = this.ledgerParent(this.recordedParent(agentId))
       if (parent === HUMAN_ROOT || this.ledger.knows(parent))
-        this.ledger.readmit({ agentId, parent }, survivor)
+        this.ledger.readmit({ agentId, parent }, survivor, this.core.events.quarantineOnRecord(agentId))
     } catch (err) {
       logEvent('integrity_readmit_failed', { agentId, error: String(err) })
     } finally {
@@ -4766,13 +4766,15 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
       ...(req.remoteControl ? { remoteControl: true } : {}),
     })
+    const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
+    const humanProof = isHumanResume(req)
+    // TP-4341: the clear and the row that records it, with no await between them for a quarantine to fall in.
     this.writeAdmitted(
-      { agentId: agent.agentId, parent: this.recordedParent(agent.agentId), humanProof: isHumanResume(req) },
+      { agentId: agent.agentId, parent: this.recordedParent(agent.agentId), humanProof },
       plan,
       profile,
       this.createdWorktree(agent.agentId, allocation, isolation),
     )
-    const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
       kind: 'agent_resumed',
       actor: req.requestedBy ?? HUMAN,
@@ -4787,6 +4789,7 @@ export class Supervisor implements TeleportHost {
         ...(req.source === undefined ? {} : { source: req.source }),
         ...(req.cause === undefined ? {} : { cause: req.cause }),
         ...launchMeta(req),
+        ...(humanProof ? { [INTEGRITY_CLEARED]: HUMAN } : {}),
         // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
         ...provenance,
       },

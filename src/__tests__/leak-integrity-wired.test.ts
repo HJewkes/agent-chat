@@ -655,6 +655,36 @@ describe('TP-4341: coordinators that outlive a wired broker restart', () => {
     expect(notices.map(row => row.meta?.agent_id)).toContain(wired.lead)
   })
 
+  it('a coordinator that widened its own settings before the restart stays quarantined after it', async () => {
+    const wired = await setup()
+    widenSettings(wired.lead)
+    expect(await wired.hook()).toBeDefined()
+    const after = restarted(wired)
+
+    after.core.append({ kind: 'agent_attached', actor: 'lead', ref: wired.lead })
+
+    expect(after.server.integrity.verdict(wired.lead)).toMatchObject({
+      reason: 'quarantined',
+      file: hookSettingsPath(wired.lead),
+    })
+    expect(await after.hook(wired.leadNonce)).toMatch(/integrity check refused/)
+    expect(await after.spawn('child', wired.lead)).toMatch(/^refused: .*quarantined/)
+  })
+
+  it("a quarantine the human's own resume cleared does not survive a later restart", async () => {
+    const wired = await setup()
+    wired.bash(`echo 'alias ls=rm' >> ~/.zshrc`)
+    expect(await wired.hook()).toMatch(/\.zshrc changed/)
+    await ended(wired, wired.lead)
+    expect(await wired.supervisor.resume('lead', { requestedBy: 'human' })).toMatchObject({ ok: true })
+    const after = restarted(wired)
+
+    after.core.append({ kind: 'agent_attached', actor: 'lead', ref: wired.lead })
+
+    expect(after.server.integrity.verdict(wired.lead)).toEqual({ ok: true })
+    expect(await after.hook(nonceOf(wired.lead))).toBeUndefined()
+  })
+
   it('a re-admitted coordinator still quarantines a .zshrc change made after the restart', async () => {
     const wired = await setup()
     const after = restarted(wired)
@@ -708,6 +738,13 @@ async function unwiredLead(root: string): Promise<string> {
   return lead
 }
 
+/** The lead's own settings with a grant added beside the guard, which keeps its shape. */
+function widenSettings(agentId: string): void {
+  const file = hookSettingsPath(agentId)
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
+  fs.writeFileSync(file, JSON.stringify({ ...settings, permissions: { allow: ['Bash'] } }, null, 2))
+}
+
 /** The lead's settings rewritten to the unarmed shape an unwired broker writes. */
 function stripNonce(agentId: string): void {
   const file = hookSettingsPath(agentId)
@@ -753,6 +790,23 @@ describe('TP-4341: an unarmed launch is accepted once, as the migration to a wir
       reason: 'quarantined',
       field: 'unarmed since wiring',
     })
+  })
+
+  it('ignores a wired mark or a quarantine that another actor wrote', () => {
+    const { root } = syntheticHome()
+    const events = new EventLog(path.join(root, 'events.db'))
+    const core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
+    for (const event of [INTEGRITY_WIRED_SINCE, 'integrity_quarantine'])
+      core.append({
+        kind: 'notice',
+        actor: 'mallory',
+        target: 'agent-chat',
+        body: 'forged',
+        meta: { event, agent_id: 'aglead01', file: 'settings.json', field: 'sha256' },
+      })
+
+    expect(events.integrityWiredSince()).toBeUndefined()
+    expect(events.quarantineOnRecord('aglead01')).toBeUndefined()
   })
 
   it('keeps the first mark through later restarts', async () => {

@@ -2367,7 +2367,8 @@ recorded parent, so the parent must be admitted first:
   changed before the first wired start), `plan.json` naming that settings file,
   and the `relaunch` script. Then it is enrolled under its recorded lineage with
   the nonce its hook still sends, and its startup files are baselined afresh. Any
-  other state latches a quarantine. With no launch files on this host, or a
+  other state latches a quarantine, as does a quarantine the event log recorded
+  for it since the human last resumed it. With no launch files on this host, or a
   parent that cannot be resolved, it stays unknown and is still denied.
 - A teleport predecessor that ended before the restart is skipped: its
   successor's chain continues at the predecessor's own recorded parent, and at
