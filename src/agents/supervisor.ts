@@ -2971,6 +2971,20 @@ export class Supervisor implements TeleportHost {
     return lintBrief({ brief: req.brief, profile, surface, repoVisibility })
   }
 
+  /**
+   * CC-1384: the visibility the implementer contract states, so the agent never runs the `gh api`
+   * read its profile denies. A failed read is `unknown`, which the contract turns into "treat it as public".
+   */
+  private async contractVisibility(
+    profile: AgentProfile,
+    resumed: boolean,
+    cwd: string,
+  ): Promise<RepoVisibility> {
+    if (resumed || this.repoVisibility === undefined || contractOf(profile) !== 'implementer')
+      return 'unknown'
+    return this.repoVisibility(cwd).catch(() => 'unknown' as const)
+  }
+
   /** CC-916: the primary checkout a reviewer spawn would run in, which it must not touch; an assigned worktree is the caller's own. */
   private reviewerPrimaryRoot(req: SpawnRequest, cwd: string): string | undefined {
     if (req.worktree || !isReviewerSpawn(req.profile, req.name)) return undefined
@@ -3016,6 +3030,7 @@ export class Supervisor implements TeleportHost {
       spawner: req.requestedBy,
       resumed: resumed !== undefined,
       ...(req.returnContract === undefined ? {} : { requested: req.returnContract }),
+      visibility: await this.contractVisibility(profile, resumed !== undefined, allocation.cwd),
     })
     warnings.push(...contracted.warnings)
     warnings.push(...crossingBriefPaths(req.brief, allocation.cwd, allocation.addDirs ?? []))

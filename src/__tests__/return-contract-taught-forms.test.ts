@@ -68,6 +68,9 @@ const PLACEHOLDERS: Record<string, string> = {
   '<path>': 'README.md',
   '<literal path>': 'README.md',
   '#<n>': '#1',
+  '<n>': '1',
+  '<run>': '2',
+  '<id>': '3',
   '<initiative>': 'demo',
   '<your name>': 'tc-demo',
   '<correctness|security|feature|refactor>': 'security',
@@ -114,9 +117,7 @@ describe('every command form the return contract teaches is one the leak guard a
     expect(forms).toContain('git -C "$dir"')
     expect(forms).toContain('pgrep')
     expect(forms.some(form => form.startsWith('titan-factory shepherd register'))).toBe(true)
-    expect(
-      forms.some(form => form.startsWith('gh api "repos/<owner>/<repo>/commits/<head>/check-runs"')),
-    ).toBe(true)
+    expect(forms).toContain('gh pr checks <n> --repo <owner>/<repo>')
   })
 
   it.each(forms)('allows %s', form => {

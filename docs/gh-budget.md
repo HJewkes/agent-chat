@@ -41,8 +41,8 @@ Two sources are merged, and the later end wins per lane:
   query that is not a mutation): it fails fast with exit 1 and no real-gh call. The message names the
   lane, the class, the source and the end time.
 - **Shim write** (anything else): it passes through when gh-write sent it with its ticket, since
-  gh-write waits. Without one, the shim refuses it before any budget check once the write gate
-  enforces (CC-1644; it ships logging only, see `leak-guard.md`).
+  gh-write waits. Without one, the shim refuses it before any budget check (CC-1644, see
+  `leak-guard.md`).
 - **`gh api rate_limit [--jq <expr>]`:** the real body with each cooling lane spent: `remaining 0`,
   `used = limit`, and `reset` at the cooldown's end (`resources.core` and `rate` for REST,
   `resources.graphql` for GraphQL). Any other flags pass through to the real endpoint.

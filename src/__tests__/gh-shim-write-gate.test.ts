@@ -13,7 +13,7 @@ import { AGENT_ID_ENV } from '../launch-identity.js'
 
 /**
  * CC-1644: a gh command that is neither a known read nor carries gh-write's ticket for its exact
- * argv is refused under `enforce`, and under `log` (the shipped mode) runs with a would-refuse line.
+ * argv is refused under `enforce` (the shipped mode), and under `log` runs with a would-refuse line.
  * The fake gh behind the shim records each argv and whether it saw a ticket.
  */
 
@@ -72,7 +72,7 @@ const ticketFor = (args: string[], root = file('keys')): string => {
   return mintTicket(key, AGENT, args, Date.now())
 }
 
-describe('the gh shim write gate as shipped, in log mode (CC-1644)', () => {
+describe('the gh shim write gate as shipped, in enforce mode (CC-1644)', () => {
   const gh = (args: string[]) =>
     spawnSync('gh', args, {
       cwd: dir,
@@ -81,37 +81,38 @@ describe('the gh shim write gate as shipped, in log mode (CC-1644)', () => {
       timeout: 30_000,
     })
 
-  it('ships in log mode', () => {
-    expect(GATE_MODE).toBe('log')
+  const expectShimRefused = (result: ReturnType<typeof gh>): void => {
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(/^gh-shim: refused \(write\): .*agent-chat gh-write -- <args>/)
+    expect(realGhRuns()).toEqual([])
+  }
+
+  it('ships in enforce mode', () => {
+    expect(GATE_MODE).toBe('enforce')
   })
 
-  it('runs a write with no ticket and logs a would-refuse line with its caller, never its text', () => {
-    const result = gh(COMMENT)
+  it('refuses a write with no ticket and logs a refused line with its caller, never its text', () => {
+    expectShimRefused(gh(COMMENT))
 
-    expect(result.status).toBe(0)
-    expect(realGhRuns()).toEqual([{ args: COMMENT, ticket: false }])
     const parent = HAS_PROC ? ' parent=\\S+ \\S+' : ''
     expect(leakLog()).toMatch(
-      new RegExp(` gh-shim: would-refuse \\(write\\): issue comment caller=gate-tester${parent}\\n$`),
+      new RegExp(` gh-shim: refused \\(write\\): issue comment caller=gate-tester${parent}\\n$`),
     )
     expect(leakLog()).not.toContain('synthetic')
   })
 
-  it('keeps log mode whatever the env says', () => {
+  it('keeps enforce mode whatever the env says', () => {
     env.AGENT_CHAT_GH_SHIM_OFF = '1'
-    env.AGENT_CHAT_GH_GATE_MODE = 'enforce'
+    env.AGENT_CHAT_GH_GATE_MODE = 'log'
 
-    expect(gh(COMMENT).status).toBe(0)
-    expect(leakLog()).toContain('would-refuse (write): issue comment')
+    expectShimRefused(gh(COMMENT))
   })
 
   it('does not honour a ticket signed with a key at a root the agent chose', () => {
     env[GH_KEY_ROOT_ENV] = file('agent-keys')
     env[GH_WRITE_TICKET_ENV] = ticketFor(COMMENT, file('agent-keys'))
 
-    gh(COMMENT)
-
-    expect(leakLog()).toContain('would-refuse (write): issue comment')
+    expectShimRefused(gh(COMMENT))
   })
 
   it('logs nothing for a ticketed write, and hides the ticket from the real gh', () => {
@@ -178,6 +179,21 @@ describe('the gh shim write gate in enforce mode', () => {
   it('runs a known read with no ticket', async () => {
     expect(await runShim(['auth', 'git-credential', 'get'], 'enforce')).toBe(0)
     expect(realGhRuns()).toEqual([{ args: ['auth', 'git-credential', 'get'], ticket: false }])
+  })
+})
+
+describe('the gh shim write gate in log mode', () => {
+  beforeEach(() => {
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value)
+    vi.stubEnv('PATH', [file('fake'), '/usr/bin', '/bin'].join(':'))
+  })
+
+  it('runs a write with no ticket and logs a would-refuse line with its caller, never its text', async () => {
+    expect(await runShim(COMMENT, 'log')).toBe(0)
+
+    expect(realGhRuns()).toEqual([{ args: COMMENT, ticket: false }])
+    expect(leakLog()).toMatch(/ gh-shim: would-refuse \(write\): issue comment caller=gate-tester/)
+    expect(leakLog()).not.toContain('synthetic')
   })
 })
 

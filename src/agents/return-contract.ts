@@ -1,10 +1,12 @@
 import { HUMAN } from '../protocol.js'
+import type { RepoVisibility } from './brief-lint.js'
 import { roleOf } from './profiles.js'
 import {
   IMPLEMENTER_WITHOUT_SHEPHERD,
   RETURN_CONTRACT_BLOCKS,
   REVIEWER_WITHOUT_SHEPHERD,
   SHEPHERD_NONE_MARKER,
+  VISIBILITY_PLACEHOLDER,
 } from './return-contract-blocks.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from './types.js'
 
@@ -71,7 +73,15 @@ export interface ContractInput {
   resumed: boolean
   /** The spawn's own `return_contract`: `none` when the brief states its own report format. */
   requested?: 'none'
+  /** CC-1384: the repo's visibility as the broker read it at spawn; absent is `unknown`. */
+  visibility?: RepoVisibility
 }
+
+/** An unread visibility is stated as such, so the agent treats the repo as public instead of probing it. */
+export const visibilityLine = (visibility: RepoVisibility = 'unknown'): string =>
+  visibility === 'unknown'
+    ? 'Repo visibility unread at spawn: treat it as public.'
+    : `Repo visibility, read at spawn: ${visibility.toUpperCase()}.`
 
 export interface Contracted {
   brief: string
@@ -117,7 +127,9 @@ export function withReturnContract(input: ContractInput): Contracted {
   if (contract === undefined) return { brief, warnings: [] }
   if (carriesContract(brief, contract)) return { brief, warnings: [pastedWarning(contract)] }
   // A function, so `$&` in a spawner name is text and not a replacement pattern.
-  const block = blockFor(contract, brief).replaceAll(PLACEHOLDER, () => spawner)
+  const block = blockFor(contract, brief)
+    .replaceAll(PLACEHOLDER, () => spawner)
+    .replace(VISIBILITY_PLACEHOLDER, visibilityLine(input.visibility))
   const warnings = OWN_REPORT_LINE.test(brief) ? [ownFormatWarning(contract)] : []
   return { brief: `${brief}\n\n${block}`, warnings }
 }
