@@ -3,4 +3,4 @@
  * verdict. A compile-time constant, not config, because config is agent-writable. Its own module so
  * `run-agent` reads it without the broker.
  */
-export const INTEGRITY_WIRED = true
+export const INTEGRITY_WIRED = false

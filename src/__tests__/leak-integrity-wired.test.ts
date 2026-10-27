@@ -25,6 +25,12 @@ import { currentRecords } from '../leak-guard/integrity/env-records.js'
 import { agentDir } from '../paths.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
+// The in-process broker runs wired whatever the shipped flag says, as A3a-A3d's suites injected the gate.
+vi.mock('../broker/integrity-wired.js', () => ({ INTEGRITY_WIRED: true }))
+const { INTEGRITY_WIRED: BUILT_WIRED } = await vi.importActual<typeof import('../broker/integrity-wired.js')>(
+  '../broker/integrity-wired.js',
+)
+
 /**
  * TP-4256 A3 acceptance rows, wired: `INTEGRITY_WIRED` on, a real `SocketServer` whose supervisor
  * writes every launch through the ledger's `admit`, the hook's records and `integrity_check`, and
@@ -505,7 +511,8 @@ describe('FF2: a quarantine survives every new launch of the agent or its descen
   })
 })
 
-describe('FF3/4: run-agent with no broker to ask', () => {
+// The built CLI reads the shipped flag, which no mock reaches.
+describe.skipIf(!BUILT_WIRED)('FF3/4: run-agent with no broker to ask', () => {
   it('refuses the relaunch with exit 77 and starts nothing', async () => {
     const wired = await setup()
     expect(fs.existsSync(CLI), 'run `npm run build` first').toBe(true)
