@@ -8,6 +8,13 @@ import type { IdentityBinding } from '../broker/registry.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
+  HUMAN_ROOT,
+  type AdmitRequest,
+  type IntegrityLedger,
+  type Parent,
+  type Verdict,
+} from '../broker/integrity-ledger.js'
+import {
   encode,
   HUMAN,
   RESERVED_NAMES,
@@ -940,6 +947,9 @@ export interface ResumeRequest {
   launchReason?: string
   /** CC-1472: resume on this machine, through its host launcher; never falls back to resuming here. */
   host?: string
+  /** TP-4256 A3: as on {@link SpawnRequest}; an unregistered resume carrying either is not the human's. */
+  callerAgent?: string
+  humanUnproven?: string
 }
 
 interface Live {
@@ -995,6 +1005,8 @@ export interface SupervisorOptions {
   seatTeleport?: SeatTeleportDeps
   /** CC-951: the host launchers a teleport can land a successor through, owned by the socket layer. */
   hosts?: LauncherSite
+  /** TP-4256 A3: the broker's ledger. Absent, a launch is written `OFF_BROKER`, without `--integrity`. */
+  integrity?: LaunchLedger
   /** CC-892: the account checks and transcript move behind `account_move`. Faked in tests. */
   accountMoves?: AccountMoves
   /**
@@ -1074,6 +1086,41 @@ const isHumanSpawn = (req: SpawnRequest): boolean =>
   req.spawnedAs === undefined &&
   req.callerAgent === undefined &&
   req.humanUnproven === undefined
+
+/** TP-4256 A3: the human's own resume, the one resume that clears a quarantine; a wake, a seat or an agent does not. */
+const isHumanResume = (req: ResumeRequest): boolean =>
+  req.requestedBy === HUMAN &&
+  req.requesterAgentId === undefined &&
+  req.source === undefined &&
+  req.cause === undefined &&
+  req.launchedBy === undefined &&
+  req.callerAgent === undefined &&
+  req.humanUnproven === undefined
+
+/** The ledger's two calls a launch needs; `SocketServer` passes its own ledger. */
+export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict'>
+
+/**
+ * TP-4256 A3: an agent's ledger parent, from its own `agent_spawned` meta. A teleport successor's
+ * is its predecessor, so it never steps outside that agent's quarantine; '' is a human's spawn.
+ */
+const ledgerParentOf = (meta: Readonly<Record<string, string>> | undefined): Parent =>
+  meta?.teleport_from || meta?.parent || HUMAN_ROOT
+
+/** A successor never carries `humanProof`: a teleport is the agent's own act, not the human's. */
+const successorAdmission = (input: RelaunchInput): AdmitRequest => ({
+  agentId: input.agentId,
+  parent: input.inheritedFrom ?? ledgerParentOf(input.meta),
+})
+
+/** Why the ledger refuses a launch, as a launch error and a notice say it. */
+function integrityRefusal(agentId: string, verdict: Exclude<Verdict, { ok: true }>): string {
+  if (verdict.reason === 'no baseline') return `integrity: ${agentId} has no baseline in this broker`
+  return (
+    `integrity: ${agentId} is quarantined: ${verdict.file} changed (${verdict.field}) under ` +
+    `${verdict.principal}; only the human's own \`agent-chat agent resume\` re-baselines it`
+  )
+}
 
 /** Who a run's return-contract report may go to. */
 const reportRecipients = (spawner: string): string[] =>
@@ -1260,6 +1307,7 @@ export class Supervisor implements TeleportHost {
   /** CC-1059: spawns recorded here for a requester on another host to launch. */
   private readonly remoteSpawns: RemoteSpawns
   private readonly hosts: LauncherSite | undefined
+  private readonly ledger: LaunchLedger | undefined
   /** CC-1592: the one seam both a move and its dry run read, so they refuse alike. */
   private readonly accountMoves: AccountMoves
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
@@ -1297,6 +1345,7 @@ export class Supervisor implements TeleportHost {
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
+    this.ledger = options.integrity
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
     this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
@@ -2962,9 +3011,10 @@ export class Supervisor implements TeleportHost {
       configDir: account.dir,
       ...(account.unset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(
+    this.writeAdmitted(
+      { agentId, parent: req.parentAgentId || HUMAN_ROOT, humanProof: isHumanSpawn(req) },
       plan,
-      buildMcpConfig(profile, cliEntry(), plan.surface),
+      profile,
       this.createdWorktree(agentId, allocation, isolationName),
       OFF_BROKER,
     )
@@ -3444,12 +3494,37 @@ export class Supervisor implements TeleportHost {
     return resolveSurface(surface, this.surfaceOptions?.platform)
   }
 
+  /** TP-4256 A3: every broker launch writes its files here, so the ledger admits each one. */
+  private writeAdmitted(
+    req: AdmitRequest,
+    plan: LaunchPlan,
+    profile: AgentProfile,
+    created: CreatedWorktree | undefined,
+  ): void {
+    const config = buildMcpConfig(profile, cliEntry(), plan.surface)
+    if (this.ledger === undefined) writeLaunchFiles(plan, config, created, OFF_BROKER)
+    else this.ledger.admit(req, admission => writeLaunchFiles(plan, config, created, admission))
+  }
+
+  /** The parent an agent's spawn row recorded, so every relaunch of it admits under the same one. */
+  private recordedParent(agentId: string): Parent {
+    return ledgerParentOf(this.spawnEventOf(agentId)?.meta)
+  }
+
+  /** TP-4256 A3: the ledger's refusal of this agent's launch; undefined to launch it. */
+  private launchRefusal(agentId: string): string | undefined {
+    const verdict = this.ledger?.verdict(agentId)
+    return verdict === undefined || verdict.ok ? undefined : integrityRefusal(agentId, verdict)
+  }
+
   private async launchOn(
     surface: SurfaceName,
     plan: LaunchPlan,
     anchor?: string,
     reuseAnchor = false,
   ): Promise<LaunchHandle> {
+    const refusal = this.launchRefusal(plan.agentId)
+    if (refusal !== undefined) throw new Error(refusal)
     const columnAfter = anchor === undefined ? undefined : this.columnFor(anchor)
     return surfaceFor(surface, {
       ...this.surfaceOptions,
@@ -4479,9 +4554,10 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
       ...(req.remoteControl ? { remoteControl: true } : {}),
     })
-    writeLaunchFiles(
+    this.writeAdmitted(
+      { agentId: agent.agentId, parent: this.recordedParent(agent.agentId), humanProof: isHumanResume(req) },
       plan,
-      buildMcpConfig(profile, cliEntry(), plan.surface),
+      profile,
       this.createdWorktree(agent.agentId, allocation, isolation),
       OFF_BROKER,
     )
@@ -4615,9 +4691,10 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(
+    this.writeAdmitted(
+      { agentId: agent.agentId, parent: this.recordedParent(agent.agentId) },
       plan,
-      buildMcpConfig(profile, cliEntry(), plan.surface),
+      profile,
       this.createdWorktree(agent.agentId, allocation, isolation),
       OFF_BROKER,
     )
@@ -4829,9 +4906,10 @@ export class Supervisor implements TeleportHost {
       })
 
     const { plan, sessionId } = this.successorPlan(input, allocation)
-    writeLaunchFiles(
+    this.writeAdmitted(
+      successorAdmission(input),
       plan,
-      buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      input.profile,
       this.createdWorktree(input.agentId, allocation, isolation),
       OFF_BROKER,
     )
@@ -5131,12 +5209,12 @@ export class Supervisor implements TeleportHost {
   }
 
   private noticeDeadSuccessor(input: RelaunchInput, lead: string, reason: string): void {
-    this.core.append({
-      kind: 'notice',
-      actor: 'agent-chat',
-      target: HUMAN,
-      body: `${lead}. Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
-    })
+    const refusal = this.launchRefusal(input.agentId)
+    const next =
+      refusal === undefined
+        ? `Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`
+        : `${refusal}; do not run its relaunch script.`
+    this.core.append({ kind: 'notice', actor: 'agent-chat', target: HUMAN, body: `${lead}. ${next}` })
     this.seatJournal?.({ event: 'teleport-failed', agent: input.name })
     logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })
   }
@@ -5214,9 +5292,10 @@ export class Supervisor implements TeleportHost {
 
   private writeSuccessorFiles(launch: SuccessorLaunch, plan: LaunchPlan): void {
     const { input, allocation, isolation } = launch
-    writeLaunchFiles(
+    this.writeAdmitted(
+      successorAdmission(input),
       plan,
-      buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      input.profile,
       this.createdWorktree(input.agentId, allocation, isolation),
       OFF_BROKER,
     )

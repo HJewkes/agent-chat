@@ -1240,6 +1240,8 @@ export type ClientMessage =
       launchReason?: string
       /** CC-1472: the machine to resume on, a config `machines` alias or a hostname; absent resumes here. */
       host?: string
+      /** TP-4256 A3: as on `spawn`. */
+      callerAgent?: string
     }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the

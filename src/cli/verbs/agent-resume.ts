@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { LAUNCHERS, SURFACE_NAMES, type ServerMessage } from '../../protocol.js'
 import { describeResume } from '../../agents/resume-session.js'
+import { callerAgentField } from '../agents.js'
 import { defineVerb, Report } from '../command.js'
 
 async function readStdin(): Promise<string> {
@@ -71,6 +72,7 @@ export const agentResume = defineVerb({
           ...(launchedBy === undefined ? {} : { launchedBy }),
           ...(launchReason === undefined ? {} : { launchReason }),
           ...(host === undefined ? {} : { host }),
+          ...callerAgentField(process.env),
         },
         'spawn_result',
       ),
