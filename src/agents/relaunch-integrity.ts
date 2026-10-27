@@ -56,7 +56,10 @@ export const askBroker: AskRelaunch = async agentId => {
 }
 
 /** Why the launch must not start, or undefined to start it. Every failure refuses. */
-export async function relaunchRefusal(agentId: string, ask: AskRelaunch = askBroker): Promise<string | undefined> {
+export async function relaunchRefusal(
+  agentId: string,
+  ask: AskRelaunch = askBroker,
+): Promise<string | undefined> {
   let result: RelaunchResult
   try {
     result = await ask(agentId)

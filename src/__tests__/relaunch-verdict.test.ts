@@ -44,7 +44,9 @@ function setup() {
   }
   const relaunch = (agentId: string, dir: string = agentDir(agentId)) => {
     const frames: ServerMessage[] = []
-    const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
+    const conn = {
+      write: (line: string) => frames.push(JSON.parse(line) as ServerMessage),
+    } as unknown as Conn
     server.handleMessage(conn, { t: 'integrity_relaunch', agentId, agentDir: dir })
     return frames.at(-1) as Extract<ServerMessage, { t: 'integrity_relaunch_result' }>
   }
@@ -109,7 +111,10 @@ describe('run-agent relaunch verdict', () => {
   it('answers offBroker only for a dir outside the agents root, judged by path not by text', () => {
     const { home, relaunch } = setup()
 
-    expect(relaunch('a1', path.join(home, 'remote', 'agents', 'a1'))).toMatchObject({ ok: true, offBroker: true })
+    expect(relaunch('a1', path.join(home, 'remote', 'agents', 'a1'))).toMatchObject({
+      ok: true,
+      offBroker: true,
+    })
     expect(relaunch('a1', `${home}/agents-x/a1`)).toMatchObject({ ok: true, offBroker: true })
     expect(relaunch('a1', `${home}/remote/../agents/a1`)).toMatchObject({ ok: false, reason: 'no baseline' })
   })
