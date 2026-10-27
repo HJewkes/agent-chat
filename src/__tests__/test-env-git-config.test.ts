@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
-import { withoutInjectedHooksPath } from './helpers/git-config-env.js'
+import { withoutGitShim, withoutInjectedHooksPath } from './helpers/git-config-env.js'
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-git-config-env-'))
 
@@ -78,5 +78,30 @@ describe('the test env drops the leak guard hooks path (CC-335)', () => {
 
     expect(withoutInjectedHooksPath(plain)).toEqual(plain)
     expect(withoutInjectedHooksPath(malformed)).toEqual(malformed)
+  })
+})
+
+describe('the test env drops the agent git shim (CC-1657)', () => {
+  const fakeHome = path.join(path.sep, 'home', 'probe')
+  const shimDir = path.join(fakeHome, '.agent-chat', 'git-hooks', 'git-bin')
+
+  it('leaves no shim dir on the test process PATH and no GIT_EXEC_PATH into it', () => {
+    const entries = (process.env.PATH ?? '').split(path.delimiter)
+
+    expect(entries.filter(entry => entry.includes(path.join('git-hooks', 'git-bin')))).toEqual([])
+    expect(process.env.GIT_EXEC_PATH ?? '').not.toContain(path.join('git-hooks', 'git-bin'))
+  })
+
+  it('drops the shim dir and its core mirror from PATH, keeping the other entries in order', () => {
+    const env = { PATH: [shimDir, '/usr/bin', path.join(shimDir, 'core'), '/bin'].join(path.delimiter) }
+
+    expect(withoutGitShim(env)).toEqual({ PATH: ['/usr/bin', '/bin'].join(path.delimiter) })
+  })
+
+  it('deletes GIT_EXEC_PATH only when it points into the shim dir', () => {
+    expect(withoutGitShim({ GIT_EXEC_PATH: path.join(shimDir, 'core') })).toEqual({})
+    expect(withoutGitShim({ GIT_EXEC_PATH: '/usr/lib/git-core' })).toEqual({
+      GIT_EXEC_PATH: '/usr/lib/git-core',
+    })
   })
 })
