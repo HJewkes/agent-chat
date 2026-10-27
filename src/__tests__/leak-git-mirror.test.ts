@@ -230,8 +230,9 @@ describe('the mirror the shim writer builds (TP-4249)', () => {
   it('reads the real core even when the writer inherits GIT_EXEC_PATH', () => {
     const fx = harness.fixture()
     const mirror = gitMirrorDirFor(fx.shimDir)
-    const core = git(fx.work, '--exec-path').trim()
     const saved = process.env.GIT_EXEC_PATH
+    delete process.env.GIT_EXEC_PATH
+    const core = git(fx.work, '--exec-path').trim()
     process.env.GIT_EXEC_PATH = mirror
     try {
       expect(writeGitShim(fx.shimDir, fx.guard, HOST_PATH)).toBe(true)
