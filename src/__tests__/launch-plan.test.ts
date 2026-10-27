@@ -700,7 +700,12 @@ describe('the launch files', () => {
   it('keeps the brief owner-only, because that is the only place it lives', () => {
     const home = tmpdir()
     process.env.AGENT_CHAT_HOME = home
-    writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/repo/dist/cli.js'), undefined, OFF_BROKER)
+    writeLaunchFiles(
+      buildLaunchPlan(input()),
+      buildMcpConfig(profile(), '/repo/dist/cli.js'),
+      undefined,
+      OFF_BROKER,
+    )
 
     expect(fs.statSync(planPath('ag000001')).mode & 0o777).toBe(0o600)
     expect(fs.statSync(path.dirname(planPath('ag000001'))).mode & 0o777).toBe(0o700)
@@ -709,7 +714,8 @@ describe('the launch files', () => {
   it('rewrites an existing plan without loosening its mode', () => {
     const home = tmpdir()
     process.env.AGENT_CHAT_HOME = home
-    const files = () => writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/e'), undefined, OFF_BROKER)
+    const files = () =>
+      writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/e'), undefined, OFF_BROKER)
     files()
     fs.chmodSync(planPath('ag000001'), 0o644)
     files()
@@ -961,10 +967,20 @@ describe('the PermissionRequest hook (CC-144)', () => {
   it('writes the settings file owner-only beside the plan, with the permission hook only for a print run', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
     const read = (): string => fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')
-    writeLaunchFiles(buildLaunchPlan(input({ surface: 'iterm-pane', hookSettingsPath: '/x' })), {}, undefined, OFF_BROKER)
+    writeLaunchFiles(
+      buildLaunchPlan(input({ surface: 'iterm-pane', hookSettingsPath: '/x' })),
+      {},
+      undefined,
+      OFF_BROKER,
+    )
     expect(read()).not.toContain('PermissionRequest')
 
-    writeLaunchFiles(buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') })), {}, undefined, OFF_BROKER)
+    writeLaunchFiles(
+      buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') })),
+      {},
+      undefined,
+      OFF_BROKER,
+    )
 
     expect(fs.statSync(hookSettingsPath('ag000001')).mode & 0o777).toBe(0o600)
     expect(read()).toContain('"timeout": 1800')
