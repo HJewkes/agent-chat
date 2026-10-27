@@ -103,6 +103,12 @@ const WATCH_MAX_BATCH = 50
  */
 const MAX_OPEN_ENDORSEMENTS = 2
 
+/**
+ * TP-4256 A3: whether broker launches go through the integrity ledger. A compile-time constant, not
+ * config, because config is agent-writable; it stays false until the last A3 slice turns it on.
+ */
+const INTEGRITY_WIRED = false
+
 /** Shepherd names a fix-round successor with `-s<N>`; a caller that sends no marker is still read by it. */
 const FIX_ROUND = /-s\d+$/
 
@@ -487,7 +493,11 @@ export class SocketServer {
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
-    this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
+    this.supervisor = new Supervisor(core, {
+      ...supervisorOptions,
+      hosts: this.hosts,
+      ...(INTEGRITY_WIRED ? { integrity: this.integrity } : {}),
+    })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
     this.settingsWatch.start()
@@ -1207,7 +1217,8 @@ export class SocketServer {
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
-      ...(requester === undefined ? launchFieldsOf(msg) : {}),
+      // TP-4256 A3: the same proof a spawn needs, since a human resume clears a quarantine.
+      ...(requester === undefined ? { ...launchFieldsOf(msg), ...callerAgentOf(conn, msg, this.peer) } : {}),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
