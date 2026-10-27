@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { writeLaunchFiles } from '../agents/launch-files.js'
+import { OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
 import { findRealGit, GIT_SHIM_DIR_ENV, gitShimScript, writeGitShim } from '../leak-guard/git-shim.js'
@@ -521,10 +521,10 @@ describe('where the agent git shim is put on PATH', () => {
     const hooks = path.join(home, 'git-hooks')
     const shim = path.join(home, 'git-bin', 'git')
     try {
-      writeLaunchFiles(buildLaunchPlan(input()), {})
+      writeLaunchFiles(buildLaunchPlan(input()), {}, undefined, OFF_BROKER)
       expect(fs.existsSync(shim)).toBe(false)
 
-      writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {})
+      writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {}, undefined, OFF_BROKER)
     } finally {
       delete process.env.AGENT_CHAT_HOME
     }

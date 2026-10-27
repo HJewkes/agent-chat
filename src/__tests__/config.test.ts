@@ -26,7 +26,7 @@ import {
 } from '../config.js'
 import { newAgentSlots } from '../broker/daemon.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
-import { writeLaunchFiles } from '../agents/launch-files.js'
+import { OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import type { LaunchPlan } from '../agents/types.js'
 import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
@@ -556,7 +556,7 @@ describe('gitShellAliases (CC-613)', () => {
       surface: 'headless',
     }
 
-    writeLaunchFiles(plan, {})
+    writeLaunchFiles(plan, {}, undefined, OFF_BROKER)
 
     const shim = fs.readFileSync(path.join(gitShimDirFor(hooksDir), 'git'), 'utf8')
     expect(shim).toContain("shell_aliases='p'")

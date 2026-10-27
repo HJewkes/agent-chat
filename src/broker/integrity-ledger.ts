@@ -102,15 +102,15 @@ export class IntegrityLedger {
   ) {}
 
   /** Sweep, enrol, clear, mint, write, record, re-watch: one synchronous call, in this order. */
-  admit(req: AdmitRequest, write: (nonce: string) => LaunchWrite): LaunchAdmission {
+  admit(req: AdmitRequest, write: (admission: LaunchAdmission) => LaunchWrite): LaunchAdmission {
     this.watch.sweepAgent(req.agentId)
     this.enrol(req.agentId, req.parent)
     if (req.humanProof === true) this.clear(req.agentId)
-    const nonce = randomBytes(32).toString('hex')
-    const { startup, files } = write(nonce)
-    this.store.putLaunch(nonce, { agentId: req.agentId, startup, sessions: {} })
+    const admission = new LaunchAdmission(MINT, randomBytes(32).toString('hex'), req.agentId)
+    const { startup, files } = write(admission)
+    this.store.putLaunch(admission.nonce, { agentId: req.agentId, startup, sessions: {} })
     this.watch.replace(req.agentId, files)
-    return new LaunchAdmission(MINT, nonce, req.agentId)
+    return admission
   }
 
   agentOf(nonce: string): string | undefined {
