@@ -131,10 +131,7 @@ const profile: AgentProfile = {
   promptPrelude: '',
 }
 
-/**
- * Resolves true once started. Nothing attaches, so a refused successor is not read as one that
- * attached; it is retried on the clock, so the clock is advanced.
- */
+/** Nothing attaches, so a refused successor is not read as attached; its retry runs on the clock. */
 async function relaunchSuccessor(inheritedFrom?: string): Promise<boolean> {
   stopAutoAttach()
   vi.useFakeTimers({ toFake: ['setTimeout'] })
@@ -151,10 +148,8 @@ async function relaunchSuccessor(inheritedFrom?: string): Promise<boolean> {
         meta: { teleport_from: DESK, parent: '' },
         ...(inheritedFrom === undefined ? {} : { inheritedFrom }),
       })
-      .then(
-        () => true,
-        () => false,
-      )
+      .then(() => true)
+      .catch(() => false)
     await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS * 3)
     return await settled
   } finally {
@@ -166,7 +161,6 @@ interface Row {
   path: string
   /** Leaves an agent ready to launch and returns its id; undefined for a launch that mints one. */
   arrange?: () => Promise<string>
-  /** The launch; resolves to the agent id it launched, and whether it started. */
   act: (agentId: string) => Promise<{ agentId: string; started: boolean }>
   admitted: (agentId: string) => AdmitRequest
   /** Which principal is quarantined for the refusal half; undefined where nothing can be. */
