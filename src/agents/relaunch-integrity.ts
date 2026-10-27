@@ -1,4 +1,6 @@
+import net from 'node:net'
 import { BrokerClient } from '../client/broker-client.js'
+import { socketPath } from '../paths.js'
 import type { ServerMessage } from '../protocol.js'
 
 /**
@@ -13,7 +15,22 @@ import type { ServerMessage } from '../protocol.js'
 type RelaunchResult = Extract<ServerMessage, { t: 'integrity_relaunch_result' }>
 export type AskRelaunch = (agentId: string) => Promise<RelaunchResult>
 
+/**
+ * One attempt, not the client's 8.85 s reconnect ladder: a broker that comes up mid-ladder holds no
+ * baseline either, so waiting for it would only delay every launch made while none is running.
+ */
+const probeBroker = (): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const socket = net.connect(socketPath())
+    socket.once('connect', () => {
+      socket.destroy()
+      resolve()
+    })
+    socket.once('error', () => reject(new Error('no broker is listening')))
+  })
+
 const askBroker: AskRelaunch = async agentId => {
+  await probeBroker()
   const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
     autoStart: false,
   })
