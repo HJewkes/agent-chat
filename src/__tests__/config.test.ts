@@ -384,8 +384,8 @@ describe('resolveReportBatchMs', () => {
 })
 
 describe('resolveCoordinatorGrantableTools', () => {
-  it('defaults to the two web-read tools', () => {
-    expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch', 'WebFetch'])
+  it('leaves the profile declaration unnarrowed by default', () => {
+    expect(resolveCoordinatorGrantableTools()).toBeUndefined()
   })
 
   it('keeps a narrowed list', () => {
@@ -393,8 +393,8 @@ describe('resolveCoordinatorGrantableTools', () => {
     expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch'])
   })
 
-  it('drops a wildcard and any tool outside the web-read set', () => {
-    writeConfigJson({ coordinatorGrantableTools: ['*', 'Bash', 'Monitor', 'WebFetch'] })
+  it('drops an entry that is not a tool name', () => {
+    writeConfigJson({ coordinatorGrantableTools: [7, null, 'WebFetch'] })
     expect(resolveCoordinatorGrantableTools()).toEqual(['WebFetch'])
   })
 

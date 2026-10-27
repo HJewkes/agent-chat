@@ -101,6 +101,11 @@ export interface AgentProfile {
    */
   allowedTools: string[]
   disallowedTools?: string[]
+  /**
+   * CC-1654: the read-only research grants a coordinator may hand this profile without holding
+   * them, declared here so the exemption follows the profile when it gains a tool (`coordinatorExemption`).
+   */
+  researchTools?: string[]
   isolation: IsolationName
   surface: SurfaceName
   /**

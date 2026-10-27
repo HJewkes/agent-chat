@@ -1112,23 +1112,37 @@ const NON_EXEC_TOOLS: ReadonlySet<string> = new Set([
   AGENT_CHAT_TOOLS,
 ])
 
+/** CC-1654: the tool kinds a research grant may be, bare or scoped. Bash counts only scoped to a named command. */
+const RESEARCH_TOOL_KINDS: ReadonlySet<string> = new Set(['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'])
+
+function isResearchGrant(tool: string): boolean {
+  const open = tool.indexOf('(')
+  if (open === -1) return RESEARCH_TOOL_KINDS.has(tool)
+  const kind = tool.slice(0, open)
+  return tool.endsWith(')') && (kind === 'Bash' || RESEARCH_TOOL_KINDS.has(kind))
+}
+
 /**
- * CC-451: the tools a requester of `role` may grant `profile` without holding
- * them. Only a coordinator, and only to a child that denies all of Bash and
- * allows nothing outside `grantable` and `NON_EXEC_TOOLS`, so a fetched page
- * cannot talk it into running code. Fails closed: Monitor, any Bash form and
- * any MCP tool, including ones added later, void the exemption.
+ * CC-451, CC-1654: the tools a requester of `role` may grant `profile` without
+ * holding them: the `researchTools` the profile declares, narrowed by
+ * `grantable` when the config names a list. Only a coordinator, and only to a
+ * child that allows nothing outside its declaration and `NON_EXEC_TOOLS`, so a
+ * fetched page cannot talk it into running code. Fails closed: a declaration
+ * naming any other kind, or an allowed Monitor, bare Bash, undeclared Bash form
+ * or MCP tool, voids the exemption. The caller checks the file is the one the
+ * broker started with, since the profile vouches for itself here.
  */
 export function coordinatorExemption(
   role: AgentRole,
-  profile: Pick<AgentProfile, 'allowedTools' | 'disallowedTools'>,
-  grantable: readonly string[],
+  profile: Pick<AgentProfile, 'allowedTools' | 'researchTools'>,
+  grantable: readonly string[] | undefined,
 ): Set<string> {
   if (role !== 'coordinator') return new Set()
-  if (!(profile.disallowedTools ?? []).includes('Bash')) return new Set()
-  const exempt = new Set(grantable)
-  const confined = profile.allowedTools.every(tool => exempt.has(tool) || NON_EXEC_TOOLS.has(tool))
-  return confined ? exempt : new Set()
+  const declared = profile.researchTools ?? []
+  if (!declared.every(isResearchGrant)) return new Set()
+  const confined = profile.allowedTools.every(tool => declared.includes(tool) || NON_EXEC_TOOLS.has(tool))
+  if (!confined) return new Set()
+  return new Set(grantable === undefined ? declared : declared.filter(tool => grantable.includes(tool)))
 }
 
 /** Only a worktree the strategy cut records `base_ref`; an adopted one has no base to report. */
@@ -2339,7 +2353,7 @@ export class Supervisor implements TeleportHost {
    * must still be denied to the child, or refuse the same way.
    *
    * CC-451: the one hole in the allow side. `exemptionFor` lets a coordinator
-   * grant the configured web-read tools it lacks; what was exempted comes back
+   * grant the research tools a profile declares and it lacks; what was exempted comes back
    * so the spawn row can record it.
    */
   private checkEscalation(
@@ -2398,7 +2412,10 @@ export class Supervisor implements TeleportHost {
     return { exempted: [] }
   }
 
+  /** CC-1654: a declaration written since broker start is not the owner's until a human spawns it, so it exempts nothing. */
   private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
+    const { source } = loadProfileSource(profile.name)
+    if (this.profileBaseline.drift(profile.name, source) !== undefined) return new Set()
     return coordinatorExemption(this.requesterFor(req).role, profile, resolveCoordinatorGrantableTools())
   }
 

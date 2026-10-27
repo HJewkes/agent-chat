@@ -523,28 +523,27 @@ export function resolveFullSuiteSlots(): number {
   return positiveIntegerFrom('fullSuiteSlots', DEFAULT_FULL_SUITE_SLOTS)
 }
 
-/** CC-451: the web-read tools a coordinator may grant a child it does not hold itself, and the only ones. */
-export const WEB_READ_TOOLS: readonly string[] = ['WebSearch', 'WebFetch']
-
 /**
- * `coordinatorGrantableTools` in `config.json`, read per spawn; `[]` turns the exemption off.
- * It can only narrow `WEB_READ_TOOLS`: any other name, `*` included, is logged and dropped,
- * and a non-array grants nothing rather than the default, because this key widens authority.
+ * `coordinatorGrantableTools` in `config.json`, read per spawn; `[]` turns the CC-451 exemption off.
+ * Absent means every research tool a profile declares (CC-1654). A list can only narrow that
+ * declaration, so a name no profile declares grants nothing; a non-string is logged and dropped,
+ * and a non-array grants nothing rather than the default.
  */
-export function resolveCoordinatorGrantableTools(): string[] {
+export function resolveCoordinatorGrantableTools(): string[] | undefined {
   const value = readConfig().coordinatorGrantableTools
-  if (value === undefined) return [...WEB_READ_TOOLS]
+  if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     logInvalidOnce({ key: 'coordinatorGrantableTools', value, fallback: [] })
     return []
   }
-  const known = value.filter(
-    (tool): tool is string => typeof tool === 'string' && WEB_READ_TOOLS.includes(tool),
-  )
-  const ignored = value.filter(tool => !known.includes(tool as string))
-  if (ignored.length > 0)
-    logInvalidOnce({ key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
-  return known
+  const names = value.filter((tool): tool is string => typeof tool === 'string')
+  if (names.length < value.length)
+    logInvalidOnce({
+      key: 'coordinatorGrantableTools',
+      value: value.filter(tool => typeof tool !== 'string'),
+      fallback: 'ignored',
+    })
+  return names
 }
 
 /**
