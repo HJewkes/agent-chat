@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { hookSettingsPath, writeLaunchFiles } from '../agents/launch-files.js'
+import { hookSettingsPath, writeLaunchFiles, type LaunchLineage } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import { relaunchRefusal } from '../agents/relaunch-integrity.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
@@ -93,8 +93,11 @@ function setup() {
   core.append({ kind: 'agent_spawned', actor: 'coord', target: 'scout', msgId: AGENT, body: 'work' })
   const server = new SocketServer(core)
   servers.push(server)
-  const launch = (agentId: string): string => {
-    writeLaunchFiles(buildLaunchPlan(planInput(agentId)), {}, undefined, server.launchIntegrity)
+  const launch = (agentId: string, lineage: LaunchLineage = { from: [] }): string => {
+    writeLaunchFiles(buildLaunchPlan(planInput(agentId)), {}, undefined, {
+      port: server.launchIntegrity,
+      lineage,
+    })
     return nonceIn(hookSettingsPath(agentId))
   }
   const nonce = launch(AGENT)
@@ -103,8 +106,8 @@ function setup() {
   const ask: AskBroker = async frame => answer(server, frame, 'integrity_result')
   const hook = (n: string = nonce) =>
     integrityDenial(n, JSON.stringify({ session_id: SESSION }), env, ask, INTEGRITY_DEADLINE_MS, inline)
-  const relaunch = () =>
-    relaunchRefusal(AGENT, async agentId =>
+  const relaunch = (id: string = AGENT) =>
+    relaunchRefusal(id, async agentId =>
       answer(server, { t: 'integrity_relaunch', agentId }, 'integrity_relaunch_result'),
     )
   const bash = (script: string): void => {
@@ -270,14 +273,20 @@ describe('S15 edit-then-restore of a launch file between two calls', () => {
   })
 })
 
-describe('a resume after a quarantine', () => {
-  it('runs under a new nonce with a fresh baseline, while the old nonce still denies', async () => {
-    const wired = setup()
-    await wired.hook()
-    wired.bash(`echo x >> "$A/mcp.json"`)
-    expect(await wired.hook()).toMatch(/quarantined/)
+/** A quarantined AGENT: a clean call, then a launch-file change the next call reports. */
+async function quarantined() {
+  const wired = setup()
+  await wired.hook()
+  wired.bash(`echo x >> "$A/mcp.json"`)
+  expect(await wired.hook()).toMatch(/quarantined/)
+  return wired
+}
 
-    const resumed = wired.launch(AGENT)
+describe('a resume after a quarantine', () => {
+  it('runs a human resume under a new nonce with a fresh baseline, while the old nonce still denies', async () => {
+    const wired = await quarantined()
+
+    const resumed = wired.launch(AGENT, { from: [], humanResume: true })
 
     expect(resumed).not.toBe(wired.nonce)
     expect(await wired.hook(resumed)).toBeUndefined()
@@ -309,5 +318,32 @@ describe('a resume with no quarantine', () => {
 
     expect(await wired.hook()).toMatch(/mcp\.json changed/)
     expect(wired.notices()).toHaveLength(1)
+  })
+})
+
+describe('a launch that descends from a quarantined agent (the quarantine carried forward)', () => {
+  const SUCCESSOR = 'ag000003'
+
+  // Mutation caught: register baselining every launch fresh, which lets a quarantined agent teleport clean.
+  it.each([
+    ['a resume no human started', AGENT, { from: [] }],
+    ['a teleport successor or a spawn by it', SUCCESSOR, { from: [AGENT] }],
+  ])('%s is registered quarantined', async (_shape, agentId, lineage) => {
+    const wired = await quarantined()
+
+    const nonce = wired.launch(agentId, lineage)
+
+    expect(await wired.hook(nonce)).toMatch(/mcp\.json changed.*quarantined/)
+    expect(await wired.relaunch(agentId)).toMatch(/this launch is quarantined: .*mcp\.json changed/)
+    expect(wired.notices()).toHaveLength(1)
+  })
+
+  it('a launch with an unquarantined lineage starts clean', async () => {
+    const wired = setup()
+
+    const nonce = wired.launch(SUCCESSOR, { from: [SIBLING] })
+
+    expect(await wired.hook(nonce)).toBeUndefined()
+    expect(await wired.relaunch(SUCCESSOR)).toBeUndefined()
   })
 })

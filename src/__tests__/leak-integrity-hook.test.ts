@@ -131,8 +131,8 @@ describe('writeLaunchFiles with the broker integrity port', () => {
     vi.stubEnv('HOME', home)
     const { calls, port } = recorder()
 
-    writeLaunchFiles(plan(), {}, undefined, port)
-    writeLaunchFiles(plan(), {}, undefined, port)
+    writeLaunchFiles(plan(), {}, undefined, { port, lineage: { from: [] } })
+    writeLaunchFiles(plan(), {}, undefined, { port, lineage: { from: [] } })
 
     const [first, second] = calls
     expect(calls).toHaveLength(2)
@@ -265,7 +265,7 @@ describe('the built hook verbs over a live socket', () => {
     const home = tmpdir()
     fs.writeFileSync(path.join(home, '.zshrc'), 'alias ll=ls\n')
     const broker = await listeningBroker(home)
-    writeLaunchFiles(plan(), {}, undefined, broker.server.launchIntegrity)
+    writeLaunchFiles(plan(), {}, undefined, { port: broker.server.launchIntegrity, lineage: { from: [] } })
     const nonce =
       /--integrity '([0-9a-f]{64})'/.exec(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8'))?.[1] ?? ''
 

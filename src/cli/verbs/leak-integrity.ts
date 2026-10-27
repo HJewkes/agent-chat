@@ -57,7 +57,7 @@ function sessionOf(raw: string): string {
   }
 }
 
-const RESUME = 'Inspect it; `agent-chat agent resume` starts a new launch with a fresh baseline.'
+const RESUME = 'Inspect it; only a resume the human starts (`agent-chat agent resume`) gets a fresh baseline.'
 
 /** The deny reason for a broker answer, or '' when every record matched. */
 export function denialOf(result: CheckResult): string {

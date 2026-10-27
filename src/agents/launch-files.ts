@@ -398,9 +398,33 @@ function realpathOrUndefined(dir: string): string | undefined {
 export interface LaunchIntegrity {
   /** Called before the agent's files are rewritten, so the rewrite is not read as a change to its previous launch. */
   retire(agentId: string): void
-  register(nonce: string, agentId: string, startup: Records, files: readonly string[]): void
+  /**
+   * The one place a launch gets a baseline. A launch whose agent or lineage is quarantined is
+   * registered already quarantined, so every path that starts it is refused, unless a human resumed it.
+   */
+  register(
+    nonce: string,
+    agentId: string,
+    startup: Records,
+    files: readonly string[],
+    lineage: LaunchLineage,
+  ): void
   /** Why the agent's newest launch is quarantined, checked after a fresh sweep; undefined to launch it. */
   quarantineOf(agentId: string): Mismatch | undefined
+}
+
+/** Where a launch comes from, for the quarantine it carries forward. */
+export interface LaunchLineage {
+  /** Agents whose quarantine this launch inherits besides its own: its spawner, a teleport predecessor. */
+  readonly from: readonly string[]
+  /** A resume the human started: the one launch that gets a clean baseline whatever came before. */
+  readonly humanResume?: boolean
+}
+
+/** What a launch written in the broker passes, so no call site can register a baseline without its lineage. */
+export interface LaunchAdmission {
+  readonly port: LaunchIntegrity
+  readonly lineage: LaunchLineage
 }
 
 /** The env the launched shell starts with, as far as the broker can know it: its own, under the plan's. */
@@ -415,7 +439,7 @@ export function writeLaunchFiles(
   plan: LaunchPlan,
   config: Record<string, unknown>,
   createdWorktree?: CreatedWorktree,
-  integrity?: LaunchIntegrity,
+  integrity?: LaunchAdmission,
 ): void {
   const nonce = integrity === undefined ? undefined : randomBytes(32).toString('hex')
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
@@ -433,14 +457,15 @@ export function writeLaunchFiles(
     [planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2)],
     [relaunchScriptPath(plan.agentId), relaunchScript(agentChatLauncher(), plan.agentId), SCRIPT_MODE],
   ]
-  integrity?.retire(plan.agentId)
+  integrity?.port.retire(plan.agentId)
   for (const [file, body, mode] of files) writePrivate(file, body, mode)
   if (integrity !== undefined && nonce !== undefined)
-    integrity.register(
+    integrity.port.register(
       nonce,
       plan.agentId,
       startupRecords(launchEnv(plan)),
       files.map(([file]) => file),
+      integrity.lineage,
     )
   writeGitArtifacts(plan)
 }

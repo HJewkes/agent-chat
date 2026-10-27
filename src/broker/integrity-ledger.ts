@@ -37,9 +37,10 @@ export class IntegrityLedger {
 
   constructor(private readonly store: IntegrityStore = memoryStore()) {}
 
-  registerLaunch(nonce: string, agentId: string, startup: Records): void {
+  /** `inherited` registers the launch already quarantined, for a quarantine carried forward from its lineage. */
+  registerLaunch(nonce: string, agentId: string, startup: Records, inherited?: Mismatch): void {
     if (this.store.get(nonce) !== undefined) throw new Error(`integrity nonce already registered`)
-    this.store.put(nonce, { agentId, startup, sessions: {} })
+    this.store.put(nonce, { agentId, startup, sessions: {}, ...(inherited ? { quarantine: inherited } : {}) })
     this.latest.set(agentId, nonce)
   }
 

@@ -1539,6 +1539,13 @@ stats and hashes files, and decides by nonce, ledger and real path.
   broker sweeps the watch, so a change already made still quarantines the old launch, and then
   stops watching the old launch's files, so the rewrite itself is not read as a change. A
   quarantined old nonce stays quarantined.
+- **Carried forward.** Registration is the one place a launch gets a baseline, and every write
+  site passes its lineage: a spawn names the spawning agent, a teleport successor (and its headless
+  fallback) names its predecessor. A launch whose own agent or any agent in its lineage has a
+  quarantined newest launch is registered already quarantined, so every path that would start it
+  (spawn, resume, mode switch, teleport) is refused, the hooks deny, and `run-agent` exits 77. A
+  resume the human starts is the one exception: it gets a clean baseline. A resume asked for by an
+  agent, a seat, a wake or the supervisor carries the quarantine forward.
 - **Hooks.** The guard's PreToolUse hook runs `leak-guard pretool --integrity <nonce>`, and a
   PostToolUse twin with the same matcher runs `leak-guard posttool --integrity <nonce>`. Each reads
   `session_id` from stdin and builds the current records from its own `HOME`, `ZDOTDIR`,
@@ -1554,8 +1561,8 @@ stats and hashes files, and decides by nonce, ledger and real path.
 - **Relaunch.** `run-agent` asks the broker (`integrity_relaunch`, a read) before it starts claude
   from the files on disk. The broker sweeps the watch first, so a `plan.json` rewritten to drop
   `--settings` is caught even when no tool call has reported it. A quarantined launch exits 77.
-  Only `agent-chat agent resume`, which writes new files under a new nonce, gets past a
-  quarantine. The `relaunch` script is agent-writable, so the broker does not rely on it calling
+  Only a resume the human starts (`agent-chat agent resume`), which writes new files under a new
+  nonce, gets past a quarantine. The `relaunch` script is agent-writable, so the broker does not rely on it calling
   `run-agent`: every launch the broker starts (spawn, resume, mode switch, teleport successor and
   its retries) is refused when the agent's newest launch is quarantined, and a lost-teleport notice
   names the quarantine instead of telling the human to run the script. If `run-agent` cannot reach the broker, it starts the launch with a line on

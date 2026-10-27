@@ -477,9 +477,12 @@ export class SocketServer {
       const previous = this.integrity.latestOf(agentId)
       if (previous !== undefined) this.settingsWatch.forget(previous)
     },
-    register: (nonce, agentId, startup, files) => {
-      this.integrity.registerLaunch(nonce, agentId, startup)
-      this.settingsWatch.register(nonce, files)
+    register: (nonce, agentId, startup, files, lineage) => {
+      const inherited = lineage.humanResume
+        ? undefined
+        : [agentId, ...lineage.from].map(id => this.integrity.quarantineOf(id)).find(q => q !== undefined)
+      this.integrity.registerLaunch(nonce, agentId, startup, inherited)
+      if (inherited === undefined) this.settingsWatch.register(nonce, files)
     },
     quarantineOf: agentId => {
       this.settingsWatch.sweep()

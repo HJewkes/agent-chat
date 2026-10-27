@@ -66,4 +66,5 @@ export async function relaunchRefusal(
 /** One wording for every place a quarantined launch is refused, broker-side or in run-agent. */
 export const quarantinedLaunch = (mismatch: Mismatch): string =>
   `this launch is quarantined: ${mismatch.file} changed (${mismatch.field}). ` +
-  'Its launch files are not run again; `agent-chat agent resume` writes new ones under a fresh baseline'
+  'Neither it nor a launch it starts runs; only a resume the human starts (`agent-chat agent resume`) ' +
+  'writes new files under a fresh baseline'

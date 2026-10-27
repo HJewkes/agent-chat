@@ -41,7 +41,9 @@ import {
   markSuperseded,
   writeLaunchFiles,
   writeRuntimeState,
+  type LaunchAdmission,
   type LaunchIntegrity,
+  type LaunchLineage,
 } from './launch-files.js'
 import {
   agentLiveness,
@@ -1072,6 +1074,21 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
  * CC-1206: so does an agent's own CLI spawn, which the broker marks with `callerAgent`.
  * CC-1246: and one the broker could not prove came from the human at a terminal (`humanUnproven`).
  */
+/** TP-4256 A3: the human's own resume, the one launch that clears a quarantine; a wake, a seat or an agent does not. */
+const isHumanResume = (req: ResumeRequest): boolean =>
+  req.requestedBy === HUMAN &&
+  req.requesterAgentId === undefined &&
+  req.source === undefined &&
+  req.cause === undefined &&
+  req.launchedBy === undefined
+
+const definedIds = (...ids: (string | undefined)[]): string[] =>
+  ids.filter((id): id is string => id !== undefined && id !== '')
+
+/** A successor inherits its predecessor's quarantine, so a quarantined agent cannot teleport into a clean baseline. */
+const successorLineage = (input: RelaunchInput): string[] =>
+  definedIds(input.inheritedFrom, input.meta.teleport_from)
+
 const isHumanSpawn = (req: SpawnRequest): boolean =>
   req.requestedBy === HUMAN &&
   req.spawnedAs === undefined &&
@@ -2971,7 +2988,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agentId, allocation, isolationName),
-      this.launchIntegrity,
+      this.admission({ from: definedIds(req.parentAgentId) }),
     )
     const provenance = await spawnProvenance(allocation, req, profile.name)
 
@@ -3447,6 +3464,11 @@ export class Supervisor implements TeleportHost {
   /** CC-804: the surface a requested name lands on, given this host's platform. */
   private resolve(surface: SurfaceName): SurfaceName {
     return resolveSurface(surface, this.surfaceOptions?.platform)
+  }
+
+  /** TP-4256 A3: the broker's integrity port with this launch's lineage; undefined when there is no port. */
+  private admission(lineage: LaunchLineage): LaunchAdmission | undefined {
+    return this.launchIntegrity === undefined ? undefined : { port: this.launchIntegrity, lineage }
   }
 
   private async launchOn(
@@ -4490,7 +4512,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agent.agentId, allocation, isolation),
-      this.launchIntegrity,
+      this.admission({ from: [], humanResume: isHumanResume(req) }),
     )
     const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
@@ -4626,7 +4648,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agent.agentId, allocation, isolation),
-      this.launchIntegrity,
+      this.admission({ from: [] }),
     )
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
@@ -4840,7 +4862,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(input.profile, cliEntry(), plan.surface),
       this.createdWorktree(input.agentId, allocation, isolation),
-      this.launchIntegrity,
+      this.admission({ from: successorLineage(input) }),
     )
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
@@ -5225,7 +5247,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(input.profile, cliEntry(), plan.surface),
       this.createdWorktree(input.agentId, allocation, isolation),
-      this.launchIntegrity,
+      this.admission({ from: successorLineage(input) }),
     )
   }
 
