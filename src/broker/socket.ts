@@ -462,12 +462,10 @@ export class SocketServer {
   private readonly dedupe = new RequestDedupe<KeyedJoiner, KeyedReply>()
   /** CC-1151: runs a kicked job in the broker's env; unset until the daemon attaches it. */
   private jobKick: JobKick | undefined
-  /** TP-4256: launch nonces and their shell-file baselines. Memory only, so a restart leaves every nonce unknown. */
-  readonly integrity = new IntegrityLedger()
+  /** TP-4256: agent principals, launch nonces and their baselines. Memory only, so a restart forgets them all. */
+  readonly integrity = new IntegrityLedger((agentId, mismatch) => this.noticeQuarantine(agentId, mismatch))
   /** TP-4256 A5: re-hashes the launch files the broker wrote, on every check and on a timer. */
-  readonly settingsWatch = new SettingsWatch(this.integrity, (nonce, mismatch) =>
-    this.noticeQuarantine(nonce, mismatch),
-  )
+  readonly settingsWatch: SettingsWatch = this.integrity.watch
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -1881,8 +1879,8 @@ export class SocketServer {
 
   /**
    * TP-4256, Class 4: the launch nonce is the guard, so any connection may send it. A malformed
-   * frame denies without touching the ledger; a changed file denies and, on the check that
-   * quarantines the nonce, files one owner notice.
+   * frame denies without touching the ledger; a changed file denies, and the ledger files one owner
+   * notice on the check that quarantines the agent.
    */
   private handleIntegrityCheck(conn: Conn, msg: Extract<ClientMessage, { t: 'integrity_check' }>): void {
     const refusal = integrityFrameRefusal(msg as unknown as Record<string, unknown>)
@@ -1892,7 +1890,6 @@ export class SocketServer {
     if (result.ok) return reply(conn, { t: 'integrity_result', ok: true })
     if (result.reason === 'no baseline')
       return reply(conn, { t: 'integrity_result', ok: false, reason: result.reason })
-    if (result.latched) this.noticeQuarantine(msg.nonce, result)
     reply(conn, {
       t: 'integrity_result',
       ok: false,
@@ -1906,8 +1903,7 @@ export class SocketServer {
    * Appended as the broker, like `noteBuildMismatch`: `enqueueForHuman` needs a registered sender and
    * answers with `send_result`, and the hook is neither.
    */
-  private noticeQuarantine(nonce: string, mismatch: { file: string; field: string }): void {
-    const agentId = this.integrity.agentOf(nonce) ?? '?'
+  private noticeQuarantine(agentId: string, mismatch: { file: string; field: string }): void {
     const agent = this.core.agents.get(agentId)?.name ?? agentId
     this.core.append({
       kind: 'notice',
@@ -1915,8 +1911,9 @@ export class SocketServer {
       target: HUMAN,
       body:
         `${agent}: ${mismatch.file} changed (${mismatch.field}) between two tool calls. A later shell ` +
-        'sources it, so every later Bash, Edit and Write call of this launch is denied. Nothing was ' +
-        'restored. Inspect the file, then `agent-chat agent resume` re-baselines.',
+        'sources it, so every later Bash, Edit and Write call of this agent and its children is denied, ' +
+        'whatever it relaunches as. Nothing was restored. Inspect the file, then your own ' +
+        '`agent-chat agent resume` re-baselines.',
       meta: {
         event: 'integrity_quarantine',
         agent,

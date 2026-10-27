@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
+import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
 import type { FileRecord, Records } from '../leak-guard/integrity/record.js'
@@ -42,7 +43,16 @@ function setup() {
     return frames.at(-1)
   }
   const notices = () => core.events.since(0, 500).filter(row => row.kind === 'notice')
-  return { server, send, notices }
+  const admit = (): string => {
+    const settings = path.join(dir, 'settings.json')
+    fs.writeFileSync(settings, '{}')
+    const startup = { [ZSHRC]: zshrc('h1') }
+    return server.integrity.admit({ agentId: 'a1', parent: HUMAN_ROOT }, () => ({
+      startup,
+      files: [settings],
+    })).nonce
+  }
+  return { send, notices, admit }
 }
 
 describe('integrity_check frame', () => {
@@ -55,13 +65,13 @@ describe('integrity_check frame', () => {
     expect(notices()).toEqual([])
   })
 
-  it('files one notice per nonce however many checks deny after a mismatch', () => {
-    const { server, send, notices } = setup()
-    server.integrity.registerLaunch(NONCE, 'a1', { [ZSHRC]: zshrc('h1') })
+  it('files one notice per agent however many checks deny after a mismatch', () => {
+    const { send, notices, admit } = setup()
+    const nonce = admit()
 
-    const first = send(NONCE, { [ZSHRC]: zshrc('h2') })
-    const clean = send(NONCE, { [ZSHRC]: zshrc('h1') })
-    send(NONCE, { [ZSHRC]: zshrc('h3') })
+    const first = send(nonce, { [ZSHRC]: zshrc('h2') })
+    const clean = send(nonce, { [ZSHRC]: zshrc('h1') })
+    send(nonce, { [ZSHRC]: zshrc('h3') })
 
     expect(first).toEqual({
       t: 'integrity_result',
@@ -76,11 +86,11 @@ describe('integrity_check frame', () => {
   })
 
   it('denies malformed records without latching the nonce', () => {
-    const { server, send } = setup()
-    server.integrity.registerLaunch(NONCE, 'a1', { [ZSHRC]: zshrc('h1') })
+    const { send, admit } = setup()
+    const nonce = admit()
 
-    const malformed = send(NONCE, { [ZSHRC]: { kind: 'startup', state: 'present' } } as unknown as Records)
-    const clean = send(NONCE, { [ZSHRC]: zshrc('h1') })
+    const malformed = send(nonce, { [ZSHRC]: { kind: 'startup', state: 'present' } } as unknown as Records)
+    const clean = send(nonce, { [ZSHRC]: zshrc('h1') })
 
     expect(malformed).toMatchObject({ ok: false, reason: expect.stringContaining('records') })
     expect(clean).toEqual({ t: 'integrity_result', ok: true })

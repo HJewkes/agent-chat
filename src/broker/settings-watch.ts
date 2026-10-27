@@ -6,7 +6,7 @@ import type { IntegrityLedger } from './integrity-ledger.js'
 /**
  * TP-4256 A5: the hook cannot report its own removal, so the broker keeps the sha256 of every launch
  * file it wrote and re-hashes them on every integrity check and on a timer. The first changed or
- * deleted file latches the launch's quarantine through the ledger. Nothing is restored and the agent
+ * deleted file latches the agent's quarantine through the ledger. Nothing is restored and the agent
  * is not stopped.
  */
 
@@ -67,33 +67,40 @@ const firstChange = (baselines: readonly Baseline[]): Mismatch | undefined => {
 }
 
 export class SettingsWatch {
+  /** Keyed by agent principal: an agent's newest launch files are the only ones watched for it. */
   private readonly watched = new Map<string, readonly Baseline[]>()
   private timer: NodeJS.Timeout | undefined
 
-  constructor(
-    private readonly ledger: IntegrityLedger,
-    private readonly onQuarantine: (nonce: string, mismatch: Mismatch) => void,
-  ) {}
+  constructor(private readonly ledger: Pick<IntegrityLedger, 'latch'>) {}
 
-  /** Called by the launcher, in the broker, right after it writes `files` (A3 passes what writeLaunchFiles wrote). */
-  register(nonce: string, files: readonly string[]): void {
-    if (files.length === 0) throw new Error(`settings-watch: no files to watch for ${nonce}`)
+  /**
+   * Called only by `IntegrityLedger.admit`, after the launcher wrote `files`. The new baselines
+   * replace the agent's old ones, so the files a relaunch rewrote never read as a tamper.
+   */
+  replace(agentId: string, files: readonly string[]): void {
+    if (files.length === 0) throw new Error(`settings-watch: no files to watch for ${agentId}`)
     const baselines = files.map(file => {
       const baseline = observe(file, size => size + READ_MARGIN)
       if (baseline === undefined) throw new Error(`settings-watch: ${file} is unreadable at registration`)
       return baseline
     })
-    this.watched.set(nonce, baselines)
+    this.watched.set(agentId, baselines)
+  }
+
+  /** Latches a change to `agentId`'s files now, before an admit rewrites them. */
+  sweepAgent(agentId: string): void {
+    const baselines = this.watched.get(agentId)
+    if (baselines !== undefined) this.latchOnChange(agentId, baselines)
   }
 
   sweep(): void {
-    for (const [nonce, baselines] of this.watched) {
-      const mismatch = firstChange(baselines)
-      if (mismatch === undefined) continue
-      const outcome = this.ledger.latch(nonce, mismatch)
-      if (outcome === 'latched') this.onQuarantine(nonce, mismatch)
-      if (outcome !== 'unknown') this.watched.delete(nonce)
-    }
+    for (const [agentId, baselines] of this.watched) this.latchOnChange(agentId, baselines)
+  }
+
+  private latchOnChange(agentId: string, baselines: readonly Baseline[]): void {
+    const mismatch = firstChange(baselines)
+    if (mismatch === undefined) return
+    if (this.ledger.latch(agentId, mismatch) !== 'unknown') this.watched.delete(agentId)
   }
 
   start(intervalMs: number = SETTINGS_WATCH_INTERVAL_MS): void {
