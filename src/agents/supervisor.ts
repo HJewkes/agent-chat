@@ -4349,8 +4349,6 @@ export class Supervisor implements TeleportHost {
       if ('refusal' in route) return { ok: false, reason: route.refusal }
       if (route.site === 'launcher') return this.resumeOnHost(identity, req, route)
     }
-    const orphaned = await this.resumeAncestors(identity, req)
-    if (orphaned !== undefined) return { ok: false, reason: orphaned }
     const transcript = identityTranscript(identity)
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
@@ -4364,6 +4362,13 @@ export class Supervisor implements TeleportHost {
       }
     if (!this.semaphore.acquire(identity.agentId))
       return { ok: false, reason: `no free agent slots (${this.semaphore.summary()})`, transcript }
+    // TP-4313: after every check on the child's own record, and holding its slot, so no parent
+    // starts for a child that would be refused anyway, nor takes the slot the child needs.
+    const orphaned = await this.resumeAncestors(identity, req)
+    if (orphaned !== undefined) {
+      this.semaphore.release(identity.agentId)
+      return { ok: false, reason: orphaned, transcript }
+    }
 
     const executionId = this.shadow.resume(
       identity.agentId,
