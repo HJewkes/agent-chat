@@ -2363,7 +2363,8 @@ recorded parent, so the parent must be admitted first:
   reconnect, or a spawn, resume or teleport that names it as parent or
   predecessor. Its launch files must still be as a broker writes them: the
   leak-guard hooks in `settings.json` (armed with one nonce, or unarmed as a
-  broker without the ledger wrote them), `plan.json` naming that settings file,
+  broker without the ledger wrote them, accepted only for launch files last
+  changed before the first wired start), `plan.json` naming that settings file,
   and the `relaunch` script. Then it is enrolled under its recorded lineage with
   the nonce its hook still sends, and its startup files are baselined afresh. Any
   other state latches a quarantine. With no launch files on this host, or a

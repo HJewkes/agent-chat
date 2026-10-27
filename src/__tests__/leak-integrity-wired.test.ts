@@ -742,7 +742,8 @@ describe('TP-4341: an unarmed launch is accepted once, as the migration to a wir
     const wired = await setup()
     stripNonce(wired.lead)
     // touch -d sets mtime, never ctime, so the ctime half of the check still sees the rewrite.
-    fs.utimesSync(hookSettingsPath(wired.lead), new Date(0), new Date(0))
+    for (const file of ['settings.json', 'mcp.json', 'plan.json', 'relaunch'])
+      fs.utimesSync(path.join(agentDir(wired.lead), file), new Date(0), new Date(0))
     const after = restarted(wired)
 
     const child = await after.spawn('child', wired.lead)

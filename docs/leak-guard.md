@@ -1575,9 +1575,12 @@ it on the call that made it.
   Anything else latches a quarantine. Until then, its `--integrity` calls deny with `no baseline`.
   A quarantine latched before the restart is lost, as is a change made while no broker watched.
   The re-admit catches a launch file left not as a broker writes it. It cannot catch a startup
-  file that changed before the restart. A settings file with the guard unarmed reads as a launch
-  from before the ledger was wired, so its re-admit has no nonce. For the order to follow, see the
-  restart notes in `docs/agent-teams.md` §4.5.
+  file that changed before the restart. An unarmed guard is a one-time migration. The first broker
+  start with `INTEGRITY_WIRED` on writes one `integrity_wired_since` notice to the event store, and
+  later starts never move it. An unarmed launch is re-admitted, with no nonce, only while all four
+  launch files have mtime and ctime before that mark. One changed at or after it had its nonce
+  stripped, and latches `unarmed since wiring`. ctime is the half `touch -d` cannot set back. For
+  the order to follow, see the restart notes in `docs/agent-teams.md` §4.5.
 
 ### Config the guard cannot read (TP-630)
 
