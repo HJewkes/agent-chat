@@ -12,8 +12,10 @@ import type { ReturnContract } from './types.js'
 /**
  * A block is paid for on every contracted spawn, so it stays a paragraph. CC-1184 raised it from 2450
  * for `REVIEW_TREE_RULE`: concurrent reviewers each installing base, old and head trees filled /tmp.
+ * CC-1384 raised it from 2600 for `GH_READS_RULE` and the filled visibility line, which replace reads
+ * the profiles refused 1,700 times a week.
  */
-export const MAX_BLOCK_CHARS = 2600
+export const MAX_BLOCK_CHARS = 2800
 
 const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: headless, you exit at turn ' +
@@ -70,8 +72,19 @@ export const PROBE_SANDBOX_RULE =
  */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
+/**
+ * CC-1384: the broker fills this with the repo's visibility, read at spawn. The bd-* profiles deny
+ * `gh api` and `gh repo`, so an instruction to read it cost 1,060 refusals in a week.
+ */
+export const VISIBILITY_PLACEHOLDER = '<repo visibility>'
+
+/** CC-1384: the reads the profiles allow, for the `gh api` shapes they refused 823 times in a week. */
+export const GH_READS_RULE =
+  'Read a PR with `gh pr view <n> --repo <owner>/<repo> --json reviews,comments,headRefOid,state`, a ' +
+  'failed job with `gh run view <run> --repo <owner>/<repo> --job <id> --log-failed`; never gh api.'
+
 const IMPLEMENTER_HEAD = [
-  'Check `gh api repos/<owner>/<repo> --jq .visibility`. If public, no real data in code, fixtures,',
+  `${VISIBILITY_PLACEHOLDER} If public, no real data in code, fixtures,`,
   'PR text, comments: task lists, charter or seat files, /Users paths, emails, private-repo IDs/text.',
   'Stop if `git log origin/<default> --grep <ID>` shows it landed.',
   'Branch from origin/<default>; check `git log origin/<default>..`.',
@@ -81,6 +94,7 @@ const IMPLEMENTER_HEAD = [
   BODY_FILE_RULE,
   'gh-write is the only write path; verify each. None: BLOCKED.',
   QUOTE_RULE,
+  GH_READS_RULE,
   '403 rate limit, quota left: retry once in 5 minutes.',
 ]
 
@@ -106,7 +120,7 @@ const IMPLEMENTER_RULES = [
   'Not done at "PR opened": your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
-  'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
+  'CI: <paste of: gh pr checks <n> --repo <owner>/<repo>>,',
 ]
 
 /** CC-1591: 15 uncapped reports cost a coordinator ~12k tokens, mostly a copy of each PR body. */
@@ -148,7 +162,7 @@ const SHEPHERD_CI_RULE = [
 
 const OWN_CI_CHECK = [
   'Before MERGE, confirm every required check-run (one branch protection names) at the reviewed head',
-  'with `gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate`; FIX_FIRST if a required',
+  'with `gh pr checks <n> --repo <owner>/<repo> --required`; FIX_FIRST if a required',
   'one failed. A skipped check (std / compat) is not a failure. WAIT only for a clean review whose',
   'required checks have not finished.',
 ]
@@ -175,6 +189,7 @@ const reviewerBlock = (verdicts: string, ciRule: string[]): string =>
     SHIM_RULE,
     REVIEWER_BODY_FILE_RULE,
     QUOTE_RULE,
+    GH_READS_RULE,
     "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
     FOLLOW_UPS_RULE,
   ].join('\n')
