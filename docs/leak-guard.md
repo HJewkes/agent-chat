@@ -845,7 +845,7 @@ the scan off. With the hook in place, a post is scanned twice.
 
 ### The gh shim refuses writes not from gh-write (CC-1644)
 
-Under enforce (see "Staged rollout" below), the `gh` shim on a spawned agent's PATH runs a command only when it is a known read, or carries
+The `gh` shim on a spawned agent's PATH runs a command only when it is a known read, or carries
 the ticket gh-write mints after its scan passes. Anything else exits 1 with stderr
 `gh-shim: refused (write)` and a pointer to `agent-chat gh-write -- <args>`, and never starts the
 real gh. The shim reads gh's argv after the shell expanded it, so a hidden head (`f() { "$@"; }; f gh …`,
@@ -877,11 +877,12 @@ of the calling process's first two argv words; free-text words log as `?`. With 
 the shim script runs a smaller read list as a POSIX `case` and refuses every `gh api` call and
 every write.
 
-**Staged rollout.** The gate ships in log mode: `GATE_MODE` in `src/gh-shim/write-gate.ts` is
-`'log'`, so a call it would refuse still runs, and the line reads `gh-shim: would-refuse (write)`.
-The census of those lines names the callers that must move to gh-write. Switching to `'enforce'`,
-which refuses as described above, is its own one-line pull request. The mode is a source constant
-and no environment variable or file changes it. The build-gone fallback refuses in both modes.
+**Staged rollout.** The gate enforces: `GATE_MODE` in `src/gh-shim/write-gate.ts` is
+`'enforce'`, so it refuses as described above. It shipped in `'log'` mode first, where a call it
+would refuse still ran and the line read `gh-shim: would-refuse (write)`; a 48-hour census of those
+lines named the callers that had to move to gh-write before the switch. The mode is a source
+constant and no environment variable or file changes it. The build-gone fallback refuses in both
+modes.
 
 Limit: the key is readable by the agent's uid. An agent that reads it by a spelling the
 `protectedPaths` substring check misses, or that imports agent-chat's own mint function under
