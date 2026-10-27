@@ -360,7 +360,7 @@ function addHiddenCommands(program: Command): void {
 
   program.command('run-agent <id>', { hidden: true }).action(async (id: string) => {
     const { runAgentVerb } = await import('../agents/launch-agent.js')
-    runAgentVerb(id)
+    await runAgentVerb(id)
   })
 
   // Spawned detached by a teleporting session's MCP process on another host than the broker (CC-913).

@@ -58,6 +58,7 @@ export const FRAME_CLASSES: Readonly<Record<ClientMessage['t'], FrameClass>> = {
   readopt: 4,
   permission_hook_withdrawn: 4,
   integrity_check: 4,
+  integrity_relaunch: 4,
   host_hello: 4,
   host_challenge: 4,
   host_probe_result: 4,

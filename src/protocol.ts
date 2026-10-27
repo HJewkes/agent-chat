@@ -1064,6 +1064,12 @@ export type ClientMessage =
    * answers `integrity_result`. No frame sets or clears a baseline or a quarantine.
    */
   | { t: 'integrity_check'; nonce: string; session: string; records: Records }
+  /**
+   * TP-4256 A3: `run-agent` asks, before it starts claude from the files on disk, whether the
+   * ledger's verdict lets the agent run. `agentDir` is the realpath of the dir it would launch
+   * from; one outside the broker's own agents root was written for another host's broker.
+   */
+  | { t: 'integrity_relaunch'; agentId: string; agentDir: string }
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
   | {
@@ -1499,6 +1505,9 @@ export type ServerMessage =
   /** The answer to `integrity_check`; a deny names the first changed file and the field that shows it. */
   | { t: 'integrity_result'; ok: true }
   | { t: 'integrity_result'; ok: false; reason: string; file?: string; field?: string }
+  /** The answer to `integrity_relaunch`; `offBroker` marks a dir outside this broker's agents root. */
+  | { t: 'integrity_relaunch_result'; ok: true; offBroker?: true }
+  | { t: 'integrity_relaunch_result'; ok: false; reason: string; file?: string; field?: string }
   /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
   | { t: 'service_ask_result'; ok: boolean; msgId?: string; reason?: string }
   /**
