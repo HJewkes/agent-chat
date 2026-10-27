@@ -2414,19 +2414,29 @@ describe('spawn privilege', () => {
       allowedTools: string[],
       disallowedTools: string[],
       researchTools?: string[],
+      extra: Record<string, unknown> = {},
     ): void => {
       fs.writeFileSync(
         path.join(profilesDirFor(), `${name}.json`),
-        JSON.stringify({
-          model: 'sonnet',
-          allowedTools,
-          disallowedTools,
-          ...(researchTools ? { researchTools } : {}),
-          isolation: 'none',
-          surface: 'headless',
-        }),
+        profileJson(allowedTools, disallowedTools, researchTools, extra),
       )
     }
+
+    const profileJson = (
+      allowedTools: string[],
+      disallowedTools: string[],
+      researchTools?: string[],
+      extra: Record<string, unknown> = {},
+    ): string =>
+      JSON.stringify({
+        model: 'sonnet',
+        allowedTools,
+        disallowedTools,
+        ...(researchTools ? { researchTools } : {}),
+        isolation: 'none',
+        surface: 'headless',
+        ...extra,
+      })
 
     const writeConfig = (config: unknown): void => {
       fs.writeFileSync(
@@ -2651,13 +2661,21 @@ describe('spawn privilege', () => {
 
     /** CC-1654: the shape of the live researcher, which can no longer deny all of Bash. */
     const RESEARCH_TOOLS = ['WebSearch', 'WebFetch', 'Bash(fetch-pdf *)', 'Read(//tmp/papers/**)']
-    const writeResearcher = (name: string, extraAllowed: string[] = [], extraResearch: string[] = []): void =>
-      writeProfile(
-        name,
+    const researcherArgs = (extraAllowed: string[] = [], extraResearch: string[] = []) =>
+      [
         [...RESEARCH_TOOLS, 'Read', 'Write', 'Grep', 'Glob', ...extraAllowed],
         ['Edit', 'AskUserQuestion'],
         [...RESEARCH_TOOLS, ...extraResearch],
-      )
+        { settingSources: [] },
+      ] as const
+    const writeResearcher = (
+      name: string,
+      extraAllowed: string[] = [],
+      extraResearch: string[] = [],
+    ): void => {
+      const [allowed, denied, research, extra] = researcherArgs(extraAllowed, extraResearch)
+      writeProfile(name, [...allowed], [...denied], [...research], extra)
+    }
     const SEAT_TOOLS = [...COORDINATOR_TOOLS, 'mcp__active-work__*']
     const SEAT_DENIED = [
       'Bash(agent-chat endorse:*)',
@@ -2734,6 +2752,45 @@ describe('spawn privilege', () => {
       },
     )
 
+    /** Without a Bash deny, a project or local settings file could allow Bash the profile never named. */
+    it('refuses a researcher that does not deny Bash and still loads settings files', async () => {
+      const [allowed, denied, research] = researcherArgs()
+      writeProfile('researcher', [...allowed], [...denied], [...research])
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/more capable than itself/)
+    })
+
+    it('decides the exemption on the bytes it loaded, not on a later read of the file', async () => {
+      writeResearcher('researcher')
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+      const file = path.join(profilesDirFor(), 'researcher.json')
+      const [allowed, denied, research, extra] = researcherArgs(['Bash(sh *)'], ['Bash(sh *)'])
+      const swapped = profileJson([...allowed], [...denied], [...research], extra)
+      const realRead = fs.readFileSync
+      let reads = 0
+      vi.spyOn(fs, 'readFileSync').mockImplementation(((
+        target: fs.PathOrFileDescriptor,
+        options?: unknown,
+      ) =>
+        target === file && reads++ === 0
+          ? swapped
+          : realRead(target, options as BufferEncoding)) as typeof fs.readFileSync)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(reads).toBeGreaterThan(0)
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(.*Bash\(sh \*\)/)
+    })
+
     it('exempts nothing for a researcher file written after the broker started', async () => {
       const sup = withStubbedSurface()
       const shared = workspace()
@@ -2753,6 +2810,7 @@ describe('coordinatorExemption', () => {
   const researcher = {
     allowedTools: ['WebSearch', 'WebFetch', 'Bash(fetch-pdf *)', 'Read', 'Write', 'Grep', 'Glob'],
     researchTools: ['WebSearch', 'WebFetch', 'Bash(fetch-pdf *)'],
+    settingSources: [],
   }
 
   it('gives a coordinator the declared research tools for a confined child', () => {
@@ -2765,6 +2823,11 @@ describe('coordinatorExemption', () => {
 
   it('gives a worker nothing, even for the same confined child', () => {
     expect(coordinatorExemption('worker', researcher, undefined).size).toBe(0)
+  })
+
+  it('gives nothing to a child that neither denies Bash nor drops settings files', () => {
+    const { settingSources: _loadsSettings, ...withSettings } = researcher
+    expect(coordinatorExemption('coordinator', withSettings, undefined).size).toBe(0)
   })
 
   it('gives nothing to a child that declares no research tools', () => {

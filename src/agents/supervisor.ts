@@ -1170,21 +1170,32 @@ function isResearchGrant(tool: string): boolean {
 }
 
 /**
+ * CC-1654: no Bash beyond what the profile names can run without a prompt. A Bash deny ensures it
+ * (CC-451); a profile running a scoped helper cannot deny Bash, so it must load no settings file,
+ * where a `Bash(*)` allow would otherwise apply (`launch-policy.ts`).
+ */
+const shellConfined = (profile: Pick<AgentProfile, 'disallowedTools' | 'settingSources'>): boolean =>
+  (profile.disallowedTools ?? []).includes('Bash') || profile.settingSources?.length === 0
+
+/**
  * CC-451, CC-1654: the tools a requester of `role` may grant `profile` without
  * holding them: the `researchTools` the profile declares, narrowed by
  * `grantable` when the config names a list. Only a coordinator, and only to a
  * child that allows nothing outside its declaration and `NON_EXEC_TOOLS`, so a
  * fetched page cannot talk it into running code. Fails closed: a declaration
  * naming any other kind, or an allowed Monitor, bare Bash, undeclared Bash form
- * or MCP tool, voids the exemption. The caller checks the file is the one the
- * broker started with, since the profile vouches for itself here.
+ * or MCP tool, voids the exemption. `allowedTools` does not confine on its
+ * own, since a settings file can allow more, so the child must also deny Bash
+ * or load no settings file. The caller drops the declaration of a profile file
+ * changed since broker start, since the profile vouches for itself here.
  */
 export function coordinatorExemption(
   role: AgentRole,
-  profile: Pick<AgentProfile, 'allowedTools' | 'researchTools'>,
+  profile: Pick<AgentProfile, 'allowedTools' | 'disallowedTools' | 'researchTools' | 'settingSources'>,
   grantable: readonly string[] | undefined,
 ): Set<string> {
   if (role !== 'coordinator') return new Set()
+  if (!shellConfined(profile)) return new Set()
   const declared = profile.researchTools ?? []
   if (!declared.every(isResearchGrant)) return new Set()
   const confined = profile.allowedTools.every(tool => declared.includes(tool) || NON_EXEC_TOOLS.has(tool))
@@ -2285,6 +2296,9 @@ export class Supervisor implements TeleportHost {
    * denies to the agent that rewrote it, so an agent launch of it is flagged or, under `refuse`, refused.
    * Only a human's own spawn accepts it. A resume or surface switch never does: the background
    * auto-resume and the decider's CLI resume both arrive as HUMAN.
+   *
+   * CC-1654: an unaccepted drifted profile loses its `researchTools`, so the coordinator exemption is
+   * decided on the bytes this load parsed and nothing after it rereads the file.
    */
   private loadCheckedProfile(
     name: string,
@@ -2305,7 +2319,9 @@ export class Supervisor implements TeleportHost {
       }
     if (human) this.profileBaseline.accept(profile.name, source)
     const note = human ? 'taken as the new baseline' : 'review it before trusting its denies'
-    return { ...profile, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
+    const { researchTools, ...undeclared } = profile
+    const kept = human && researchTools !== undefined ? { researchTools } : {}
+    return { ...undeclared, ...kept, warnings: [...(profile.warnings ?? []), `${drift}; ${note}`] }
   }
 
   /** CC-1516: a resume, surface switch or teleport launches too, so a harness with no launch plan refuses there as well. */
@@ -2461,10 +2477,8 @@ export class Supervisor implements TeleportHost {
     return { exempted: [] }
   }
 
-  /** CC-1654: a declaration written since broker start is not the owner's until a human spawns it, so it exempts nothing. */
+  /** CC-1654: `profile` is as `loadCheckedProfile` left it, which dropped a drifted file's declaration. */
   private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
-    const { source } = loadProfileSource(profile.name)
-    if (this.profileBaseline.drift(profile.name, source) !== undefined) return new Set()
     return coordinatorExemption(this.requesterFor(req).role, profile, resolveCoordinatorGrantableTools())
   }
 
