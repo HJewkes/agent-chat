@@ -279,6 +279,25 @@ describe('each broker launch path', () => {
     },
   )
 
+  it.each([
+    ['a hand-started session the ledger never admitted roots it at the human', 'adopted', true],
+    ['an agent a previous broker launched still refuses it as an unknown parent', undefined, false],
+  ])('a child of %s', async (_shape, origin, starts) => {
+    core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'lead',
+      msgId: 'aglead01',
+      meta: { ...(origin === undefined ? { role: 'coordinator' } : { origin }), name: 'lead', depth: '0' },
+    })
+    const admit = vi.spyOn(ledger, 'admit')
+
+    const result = await minted(() => spawnScout({ requestedBy: 'coordinator', parentAgentId: 'aglead01' }))()
+
+    expect(result.started).toBe(starts)
+    expect(admit.mock.calls[0]?.[0].parent).toBe(starts ? HUMAN_ROOT : 'aglead01')
+  })
+
   it('tells the human not to run the relaunch script of a refused teleport successor', async () => {
     ledger.latch(DESK, MISMATCH)
 
