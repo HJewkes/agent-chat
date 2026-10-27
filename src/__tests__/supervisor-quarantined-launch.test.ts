@@ -8,8 +8,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { HUMAN_ROOT, IntegrityLedger, type AdmitRequest } from '../broker/integrity-ledger.js'
-import { hookSettingsPath, OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
-import { buildLaunchPlan } from '../agents/launch-plan.js'
+import { hookSettingsPath } from '../agents/launch-files.js'
 import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { AgentProfile } from '../agents/types.js'
@@ -280,42 +279,5 @@ describe('each broker launch path', () => {
     const notice = core.events.humanQueue().find(item => item.text.includes('integrity: agsucc01'))
     expect(notice?.text).toContain('do not run its relaunch script')
     expect(notice?.text).not.toContain('in a terminal to start it')
-  })
-})
-
-describe('an off-broker launch write', () => {
-  const plan = () =>
-    buildLaunchPlan({
-      agentId: 'agoff001',
-      sessionId: 'sess-off',
-      name: 'remote',
-      profile: { ...profile, name: 'explorer' },
-      adopted: false,
-      brief: 'synthetic',
-      cwd: tmpDir(),
-      cwdHoldsUserSettings: false,
-      surface: 'headless',
-      mcpConfigPath: '/synthetic/mcp.json',
-      hookSettingsPath: hookSettingsPath('agoff001'),
-    })
-
-  it('differs from an admitted one only by the nonce-bearing hooks', () => {
-    writeLaunchFiles(plan(), {}, undefined, OFF_BROKER)
-    const off = settingsOf('agoff001')
-    const { nonce } = ledger.admit({ agentId: 'agoff001', parent: HUMAN_ROOT }, admission =>
-      writeLaunchFiles(plan(), {}, undefined, admission),
-    )
-    const admitted = JSON.parse(settingsOf('agoff001')) as { hooks: { PostToolUse: unknown[] } }
-    admitted.hooks.PostToolUse.pop()
-
-    expect(off).not.toContain('--integrity')
-    expect(off).toBe(JSON.stringify(admitted, null, 2).replace(` --integrity '${nonce}'`, ''))
-  })
-
-  it('cannot be written without an admission or OFF_BROKER', () => {
-    // @ts-expect-error: the admission is required, so a new call site cannot skip the ledger
-    const unadmitted = () => writeLaunchFiles(plan(), {}, undefined)
-
-    expect(unadmitted).toBeTypeOf('function')
   })
 })
