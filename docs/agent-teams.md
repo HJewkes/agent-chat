@@ -2354,6 +2354,26 @@ Mitigations to build:
   the complexity this design earns its way out of (README: "no heartbeats, no
   TTLs, no stale-entry reaper").
 
+**The integrity ledger across a restart (TP-4256, TP-4313).** The launch ledger
+is memory only (`docs/leak-guard.md`, "The launch ledger"). A restart forgets
+every agent's baseline. Every agent launched with `--integrity` is then denied
+on its next Bash, Edit or Write call, and `run-agent` refuses to relaunch it,
+until the human resumes it. An agent spawned or resumed later admits under its
+recorded parent, so the parent must be admitted first:
+
+- `agent-chat agent resume <child>` walks up the recorded lineage. It resumes
+  each exited parent that has no baseline first, outermost first, without
+  human proof. It refuses the child, naming the parent and admitting nothing,
+  when a parent is live but not admitted again (it outlived the restart), is
+  retired or unknown, or the lineage loops or runs past 8 unadmitted ancestors.
+- **Runbook: resume parents before children.** This is the manual fallback
+  when the walk refuses. Let a live parent exit and resume it, then resume the
+  child.
+- A child spawned under a parent that has no baseline latches `unknown parent`
+  and is refused. Resume the parent first.
+- A session the human started by hand is never admitted, so its children are
+  rooted at the human and need no parent resume.
+
 **Checking a rollback target before a restart.** `scripts/rollback-check.sh <sha> [port] [--home <seed>]`
 answers "if this restart goes wrong, can the broker come back up on the old revision?"
 without touching the live one. It exports the revision with `git archive` into a temp dir,

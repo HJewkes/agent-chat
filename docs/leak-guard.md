@@ -1490,12 +1490,12 @@ the guard.
   no list of file names, and coordinators are refused too.
 - A Bash write is never refused up front: the guard does not match command text against path
   spellings (CC-1643).
-- The guarantee is the broker's watch (`src/broker/settings-watch.ts`) over every launch file,
-  **from A3 on**: until A3 calls `SettingsWatch.register` from the launcher, nothing is registered
-  and the watch sees nothing. Once registered, it keeps the sha256 of each file a launch wrote,
-  re-hashes them on every `integrity_check` and on a 60 s timer, and the first changed, deleted or
-  unreadable file quarantines that launch and files one owner notice. It detects; it does not
-  prevent, restore, or stop the agent.
+- The guarantee is the broker's watch (`src/broker/settings-watch.ts`) over every launch file the
+  ledger admitted (see "The launch ledger" below). It keeps the sha256 of each file a launch wrote,
+  re-hashes them on every `integrity_check`, every relaunch ask and a 60 s timer, and the first
+  changed, deleted or unreadable file quarantines the agent and files one owner notice. It
+  detects; it does not restore or stop a running agent. What it prevents is the agent's next tool
+  call, and every later launch of the agent or of anything descended from it.
 - The watch reads only bounded regular files: it lstats first, and anything but the same regular
   file (same dev and inode), such as a FIFO, a device, a symlink or a replacement file, latches
   `state` without being opened. The read is non-blocking and no-follow, and it stops at the
@@ -1505,11 +1505,11 @@ the guard.
 
 - A file edited and restored between two sweeps (the A3 follow-up: mtime, ctime and inode, or
   `fs.watch`).
-- Anything within its latency of up to 60 s. A hookless agent sends no `integrity_check`, so until
-  A3 refuses to relaunch a quarantined nonce, the notice is the only consequence. Whether Claude Code
-  re-reads a `--settings` file mid-session is UNVERIFIED.
-- A change made while the broker is down, or after a restart and before re-registration: the
-  ledger and the watch are memory only.
+- Anything within its latency of up to 60 s. A hookless agent sends no `integrity_check`; what
+  stops it is `run-agent`, which refuses to relaunch it. Whether Claude Code re-reads a
+  `--settings` file mid-session is UNVERIFIED.
+- A change made while the broker is down, or after a restart and before the agent is admitted
+  again: the ledger and the watch are memory only.
 - Files outside the agents dir that decide whether the hook runs: the agent-chat `dist/` or plugin
   install the hook command points at, the node binary, and carried user settings. Those need their
   own task.
@@ -1522,10 +1522,56 @@ vfat) holding the agents dir is not folded for a leaf not made yet.
 canonical real path is under the canonical agents dir (symlinks, a missing leaf, case on a
 case-insensitive volume), and whether the watch latches on any byte or state change of any
 registered file and fails closed on an unknown nonce, an unreadable file or a missing baseline.
-Out of scope: Bash-route prevention (CC-1643), wiring `register` and refusing a quarantined
-relaunch (A3), edit-then-restore (A3 follow-up), persistence across restarts (owner), and hook
-binary or `dist/` integrity (a new task). A finding that is another spelling of a path under the
-agents dir is a defect in the rule's canonicalisation: fix it there, and add no new rule or name.
+Out of scope: Bash-route prevention (CC-1643), edit-then-restore (A3 follow-up), persistence
+across restarts (owner), and hook binary or `dist/` integrity (a new task). A finding that is
+another spelling of a path under the agents dir is a defect in the rule's canonicalisation: fix it
+there, and add no new rule or name.
+
+### The launch ledger (TP-4256 A3)
+
+Option R1 of TP-4232: each broker polices the launches it wrote, and nothing else. A launch's
+settings carry `leak-guard pretool --integrity <nonce>` and `posttool --integrity <nonce>`. Both hook
+verbs read the startup files and the session's snapshot, `session-env` and `CLAUDE_ENV_FILE`, then
+ask the broker that minted the nonce. Every failure denies: an unreachable broker, a past deadline, a
+worker crash and an unknown nonce. Posttool reports a change as `decision: block`, so the model sees
+it on the call that made it.
+
+**One choke point** (`src/broker/integrity-ledger.ts`):
+
+- `admit` is the only way to get a nonce. It sweeps the agent's old launch files, enrols the agent
+  under its parent, clears only on `humanProof`, mints the nonce, lets the launcher write the files
+  with it, and replaces the agent's watched files. `writeLaunchFiles` needs either an admission or
+  the `OFF_BROKER` constant, so a new launch site that skips the ledger does not compile.
+- A quarantine belongs to the agent, never to a nonce. A resume, mode switch, wake or relaunch
+  gets a fresh nonce for the same agent, so it stays quarantined. A child or a teleport successor
+  has its parent recorded, written once.
+- `verdict` is the only read. It walks from the agent through each parent up to the human root,
+  and denies if any of them is quarantined after the asking agent was last cleared. An agent the
+  ledger does not know, or a chain that does not reach the human, denies with `no baseline`. A child
+  spawned before its parent latched is denied too, because the walk happens at verdict time.
+- Only the human's own `agent-chat agent resume` clears a quarantine. A wake, a seat, an agent's
+  request, a mode switch and a teleport never do.
+- `run-agent` asks the same `verdict` before it reads `plan.json`, after a sweep, so a `plan.json`
+  rewritten without `--settings` is refused before it can start a hookless agent. A broker it cannot
+  reach, or an agent the ledger does not know, refuses with exit 77.
+
+**Boundaries.**
+
+- **Off-broker launches.** `remote-launch.ts`, `host-launcher.ts` and `caller-teleport.ts` write
+  files for another host's broker, so they pass `OFF_BROKER` and carry no `--integrity`. The local
+  broker answers their `run-agent` ask with `offBroker` only when the real path of the agent dir is
+  outside its own real agents dir. That is a path check, not a text match.
+- **Hand-started sessions.** A Claude session the human started outside agent-chat is adopted at
+  `register` and never admitted, since agent-chat wrote no launch files for it. Its children are
+  rooted at the human. Once the ledger admits it (an `agent resume` of it), its own chain counts. A
+  same-uid process that starts `claude` without agent-chat is out of scope.
+- **Unrelated agents and a shared startup file.** Agent A tampers with `~/.zshrc`, and agent X is
+  spawned before A's next check. X's baseline then holds the tampered bytes. This is not a lineage
+  path. Machine-wide, write-once baselines per real path would close it, at the cost of a wider
+  false-quarantine blast radius. That is a follow-up and an owner decision.
+- **A broker restart** forgets every principal. Each `--integrity` launch from before the restart
+  then denies with `no baseline`, and `run-agent` refuses it, until the human resumes it. For the
+  order to follow, see the restart notes in `docs/agent-teams.md` §4.5.
 
 ### Config the guard cannot read (TP-630)
 
