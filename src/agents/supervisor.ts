@@ -41,6 +41,9 @@ import {
   markSuperseded,
   writeLaunchFiles,
   writeRuntimeState,
+  type LaunchAdmission,
+  type LaunchIntegrity,
+  type LaunchLineage,
 } from './launch-files.js'
 import {
   agentLiveness,
@@ -81,6 +84,7 @@ import {
 } from '@titan-design/agent-surface'
 import { defaultSpawnSurface, resolveSurface, surfaceBlockerFor } from './surface-resolution.js'
 import { psLauncherProbe, relaunchScriptPath, surfaceFor, type LauncherProbe } from './launcher.js'
+import { quarantinedLaunch } from './relaunch-integrity.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
   countLiveHeadless,
@@ -994,6 +998,8 @@ export interface SupervisorOptions {
   seatTeleport?: SeatTeleportDeps
   /** CC-951: the host launchers a teleport can land a successor through, owned by the socket layer. */
   hosts?: LauncherSite
+  /** TP-4256 A3: the broker's shell-file ledger and launch-file watch. Absent, a launch is written without `--integrity`. */
+  integrity?: LaunchIntegrity
   /** CC-892: the account checks and transcript move behind `account_move`. Faked in tests. */
   accountMoves?: AccountMoves
   /**
@@ -1068,6 +1074,21 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
  * CC-1206: so does an agent's own CLI spawn, which the broker marks with `callerAgent`.
  * CC-1246: and one the broker could not prove came from the human at a terminal (`humanUnproven`).
  */
+/** TP-4256 A3: the human's own resume, the one launch that clears a quarantine; a wake, a seat or an agent does not. */
+const isHumanResume = (req: ResumeRequest): boolean =>
+  req.requestedBy === HUMAN &&
+  req.requesterAgentId === undefined &&
+  req.source === undefined &&
+  req.cause === undefined &&
+  req.launchedBy === undefined
+
+const definedIds = (...ids: (string | undefined)[]): string[] =>
+  ids.filter((id): id is string => id !== undefined && id !== '')
+
+/** A successor inherits its predecessor's quarantine, so a quarantined agent cannot teleport into a clean baseline. */
+const successorLineage = (input: RelaunchInput): string[] =>
+  definedIds(input.inheritedFrom, input.meta.teleport_from)
+
 const isHumanSpawn = (req: SpawnRequest): boolean =>
   req.requestedBy === HUMAN &&
   req.spawnedAs === undefined &&
@@ -1259,6 +1280,7 @@ export class Supervisor implements TeleportHost {
   /** CC-1059: spawns recorded here for a requester on another host to launch. */
   private readonly remoteSpawns: RemoteSpawns
   private readonly hosts: LauncherSite | undefined
+  private readonly launchIntegrity: LaunchIntegrity | undefined
   /** CC-1592: the one seam both a move and its dry run read, so they refuse alike. */
   private readonly accountMoves: AccountMoves
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
@@ -1296,6 +1318,7 @@ export class Supervisor implements TeleportHost {
     this.processProbe = options.processProbe ?? hostProbe
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
+    this.launchIntegrity = options.integrity
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
     this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
@@ -2965,6 +2988,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agentId, allocation, isolationName),
+      this.admission({ from: definedIds(req.parentAgentId) }),
     )
     const provenance = await spawnProvenance(allocation, req, profile.name)
 
@@ -3442,12 +3466,19 @@ export class Supervisor implements TeleportHost {
     return resolveSurface(surface, this.surfaceOptions?.platform)
   }
 
+  /** TP-4256 A3: the broker's integrity port with this launch's lineage; undefined when there is no port. */
+  private admission(lineage: LaunchLineage): LaunchAdmission | undefined {
+    return this.launchIntegrity === undefined ? undefined : { port: this.launchIntegrity, lineage }
+  }
+
   private async launchOn(
     surface: SurfaceName,
     plan: LaunchPlan,
     anchor?: string,
     reuseAnchor = false,
   ): Promise<LaunchHandle> {
+    const quarantine = this.launchIntegrity?.quarantineOf(plan.agentId)
+    if (quarantine !== undefined) throw new Error(quarantinedLaunch(quarantine))
     const columnAfter = anchor === undefined ? undefined : this.columnFor(anchor)
     return surfaceFor(surface, {
       ...this.surfaceOptions,
@@ -4481,6 +4512,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agent.agentId, allocation, isolation),
+      this.admission({ from: [], humanResume: isHumanResume(req) }),
     )
     const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
@@ -4616,6 +4648,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(profile, cliEntry(), plan.surface),
       this.createdWorktree(agent.agentId, allocation, isolation),
+      this.admission({ from: [] }),
     )
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
@@ -4829,6 +4862,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(input.profile, cliEntry(), plan.surface),
       this.createdWorktree(input.agentId, allocation, isolation),
+      this.admission({ from: successorLineage(input) }),
     )
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
@@ -5126,12 +5160,12 @@ export class Supervisor implements TeleportHost {
   }
 
   private noticeDeadSuccessor(input: RelaunchInput, lead: string, reason: string): void {
-    this.core.append({
-      kind: 'notice',
-      actor: 'agent-chat',
-      target: HUMAN,
-      body: `${lead}. Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
-    })
+    const quarantine = this.launchIntegrity?.quarantineOf(input.agentId)
+    const next =
+      quarantine === undefined
+        ? `Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`
+        : `${quarantinedLaunch(quarantine)}; do not run its relaunch script.`
+    this.core.append({ kind: 'notice', actor: 'agent-chat', target: HUMAN, body: `${lead}. ${next}` })
     this.seatJournal?.({ event: 'teleport-failed', agent: input.name })
     logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })
   }
@@ -5213,6 +5247,7 @@ export class Supervisor implements TeleportHost {
       plan,
       buildMcpConfig(input.profile, cliEntry(), plan.surface),
       this.createdWorktree(input.agentId, allocation, isolation),
+      this.admission({ from: successorLineage(input) }),
     )
   }
 

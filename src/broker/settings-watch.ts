@@ -86,6 +86,11 @@ export class SettingsWatch {
     this.watched.set(nonce, baselines)
   }
 
+  /** Stops watching a launch whose files the launcher is about to rewrite under a new nonce. */
+  forget(nonce: string): void {
+    this.watched.delete(nonce)
+  }
+
   sweep(): void {
     for (const [nonce, baselines] of this.watched) {
       const mismatch = firstChange(baselines)

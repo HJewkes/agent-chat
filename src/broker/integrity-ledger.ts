@@ -32,15 +32,30 @@ export type CheckResult =
   | ({ ok: false; reason: 'changed' | 'quarantined'; latched: boolean } & Mismatch)
 
 export class IntegrityLedger {
+  /** Each agent's newest launch, so a relaunch that reuses its files is refused once that launch is quarantined. */
+  private readonly latest = new Map<string, string>()
+
   constructor(private readonly store: IntegrityStore = memoryStore()) {}
 
-  registerLaunch(nonce: string, agentId: string, startup: Records): void {
+  /** `inherited` registers the launch already quarantined, for a quarantine carried forward from its lineage. */
+  registerLaunch(nonce: string, agentId: string, startup: Records, inherited?: Mismatch): void {
     if (this.store.get(nonce) !== undefined) throw new Error(`integrity nonce already registered`)
-    this.store.put(nonce, { agentId, startup, sessions: {} })
+    this.store.put(nonce, { agentId, startup, sessions: {}, ...(inherited ? { quarantine: inherited } : {}) })
+    this.latest.set(agentId, nonce)
+  }
+
+  latestOf(agentId: string): string | undefined {
+    return this.latest.get(agentId)
   }
 
   agentOf(nonce: string): string | undefined {
     return this.store.get(nonce)?.agentId
+  }
+
+  /** Why the agent's newest launch is quarantined; undefined when it is not, or this broker registered none. */
+  quarantineOf(agentId: string): Mismatch | undefined {
+    const nonce = this.latest.get(agentId)
+    return nonce === undefined ? undefined : this.store.get(nonce)?.quarantine
   }
 
   /** Quarantines a nonce for a change the hook cannot see (its own settings file). */

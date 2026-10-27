@@ -60,13 +60,33 @@ const attempt = <T>(fn: () => T): T | undefined => {
   }
 }
 
+/** At most `limit` bytes, so a file that grows after its fstat cannot stretch the read; one that did is left unhashed. */
+function readUpTo(fd: number, limit: number): Buffer {
+  const buffer = Buffer.alloc(limit)
+  let length = 0
+  while (length < limit) {
+    const read = fs.readSync(fd, buffer, length, limit - length, null)
+    if (read === 0) break
+    length += read
+  }
+  return buffer.subarray(0, length)
+}
+
+/**
+ * Past this a file is not hashed, so a sparse giant costs a stat rather than a read. Its record still
+ * holds size, inode and ctime, and no write leaves all three as they were.
+ */
+export const MAX_HASH_BYTES = 8 * 1024 * 1024
+
 /** Opened without blocking and hashed only when regular, so a FIFO or a device cannot hang the hook. */
 function hashRegular(file: string): string | undefined {
   let fd: number | undefined
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
-    if (!fs.fstatSync(fd).isFile()) return undefined
-    return createHash('sha256').update(fs.readFileSync(fd)).digest('hex')
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.size > MAX_HASH_BYTES) return undefined
+    const bytes = readUpTo(fd, stat.size + 1)
+    return bytes.length > stat.size ? undefined : createHash('sha256').update(bytes).digest('hex')
   } catch {
     return undefined
   } finally {

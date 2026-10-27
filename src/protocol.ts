@@ -1064,6 +1064,12 @@ export type ClientMessage =
    * answers `integrity_result`. No frame sets or clears a baseline or a quarantine.
    */
   | { t: 'integrity_check'; nonce: string; session: string; records: Records }
+  /**
+   * TP-4256 A3: `run-agent` asks, before it starts claude from the files on disk, whether the
+   * agent's newest launch is quarantined. A read: only a resume, which writes new files under a
+   * new nonce, gets past a quarantine.
+   */
+  | { t: 'integrity_relaunch'; agentId: string }
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
   | {
@@ -1497,6 +1503,9 @@ export type ServerMessage =
   /** The answer to `integrity_check`; a deny names the first changed file and the field that shows it. */
   | { t: 'integrity_result'; ok: true }
   | { t: 'integrity_result'; ok: false; reason: string; file?: string; field?: string }
+  /** The answer to `integrity_relaunch`; a refusal names the change that quarantined the launch. */
+  | { t: 'integrity_relaunch_result'; ok: true }
+  | { t: 'integrity_relaunch_result'; ok: false; file: string; field: string }
   /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
   | { t: 'service_ask_result'; ok: boolean; msgId?: string; reason?: string }
   /**

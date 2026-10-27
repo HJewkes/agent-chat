@@ -1,8 +1,11 @@
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { resolveGitShellAliases, resolvePermissionHookTimeout } from '../config.js'
 import { GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
 import { defaultScanInputs, hooksDirOf, probeScanner, writeGitHooks } from '../leak-guard/hooks-dir.js'
+import { startupRecords } from '../leak-guard/integrity/env-records.js'
+import type { Mismatch, Records } from '../leak-guard/integrity/record.js'
 import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName, SurfaceName } from '../protocol.js'
 import { inboxSpoolDir } from '../server/inbox-spool.js'
@@ -190,6 +193,24 @@ const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
   ...(denies.length === 0 ? {} : { permissions: { deny: denies } }),
 })
 
+const leakGuardEntry = (entry: string, phase: 'pretool' | 'posttool', nonce?: string): HookEntry => {
+  const verb = `leak-guard ${phase}${nonce === undefined ? '' : ` --integrity ${shellQuote(nonce)}`}`
+  return {
+    matcher: PRETOOL_MATCHER,
+    hooks: [{ type: 'command', command: hookCommand(entry, verb), timeout: PRETOOL_TIMEOUT_S }],
+  }
+}
+
+/** TP-4256: the same check after each guarded call, so a change the call made is reported to the model. */
+function withPosttool(
+  hooks: Record<string, HookEntry[]>,
+  entry: string,
+  nonce?: string,
+): Record<string, HookEntry[]> {
+  if (nonce === undefined) return hooks
+  return { ...hooks, PostToolUse: [...(hooks.PostToolUse ?? []), leakGuardEntry(entry, 'posttool', nonce)] }
+}
+
 /**
  * The `--settings` file every spawned agent runs with. The leak guard's PreToolUse hook
  * (CC-270) goes to all of them. A print-mode run, given `permissionTimeoutSeconds`, also
@@ -197,7 +218,8 @@ const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
  * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
  * can contain spaces. `carried` is set for a launch that loads no user settings.
  * `selfGrant` lets the hook allow repo skill writes in that worktree (CC-694) while the
- * root and common dir still match the pin (CC-1200).
+ * root and common dir still match the pin (CC-1200). `integrityNonce` arms the shell-file
+ * check (TP-4256) on the guard's PreToolUse hook and on a PostToolUse twin.
  */
 export function buildHookSettings(
   entry: string,
@@ -205,6 +227,7 @@ export function buildHookSettings(
   carried?: CarriedUserSettings,
   agentId?: string,
   selfGrant?: SelfGrantPin,
+  integrityNonce?: string,
 ): Record<string, unknown> {
   const staleGuard: { UserPromptSubmit?: HookEntry[] } =
     agentId === undefined
@@ -223,18 +246,13 @@ export function buildHookSettings(
           ],
         }
   const pretool = [
-    {
-      matcher: PRETOOL_MATCHER,
-      hooks: [
-        { type: 'command', command: hookCommand(entry, 'leak-guard pretool'), timeout: PRETOOL_TIMEOUT_S },
-      ],
-    },
+    leakGuardEntry(entry, 'pretool', integrityNonce),
     ...(carried?.pretool ?? []),
     seatHookEntry(entry, 'pre'),
   ]
   const account = carried === undefined ? {} : withoutUserSettings(carried.denies)
-  if (permissionTimeoutSeconds === undefined)
-    return { ...account, hooks: { PreToolUse: pretool, ...seatHooks(entry, staleGuard, agentId) } }
+  const seat = withPosttool(seatHooks(entry, staleGuard, agentId), entry, integrityNonce)
+  if (permissionTimeoutSeconds === undefined) return { ...account, hooks: { PreToolUse: pretool, ...seat } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
   const pinArgs =
     selfGrant === undefined
@@ -245,7 +263,7 @@ export function buildHookSettings(
     ...account,
     hooks: {
       PreToolUse: pretool,
-      ...seatHooks(entry, staleGuard, agentId),
+      ...seat,
       PermissionRequest: [
         { matcher: '*', hooks: [{ type: 'command', command, timeout: permissionTimeoutSeconds }] },
       ],
@@ -373,11 +391,57 @@ function realpathOrUndefined(dir: string): string | undefined {
   }
 }
 
+/**
+ * TP-4256 A3: how a launch written in the broker is registered with that broker's ledger and
+ * launch-file watch. Only the broker holds one; a launch written anywhere else has no `--integrity`.
+ */
+export interface LaunchIntegrity {
+  /** Called before the agent's files are rewritten, so the rewrite is not read as a change to its previous launch. */
+  retire(agentId: string): void
+  /**
+   * The one place a launch gets a baseline. A launch whose agent or lineage is quarantined is
+   * registered already quarantined, so every path that starts it is refused, unless a human resumed it.
+   */
+  register(
+    nonce: string,
+    agentId: string,
+    startup: Records,
+    files: readonly string[],
+    lineage: LaunchLineage,
+  ): void
+  /** Why the agent's newest launch is quarantined, checked after a fresh sweep; undefined to launch it. */
+  quarantineOf(agentId: string): Mismatch | undefined
+}
+
+/** Where a launch comes from, for the quarantine it carries forward. */
+export interface LaunchLineage {
+  /** Agents whose quarantine this launch inherits besides its own: its spawner, a teleport predecessor. */
+  readonly from: readonly string[]
+  /** A resume the human started: the one launch that gets a clean baseline whatever came before. */
+  readonly humanResume?: boolean
+}
+
+/** What a launch written in the broker passes, so no call site can register a baseline without its lineage. */
+export interface LaunchAdmission {
+  readonly port: LaunchIntegrity
+  readonly lineage: LaunchLineage
+}
+
+/** The env the launched shell starts with, as far as the broker can know it: its own, under the plan's. */
+function launchEnv(plan: LaunchPlan): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, ...plan.env }
+  for (const name of plan.unsetEnv ?? []) delete env[name]
+  return env
+}
+
+/** A new nonce per call, so a resume gets a fresh baseline and the old launch's quarantine stays with it. */
 export function writeLaunchFiles(
   plan: LaunchPlan,
   config: Record<string, unknown>,
   createdWorktree?: CreatedWorktree,
+  integrity?: LaunchAdmission,
 ): void {
+  const nonce = integrity === undefined ? undefined : randomBytes(32).toString('hex')
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
   const settings = buildHookSettings(
     cliEntry(),
@@ -385,15 +449,28 @@ export function writeLaunchFiles(
     carriedUserSettings(plan),
     plan.agentId,
     selfGrantPinOf(plan, createdWorktree),
+    nonce,
   )
-  writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
-  writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
-  writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))
-  writePrivate(
-    relaunchScriptPath(plan.agentId),
-    relaunchScript(agentChatLauncher(), plan.agentId),
-    SCRIPT_MODE,
-  )
+  const files: [string, string, number?][] = [
+    [hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2)],
+    [mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2)],
+    [planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2)],
+    [relaunchScriptPath(plan.agentId), relaunchScript(agentChatLauncher(), plan.agentId), SCRIPT_MODE],
+  ]
+  integrity?.port.retire(plan.agentId)
+  for (const [file, body, mode] of files) writePrivate(file, body, mode)
+  if (integrity !== undefined && nonce !== undefined)
+    integrity.port.register(
+      nonce,
+      plan.agentId,
+      startupRecords(launchEnv(plan)),
+      files.map(([file]) => file),
+      integrity.lineage,
+    )
+  writeGitArtifacts(plan)
+}
+
+function writeGitArtifacts(plan: LaunchPlan): void {
   const hooksDir = hooksDirOf(plan.env)
   if (hooksDir === undefined) return
   writeGitHooks(hooksDir, { ...defaultScanInputs(), probe: probeScanner })

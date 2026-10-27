@@ -360,7 +360,7 @@ function addHiddenCommands(program: Command): void {
 
   program.command('run-agent <id>', { hidden: true }).action(async (id: string) => {
     const { runAgentVerb } = await import('../agents/launch-agent.js')
-    runAgentVerb(id)
+    await runAgentVerb(id)
   })
 
   // Spawned detached by a teleporting session's MCP process on another host than the broker (CC-913).
@@ -410,14 +410,25 @@ function addHiddenCommands(program: Command): void {
     })
 
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
-  program
+  const leakGuard = program
     .command('leak-guard', { hidden: true })
     .description('hooks Claude Code runs for the leak guard')
+  leakGuard
     .command('pretool')
     .description('deny a tool call that would bypass the leak scan or post a finding')
-    .action(async () => {
+    .option('--integrity <nonce>', 'also deny once a file a later shell sources changed (TP-4256)')
+    .action(async (opts: { integrity?: string }) => {
       const { leakPretool } = await import('./verbs/leak-pretool.js')
-      await leakPretool()
+      await leakPretool(undefined, opts.integrity)
+    })
+  // TP-4256: the PostToolUse twin of `pretool --integrity`, so a change a call made reaches the model.
+  leakGuard
+    .command('posttool')
+    .description('block with a reason once a file a later shell sources changed')
+    .requiredOption('--integrity <nonce>', 'the launch nonce the broker minted')
+    .action(async (opts: { integrity: string }) => {
+      const { leakPosttool } = await import('./verbs/leak-pretool.js')
+      await leakPosttool(opts.integrity)
     })
 
   // Run by Claude Code as a spawned agent's tool and turn hooks (CC-1056), never by a person.
