@@ -950,6 +950,8 @@ export interface ResumeRequest {
   /** TP-4256 A3: as on {@link SpawnRequest}; an unregistered resume carrying either is not the human's. */
   callerAgent?: string
   humanUnproven?: string
+  /** TP-4313: the broker's own resume of this agent so that child's admit finds a known parent. */
+  forChild?: string
 }
 
 interface Live {
@@ -1095,7 +1097,8 @@ const isHumanResume = (req: ResumeRequest): boolean =>
   req.cause === undefined &&
   req.launchedBy === undefined &&
   req.callerAgent === undefined &&
-  req.humanUnproven === undefined
+  req.humanUnproven === undefined &&
+  req.forChild === undefined
 
 /** The ledger's two calls a launch needs; `SocketServer` passes its own ledger. */
 export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict'>
@@ -1106,6 +1109,34 @@ export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict'>
  */
 const ledgerParentOf = (meta: Readonly<Record<string, string>> | undefined): Parent =>
   meta?.teleport_from || meta?.parent || HUMAN_ROOT
+
+/** TP-4313: how many unadmitted ancestors one resume brings back before it refuses. */
+const LINEAGE_DEPTH = 8
+
+/** The unadmitted ancestors to resume, outermost first, or why the child may not be admitted. */
+type ResumeLineage = { ancestors: AgentIdentity[] } | { refusal: string }
+
+/** Why an unadmitted parent cannot be resumed for its child; undefined when it can. */
+function unresumableParent(child: string, parent: AgentIdentity): string | undefined {
+  const lead = `integrity: ${child} is not resumed: its parent ${parent.name} (${parent.agentId})`
+  if (parent.state === 'exited') return undefined
+  if (parent.state === 'retired') return `${lead} is retired`
+  return (
+    `${lead} is ${parent.state} but has no baseline in this broker ` +
+    `(it outlived a broker restart); resume ${child} once ${parent.name} has exited and been resumed`
+  )
+}
+
+/** The parent's resume carries the child's requester, so ownership is checked as for the child, but never human proof. */
+const parentResume = (req: ResumeRequest, child: string): ResumeRequest => ({
+  ...(req.requestedBy === undefined ? {} : { requestedBy: req.requestedBy }),
+  ...(req.requesterAgentId === undefined ? {} : { requesterAgentId: req.requesterAgentId }),
+  ...(req.requesterBinding === undefined ? {} : { requesterBinding: req.requesterBinding }),
+  ...(req.callerAgent === undefined ? {} : { callerAgent: req.callerAgent }),
+  ...(req.humanUnproven === undefined ? {} : { humanUnproven: req.humanUnproven }),
+  ...(req.launchedBy === undefined ? {} : { launchedBy: req.launchedBy }),
+  forChild: child,
+})
 
 /** A successor never carries `humanProof`: a teleport is the agent's own act, not the human's. */
 const successorAdmission = (input: RelaunchInput): AdmitRequest => ({
@@ -3525,6 +3556,52 @@ export class Supervisor implements TeleportHost {
     return ledgerParentOf(this.spawnEventOf(agentId)?.meta)
   }
 
+  /** TP-4313: a parent is unadmitted only while the ledger has no baseline for it; a quarantined one stays the ledger's call. */
+  private unadmitted(parent: Parent): parent is string {
+    if (parent === HUMAN_ROOT || this.ledger === undefined) return false
+    const verdict = this.ledger.verdict(parent)
+    return !verdict.ok && verdict.reason === 'no baseline'
+  }
+
+  /** TP-4313: walks up from `child` while each parent is unadmitted, so the resumes can run parents first. */
+  private unadmittedLineage(child: AgentIdentity): ResumeLineage {
+    const ancestors: AgentIdentity[] = []
+    const seen = new Set([child.agentId])
+    for (let id = this.recordedParent(child.agentId); this.unadmitted(id);) {
+      if (seen.has(id))
+        return { refusal: `integrity: ${child.name} is not resumed: its lineage loops at ${id}` }
+      if (ancestors.length === LINEAGE_DEPTH)
+        return {
+          refusal: `integrity: ${child.name} is not resumed: over ${LINEAGE_DEPTH} unadmitted ancestors`,
+        }
+      const parent = this.core.agents.get(id)
+      if (parent === undefined)
+        return {
+          refusal: `integrity: ${child.name} is not resumed: its parent ${id} is not an agent this broker knows`,
+        }
+      const refusal = unresumableParent(child.name, parent)
+      if (refusal !== undefined) return { refusal }
+      ancestors.unshift(parent)
+      seen.add(id)
+      id = this.recordedParent(id)
+    }
+    return { ancestors }
+  }
+
+  /** TP-4313: after a restart, resumes the child's unadmitted ancestors first, so its admit never latches `unknown parent`. */
+  private async resumeAncestors(child: AgentIdentity, req: ResumeRequest): Promise<string | undefined> {
+    const lineage = this.unadmittedLineage(child)
+    if ('refusal' in lineage) return lineage.refusal
+    for (const parent of lineage.ancestors) {
+      if (this.core.agents.byName(parent.name)?.agentId !== parent.agentId)
+        return `integrity: ${child.name} is not resumed: its parent ${parent.agentId} is not the agent the name ${parent.name} resumes`
+      const outcome = await this.resume(parent.name, parentResume(req, child.name))
+      if (!outcome.ok)
+        return `integrity: ${child.name} is not resumed: its parent ${parent.name} did not resume (${outcome.reason})`
+    }
+    return undefined
+  }
+
   /** TP-4256 A3: the ledger's refusal of this agent's launch; undefined to launch it. */
   private launchRefusal(agentId: string): string | undefined {
     const verdict = this.ledger?.verdict(agentId)
@@ -4285,6 +4362,13 @@ export class Supervisor implements TeleportHost {
       }
     if (!this.semaphore.acquire(identity.agentId))
       return { ok: false, reason: `no free agent slots (${this.semaphore.summary()})`, transcript }
+    // TP-4313: after every check on the child's own record, and holding its slot, so no parent
+    // starts for a child that would be refused anyway, nor takes the slot the child needs.
+    const orphaned = await this.resumeAncestors(identity, req)
+    if (orphaned !== undefined) {
+      this.semaphore.release(identity.agentId)
+      return { ok: false, reason: orphaned, transcript }
+    }
 
     const executionId = this.shadow.resume(
       identity.agentId,
