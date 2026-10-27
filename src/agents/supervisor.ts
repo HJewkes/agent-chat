@@ -3033,7 +3033,6 @@ export class Supervisor implements TeleportHost {
       plan,
       profile,
       this.createdWorktree(agentId, allocation, isolationName),
-      OFF_BROKER,
     )
     const provenance = await spawnProvenance(allocation, req, profile.name)
 
@@ -4576,7 +4575,6 @@ export class Supervisor implements TeleportHost {
       plan,
       profile,
       this.createdWorktree(agent.agentId, allocation, isolation),
-      OFF_BROKER,
     )
     const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
@@ -4713,7 +4711,6 @@ export class Supervisor implements TeleportHost {
       plan,
       profile,
       this.createdWorktree(agent.agentId, allocation, isolation),
-      OFF_BROKER,
     )
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
@@ -4928,7 +4925,6 @@ export class Supervisor implements TeleportHost {
       plan,
       input.profile,
       this.createdWorktree(input.agentId, allocation, isolation),
-      OFF_BROKER,
     )
     this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
 
@@ -5314,7 +5310,6 @@ export class Supervisor implements TeleportHost {
       plan,
       input.profile,
       this.createdWorktree(input.agentId, allocation, isolation),
-      OFF_BROKER,
     )
   }
 
