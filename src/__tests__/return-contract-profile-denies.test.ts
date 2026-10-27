@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { BUILTIN_PROFILES, listProfileNames, loadProfile } from '../agents/profiles.js'
+import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile } from '../agents/profiles.js'
 import { contractOf } from '../agents/return-contract.js'
 import {
   IMPLEMENTER_WITHOUT_SHEPHERD,
@@ -23,13 +23,14 @@ const BLOCKS: Record<ReturnContract, readonly string[]> = {
 }
 
 /** The denies the bd-* templates carry for gh, as a fixture that does not move when a template does. */
-const SYNTHETIC: AgentProfile = {
-  name: 'zz-implementer',
+const SYNTHETIC = parseProfile('zz-implementer', {
   model: 'opus',
+  surface: 'headless',
+  isolation: 'none',
   allowedTools: ['Read', 'Write', 'Edit', 'Bash'],
   disallowedTools: ['Bash(gh api:*)', 'Bash(gh repo:*)', 'Bash(gh pr merge:*)', 'Bash(agent-chat agent:*)'],
   returnContract: 'implementer',
-}
+}) as AgentProfile
 
 const FILLS: Record<string, string> = {
   '<owner>/<repo>': 'example/repo',
