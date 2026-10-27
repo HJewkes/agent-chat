@@ -1569,9 +1569,15 @@ it on the call that made it.
   spawned before A's next check. X's baseline then holds the tampered bytes. This is not a lineage
   path. Machine-wide, write-once baselines per real path would close it, at the cost of a wider
   false-quarantine blast radius. That is a follow-up and an owner decision.
-- **A broker restart** forgets every principal. Each `--integrity` launch from before the restart
-  then denies with `no baseline`, and `run-agent` refuses it, until the human resumes it. For the
-  order to follow, see the restart notes in `docs/agent-teams.md` §4.5.
+- **A broker restart** forgets every principal. A running agent is re-admitted on its first
+  contact (TP-4341) through `readmit`. The supervisor checks its launch files against what a broker
+  writes. Intact files enrol it under its recorded lineage, with the nonce its hook still sends.
+  Anything else latches a quarantine. Until then, its `--integrity` calls deny with `no baseline`.
+  A quarantine latched before the restart is lost, as is a change made while no broker watched.
+  The re-admit catches a launch file left not as a broker writes it. It cannot catch a startup
+  file that changed before the restart. A settings file with the guard unarmed reads as a launch
+  from before the ledger was wired, so its re-admit has no nonce. For the order to follow, see the
+  restart notes in `docs/agent-teams.md` §4.5.
 
 ### Config the guard cannot read (TP-630)
 
