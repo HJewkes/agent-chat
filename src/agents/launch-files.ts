@@ -4,7 +4,7 @@ import { resolveGitShellAliases, resolvePermissionHookTimeout } from '../config.
 import { GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
 import { defaultScanInputs, hooksDirOf, probeScanner, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { startupRecords } from '../leak-guard/integrity/env-records.js'
-import type { LaunchAdmission, LaunchWrite } from '../broker/integrity-ledger.js'
+import type { LaunchAdmission, LaunchWrite, Survivor } from '../broker/integrity-ledger.js'
 import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName, SurfaceName } from '../protocol.js'
 import { inboxSpoolDir } from '../server/inbox-spool.js'
@@ -431,6 +431,103 @@ export function writeLaunchFiles(
     startup: admission === OFF_BROKER ? {} : startupRecords(launchEnv(plan)),
     files: files.map(([file]) => file),
   }
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** The leak guard a broker writes, for any node binary: armed with a nonce, or as an unwired broker wrote it. */
+interface Guard {
+  node: string
+  nonce?: string
+}
+
+function guardIn(entry: HookEntry | undefined, phase: 'pretool' | 'posttool'): Guard | undefined {
+  if (entry?.matcher !== PRETOOL_MATCHER || !Array.isArray(entry.hooks)) return undefined
+  const pattern = new RegExp(
+    `^'(/[^']*)' ${escapeRegExp(shellQuote(cliEntry()))} leak-guard ${phase}(?: --integrity '([0-9a-f]{64})')?$`,
+  )
+  const match = pattern.exec(commandOf(entry.hooks[0]) ?? '')
+  if (match?.[1] === undefined) return undefined
+  return { node: match[1], ...(match[2] === undefined ? {} : { nonce: match[2] }) }
+}
+
+/** The pretool guard first, and its posttool twin under the same nonce exactly when it is armed. */
+function guardOf(settingsFile: string): Guard | undefined {
+  const hooks = (JSON.parse(fs.readFileSync(settingsFile, 'utf8')) as { hooks?: Record<string, unknown> })
+    .hooks
+  const pretool = guardIn((hooks?.PreToolUse as HookEntry[] | undefined)?.[0], 'pretool')
+  const post = hooks?.PostToolUse
+  const posttool = (Array.isArray(post) ? (post as HookEntry[]) : [])
+    .map(entry => guardIn(entry, 'posttool'))
+    .find(guard => guard !== undefined)
+  if (pretool === undefined) return undefined
+  if (pretool.nonce === undefined) return posttool === undefined ? pretool : undefined
+  return posttool?.nonce === pretool.nonce && posttool.node === pretool.node ? pretool : undefined
+}
+
+function namesSettings(plan: LaunchPlan, agentId: string): boolean {
+  const end = plan.args.indexOf('--')
+  const options = end === -1 ? plan.args : plan.args.slice(0, end)
+  const at = options.indexOf('--settings')
+  return plan.agentId === agentId && at !== -1 && options[at + 1] === hookSettingsPath(agentId)
+}
+
+const launchFilesOf = (agentId: string): string[] => [
+  hookSettingsPath(agentId),
+  mcpConfigPath(agentId),
+  planPath(agentId),
+  relaunchScriptPath(agentId),
+]
+
+const tampered = (file: string, field: string): Survivor => ({ intact: false, mismatch: { file, field } })
+
+/** The first check the launch files fail against what `writeLaunchFiles` writes, else their guard. */
+function launchFault(agentId: string): Survivor | Guard {
+  const missing = launchFilesOf(agentId).find(
+    file => !fs.lstatSync(file, { throwIfNoEntry: false })?.isFile(),
+  )
+  if (missing !== undefined) return tampered(missing, 'state')
+  const guard = parsed(() => guardOf(hookSettingsPath(agentId)))
+  if (guard === undefined) return tampered(hookSettingsPath(agentId), 'leak guard')
+  const plan = parsed(() => readPlanFile(planPath(agentId)))
+  if (plan === undefined || !namesSettings(plan, agentId)) return tampered(planPath(agentId), '--settings')
+  const launcher = { ...agentChatLauncher(), argv: (id: string) => [guard.node, cliEntry(), 'run-agent', id] }
+  if (fs.readFileSync(relaunchScriptPath(agentId), 'utf8') !== relaunchScript(launcher, agentId))
+    return tampered(relaunchScriptPath(agentId), 'sha256')
+  return guard
+}
+
+function parsed<T>(read: () => T): T | undefined {
+  try {
+    return read()
+  } catch {
+    return undefined
+  }
+}
+
+/** A file whose content and inode were both last changed before `mark`; none is, without a mark. */
+function changedBefore(file: string, mark: number | undefined): boolean {
+  const stat = fs.statSync(file)
+  return mark !== undefined && stat.mtimeMs < mark && stat.ctimeMs < mark
+}
+
+/**
+ * TP-4341: the launch an agent that outlived its broker is running, checked against what a broker
+ * writes. Undefined when this broker never wrote one for it (a hand-started or remote agent). An
+ * unarmed guard is a launch an unwired broker wrote only while every file predates `wiredSince`,
+ * the first wired start; one touched since then had its nonce stripped.
+ */
+export function survivingLaunch(agentId: string, wiredSince: number | undefined): Survivor | undefined {
+  if (!fs.existsSync(agentDir(agentId))) return undefined
+  const fault = launchFault(agentId)
+  if ('intact' in fault) return fault
+  const files = launchFilesOf(agentId)
+  if (fault.nonce === undefined) {
+    const late = files.find(file => !changedBefore(file, wiredSince))
+    return late === undefined ? { intact: true, startup: {}, files } : tampered(late, 'unarmed since wiring')
+  }
+  const plan = readPlanFile(planPath(agentId))
+  return { intact: true, nonce: fault.nonce, startup: startupRecords(launchEnv(plan)), files }
 }
 
 function writeGitArtifacts(plan: LaunchPlan): void {

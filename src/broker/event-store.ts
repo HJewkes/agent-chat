@@ -122,6 +122,10 @@ export interface EventStore {
 
   /** When the newest `kind` row about agent `ref` was written, if any (CC-266). */
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined
+  /** TP-4341: when a broker first ran with the integrity ledger wired; undefined before that. */
+  integrityWiredSince(): number | undefined
+  /** TP-4341: the newest quarantine recorded for `agentId` since the human last resumed it. */
+  quarantineOnRecord(agentId: string): { file: string; field: string } | undefined
 
   /** Whether the human, or the decider for it, answered or wrote to `name` at or after `since` (CC-1552). */
   humanContactSince(name: string, since: number): boolean

@@ -2354,18 +2354,30 @@ Mitigations to build:
   the complexity this design earns its way out of (README: "no heartbeats, no
   TTLs, no stale-entry reaper").
 
-**The integrity ledger across a restart (TP-4256, TP-4313).** The launch ledger
+**The integrity ledger across a restart (TP-4256, TP-4313, TP-4341).** The launch ledger
 is memory only (`docs/leak-guard.md`, "The launch ledger"). A restart forgets
-every agent's baseline. Every agent launched with `--integrity` is then denied
-on its next Bash, Edit or Write call, and `run-agent` refuses to relaunch it,
-until the human resumes it. An agent spawned or resumed later admits under its
+every agent's baseline. An agent spawned or resumed later admits under its
 recorded parent, so the parent must be admitted first:
 
+- An agent that outlived the restart is admitted again on its first contact: its
+  reconnect, or a spawn, resume or teleport that names it as parent or
+  predecessor. Its launch files must still be as a broker writes them: the
+  leak-guard hooks in `settings.json` (armed with one nonce, or unarmed as a
+  broker without the ledger wrote them, accepted only for launch files last
+  changed before the first wired start), `plan.json` naming that settings file,
+  and the `relaunch` script. Then it is enrolled under its recorded lineage with
+  the nonce its hook still sends, and its startup files are baselined afresh. Any
+  other state latches a quarantine, as does a quarantine the event log recorded
+  for it since the human last resumed it. With no launch files on this host, or a
+  parent that cannot be resolved, it stays unknown and is still denied.
+- A teleport predecessor that ended before the restart is skipped: its
+  successor's chain continues at the predecessor's own recorded parent, and at
+  the human for a hand-started chain.
 - `agent-chat agent resume <child>` walks up the recorded lineage. It resumes
   each exited parent that has no baseline first, outermost first, without
   human proof. It refuses the child, naming the parent and admitting nothing,
-  when a parent is live but not admitted again (it outlived the restart), is
-  retired or unknown, or the lineage loops or runs past 8 unadmitted ancestors.
+  when a parent is live but could not be admitted again, is retired or
+  unknown, or the lineage loops or runs past 8 unadmitted ancestors.
 - **Runbook: resume parents before children.** This is the manual fallback
   when the walk refuses. Let a live parent exit and resume it, then resume the
   child.

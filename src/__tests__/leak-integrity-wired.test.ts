@@ -7,12 +7,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { autoAttach } from './broker-harness.js'
 import { hookSettingsPath } from '../agents/launch-files.js'
 import { relaunchRefusal } from '../agents/relaunch-integrity.js'
-import { RELAUNCH_RETRY_MS, type Supervisor } from '../agents/supervisor.js'
+import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { AgentProfile } from '../agents/types.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
-import { EventLog } from '../broker/event-log.js'
+import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
+import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
 import { SocketServer } from '../broker/socket.js'
 import {
   integrityDenial,
@@ -190,7 +191,7 @@ async function setup() {
       .since(0, 500)
       .filter(row => row.meta?.event === 'integrity_quarantine' && row.meta.agent_id === id)
   return {
-    ...{ root, home, acHome, core, supervisor, exits, stopAttach },
+    ...{ root, home, acHome, env, core, supervisor, exits, stopAttach },
     ...{ lead, leadNonce, sibling, spawn, check, hook, relaunch, bash, notices },
   }
 }
@@ -530,5 +531,293 @@ describe.skipIf(!BUILT_WIRED)('FF3/4: run-agent with no broker to ask', () => {
     expect(run.status).toBe(77)
     expect(run.stderr).toMatch(/not launched, the broker could not be asked/)
     expect(run.stdout).toBe('')
+  })
+})
+
+/** A coordinator's spawn of `name` under `parentAgentId`: its id, or why it was refused. */
+async function spawnUnder(supervisor: Supervisor, root: string, name: string, parentAgentId?: string) {
+  const result = await supervisor.spawn({
+    name,
+    profile: 'lead',
+    brief: 'read the log',
+    cwd: path.join(root, 'work'),
+    isolation: 'none',
+    surface: 'headless',
+    requestedBy: parentAgentId === undefined ? 'human' : 'coord',
+    ...(parentAgentId === undefined ? {} : { parentAgentId }),
+  })
+  return result.ok ? (result.agentId as string) : `refused: ${result.reason}`
+}
+
+/**
+ * TP-4341: a restart leaves the ledger empty while the agents run on. Broker two is a new
+ * `SocketServer` over the same event log and home, so only what is on disk carries across.
+ */
+function restarted(wired: Wired) {
+  wired.stopAttach()
+  const next = broker(wired.root)
+  const ask: AskBroker = async frame => answer(next.server, frame, 'integrity_result')
+  const hook = (nonce: string) =>
+    integrityDenial(
+      nonce,
+      JSON.stringify({ session_id: SESSION }),
+      wired.env,
+      ask,
+      INTEGRITY_DEADLINE_MS,
+      inline,
+    )
+  const spawn = (name: string, parentAgentId: string) =>
+    spawnUnder(next.supervisor, wired.root, name, parentAgentId)
+  return { ...next, hook, spawn }
+}
+
+/** The newest launch ended, with a transcript on disk so a resume has a conversation to continue. */
+async function ended(wired: Wired, agentId: string): Promise<void> {
+  wired.exits.latest()
+  await settle()
+  const agent = wired.core.agents.get(agentId)
+  if (agent === undefined) throw new Error(`no identity for ${agentId}`)
+  const file = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, '{}\n')
+}
+
+/** A teleport successor of the lead on `supervisor`; it attaches, so the relaunch settles. */
+const succeed = (supervisor: Supervisor, wired: Wired, agentId: string) =>
+  supervisor.relaunch({
+    agentId,
+    name: 'lead',
+    profile: inherited,
+    brief: 'carry on',
+    cwd: path.join(wired.root, 'work'),
+    surface: 'headless',
+    preamble: 'you are the continuation',
+    meta: { teleport_from: wired.lead, parent: '' },
+    inheritedFrom: wired.lead,
+  })
+
+describe('TP-4341: coordinators that outlive a wired broker restart', () => {
+  it('a teleport successor started after the restart is admitted and spawns a child', async () => {
+    const wired = await setup()
+    const after = restarted(wired)
+
+    await succeed(after.supervisor, wired, 'agsucc01')
+    const child = await after.spawn('child', 'agsucc01')
+
+    expect(after.server.integrity.verdict('agsucc01')).toEqual({ ok: true })
+    expect(child).not.toMatch(/^refused/)
+    expect(await after.hook(nonceOf(child))).toBeUndefined()
+  })
+
+  it('a successor whose predecessor ended before the restart roots at its lineage and spawns', async () => {
+    const wired = await setup()
+    await succeed(wired.supervisor, wired, 'agsucc01')
+    wired.core.append({ kind: 'agent_exited', actor: 'lead', ref: wired.lead, body: '', meta: {} })
+    const after = restarted(wired)
+
+    const child = await after.spawn('child', 'agsucc01')
+
+    expect(child).not.toMatch(/^refused/)
+    expect(after.server.integrity.parentOf('agsucc01')).toBe(HUMAN_ROOT)
+  })
+
+  it('a live coordinator resumes its child without the human, and its own hook passes on reattach', async () => {
+    const wired = await setup()
+    const child = await wired.spawn('child', 'lead', { requestedBy: 'coord', parentAgentId: wired.lead })
+    await ended(wired, child)
+    const after = restarted(wired)
+
+    after.core.append({ kind: 'agent_attached', actor: 'lead', ref: wired.lead })
+    const resumed = await after.supervisor.resume('child', { requestedBy: 'coord' })
+
+    expect(resumed).toMatchObject({ ok: true, agentId: child })
+    expect(await after.hook(wired.leadNonce)).toBeUndefined()
+    expect(await after.hook(nonceOf(child))).toBeUndefined()
+  })
+
+  it('a coordinator whose relaunch script was rewritten before the restart stays quarantined', async () => {
+    const wired = await setup()
+    const child = await wired.spawn('child', 'lead', { requestedBy: 'coord', parentAgentId: wired.lead })
+    await ended(wired, child)
+    wired.bash(`printf '#!/bin/sh\\nexec claude\\n' > "$A/relaunch"`)
+    const after = restarted(wired)
+
+    const resumed = await after.supervisor.resume('child', { requestedBy: 'coord' })
+
+    expect(resumed.ok).toBe(false)
+    expect(resumed.reason).toMatch(/integrity: .* is quarantined/)
+    expect(after.server.integrity.verdict(wired.lead)).toMatchObject({
+      reason: 'quarantined',
+      file: agentDir(wired.lead) + '/relaunch',
+    })
+    expect(await after.hook(wired.leadNonce)).toMatch(/integrity check refused/)
+    const notices = after.core.events.since(0, 500).filter(row => row.meta?.event === 'integrity_quarantine')
+    expect(notices.map(row => row.meta?.agent_id)).toContain(wired.lead)
+  })
+
+  it('a coordinator that widened its own settings before the restart stays quarantined after it', async () => {
+    const wired = await setup()
+    widenSettings(wired.lead)
+    expect(await wired.hook()).toBeDefined()
+    const after = restarted(wired)
+
+    after.core.append({ kind: 'agent_attached', actor: 'lead', ref: wired.lead })
+
+    expect(after.server.integrity.verdict(wired.lead)).toMatchObject({
+      reason: 'quarantined',
+      file: hookSettingsPath(wired.lead),
+    })
+    expect(await after.hook(wired.leadNonce)).toMatch(/integrity check refused/)
+    expect(await after.spawn('child', wired.lead)).toMatch(/^refused: .*quarantined/)
+  })
+
+  it("a quarantine the human's own resume cleared does not survive a later restart", async () => {
+    const wired = await setup()
+    wired.bash(`echo 'alias ls=rm' >> ~/.zshrc`)
+    expect(await wired.hook()).toMatch(/\.zshrc changed/)
+    await ended(wired, wired.lead)
+    expect(await wired.supervisor.resume('lead', { requestedBy: 'human' })).toMatchObject({ ok: true })
+    const after = restarted(wired)
+
+    after.core.append({ kind: 'agent_attached', actor: 'lead', ref: wired.lead })
+
+    expect(after.server.integrity.verdict(wired.lead)).toEqual({ ok: true })
+    expect(await after.hook(nonceOf(wired.lead))).toBeUndefined()
+  })
+
+  it('a re-admitted coordinator still quarantines a .zshrc change made after the restart', async () => {
+    const wired = await setup()
+    const after = restarted(wired)
+    after.core.append({ kind: 'agent_attached', actor: 'lead', ref: wired.lead })
+    expect(await after.hook(wired.leadNonce)).toBeUndefined()
+
+    wired.bash(`echo 'alias ls=rm' >> ~/.zshrc`)
+
+    expect(await after.hook(wired.leadNonce)).toMatch(/\.zshrc changed/)
+    expect(await after.spawn('child', wired.lead)).toMatch(/^refused: .*quarantined/)
+  })
+
+  it('a coordinator a hand-started session spawned roots at the human and spawns after the restart', async () => {
+    const wired = await setup()
+    wired.core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'desk',
+      msgId: 'agdesk01',
+      meta: { origin: 'adopted', name: 'desk', cwd: wired.root, depth: '0' },
+    })
+    const lead = await wired.spawn('desk-lead', 'lead', { requestedBy: 'coord', parentAgentId: 'agdesk01' })
+    const after = restarted(wired)
+
+    const child = await after.spawn('child', lead)
+
+    expect(child).not.toMatch(/^refused/)
+    expect(after.server.integrity.parentOf(lead)).toBe(HUMAN_ROOT)
+  })
+})
+
+/** A lead an unwired broker launched in `root`, before any wired broker ran there: its guard is unarmed. */
+async function unwiredLead(root: string): Promise<string> {
+  const core = new BrokerCore(() => undefined, {
+    events: new EventLog(path.join(root, 'events.db')),
+    registry: new Registry<Conn>(),
+  })
+  const stopAttach = autoAttach(core)
+  const supervisor = new Supervisor(core, {
+    nameFreeMs: 50,
+    launcherRunning: async () => false,
+    surface: {
+      platform: 'darwin',
+      spawn: (() => ({ pid: 4243, unref: () => undefined, once: () => undefined })) as never,
+    },
+  })
+  const lead = await spawnUnder(supervisor, root, 'lead')
+  await settle()
+  stopAttach()
+  supervisor.close()
+  return lead
+}
+
+/** The lead's own settings with a grant added beside the guard, which keeps its shape. */
+function widenSettings(agentId: string): void {
+  const file = hookSettingsPath(agentId)
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
+  fs.writeFileSync(file, JSON.stringify({ ...settings, permissions: { allow: ['Bash'] } }, null, 2))
+}
+
+/** The lead's settings rewritten to the unarmed shape an unwired broker writes. */
+function stripNonce(agentId: string): void {
+  const file = hookSettingsPath(agentId)
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+    hooks: Record<string, { hooks: { command: string }[] }[]>
+  }
+  settings.hooks.PostToolUse = (settings.hooks.PostToolUse ?? []).filter(
+    entry => !entry.hooks.some(hook => hook.command.includes('leak-guard posttool')),
+  )
+  for (const entry of settings.hooks.PreToolUse ?? [])
+    for (const hook of entry.hooks) hook.command = hook.command.replace(/ --integrity '[0-9a-f]{64}'/, '')
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2))
+}
+
+const wiredMarks = (core: BrokerCore) =>
+  core.events.since(0, 500).filter(row => row.meta?.event === INTEGRITY_WIRED_SINCE)
+
+describe('TP-4341: an unarmed launch is accepted once, as the migration to a wired ledger', () => {
+  it('admits a coordinator an unwired broker launched before the first wired start', async () => {
+    const { root } = syntheticHome()
+    const lead = await unwiredLead(root)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const wired = broker(root)
+
+    const child = await spawnUnder(wired.supervisor, root, 'child', lead)
+
+    expect(child).not.toMatch(/^refused/)
+    expect(wired.server.integrity.parentOf(lead)).toBe(HUMAN_ROOT)
+  })
+
+  it('quarantines a coordinator whose nonce was stripped after the first wired start, mtime backdated', async () => {
+    const wired = await setup()
+    stripNonce(wired.lead)
+    // touch -d sets mtime, never ctime, so the ctime half of the check still sees the rewrite.
+    for (const file of ['settings.json', 'mcp.json', 'plan.json', 'relaunch'])
+      fs.utimesSync(path.join(agentDir(wired.lead), file), new Date(0), new Date(0))
+    const after = restarted(wired)
+
+    const child = await after.spawn('child', wired.lead)
+
+    expect(child).toMatch(/^refused: .*quarantined/)
+    expect(after.server.integrity.verdict(wired.lead)).toMatchObject({
+      reason: 'quarantined',
+      field: 'unarmed since wiring',
+    })
+  })
+
+  it('ignores a wired mark or a quarantine that another actor wrote', () => {
+    const { root } = syntheticHome()
+    const events = new EventLog(path.join(root, 'events.db'))
+    const core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
+    for (const event of [INTEGRITY_WIRED_SINCE, 'integrity_quarantine'])
+      core.append({
+        kind: 'notice',
+        actor: 'mallory',
+        target: 'agent-chat',
+        body: 'forged',
+        meta: { event, agent_id: 'aglead01', file: 'settings.json', field: 'sha256' },
+      })
+
+    expect(events.integrityWiredSince()).toBeUndefined()
+    expect(events.quarantineOnRecord('aglead01')).toBeUndefined()
+  })
+
+  it('keeps the first mark through later restarts', async () => {
+    const wired = await setup()
+    const mark = wired.core.events.integrityWiredSince()
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    const after = restarted(wired)
+
+    expect(mark).toBeDefined()
+    expect(after.core.events.integrityWiredSince()).toBe(mark)
+    expect(wiredMarks(after.core)).toHaveLength(1)
   })
 })

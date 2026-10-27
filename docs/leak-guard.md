@@ -1569,9 +1569,22 @@ it on the call that made it.
   spawned before A's next check. X's baseline then holds the tampered bytes. This is not a lineage
   path. Machine-wide, write-once baselines per real path would close it, at the cost of a wider
   false-quarantine blast radius. That is a follow-up and an owner decision.
-- **A broker restart** forgets every principal. Each `--integrity` launch from before the restart
-  then denies with `no baseline`, and `run-agent` refuses it, until the human resumes it. For the
-  order to follow, see the restart notes in `docs/agent-teams.md` §4.5.
+- **A broker restart** forgets every principal. A running agent is re-admitted on its first
+  contact (TP-4341) through `readmit`. The supervisor checks its launch files against what a broker
+  writes. Intact files enrol it under its recorded lineage, with the nonce its hook still sends.
+  Anything else latches a quarantine. Until then, its `--integrity` calls deny with `no baseline`.
+  A quarantine latched before the restart survives it. Each latch writes a durable
+  `integrity_quarantine` notice as `agent-chat`. `readmit` latches again when such a notice for
+  the agent is newer than its last human resume, which the human's own `agent_resumed` row marks
+  with `integrity_cleared: human`. Other resumes do not clear. A change made while no broker
+  watched is lost. The re-admit checks the shape of the guard, not every byte of `settings.json`
+  and `mcp.json`, so an extra key added then passes. It cannot catch a startup file that changed
+  before the restart. An unarmed guard is a one-time migration. The first broker
+  start with `INTEGRITY_WIRED` on writes one `integrity_wired_since` notice to the event store, and
+  later starts never move it. An unarmed launch is re-admitted, with no nonce, only while all four
+  launch files have mtime and ctime before that mark. One changed at or after it had its nonce
+  stripped, and latches `unarmed since wiring`. ctime is the half `touch -d` cannot set back. For
+  the order to follow, see the restart notes in `docs/agent-teams.md` §4.5.
 
 ### Config the guard cannot read (TP-630)
 
