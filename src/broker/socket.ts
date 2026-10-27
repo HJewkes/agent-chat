@@ -25,11 +25,12 @@ import {
 } from '../protocol.js'
 import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
 import { dedupeKey, nonceRefusal, RequestDedupe } from './request-dedupe.js'
-import { cliEntry, socketPath } from '../paths.js'
+import { agentsDir, cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { integrityFrameRefusal } from './integrity-frame.js'
 import { IntegrityLedger } from './integrity-ledger.js'
+import { INTEGRITY_WIRED } from './integrity-wired.js'
 import { SettingsWatch } from './settings-watch.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
 import { type Escalation, type IdentityBinding, type RouteResult } from './registry.js'
@@ -103,11 +104,32 @@ const WATCH_MAX_BATCH = 50
  */
 const MAX_OPEN_ENDORSEMENTS = 2
 
+/** A path check on the realpath of a broker-owned root, never a match on the text a caller sent. */
+function insideDir(candidate: string, root: string): boolean {
+  let real = path.resolve(root)
+  try {
+    real = fs.realpathSync(root)
+  } catch {
+    // No agents root yet: compare against the path it will have.
+  }
+  const relative = path.relative(real, path.resolve(candidate))
+  const outside = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+  return !outside
+}
+
 /**
- * TP-4256 A3: whether broker launches go through the integrity ledger. A compile-time constant, not
- * config, because config is agent-writable; it stays false until the last A3 slice turns it on.
+ * Files written for another host's broker: the dir lies outside this broker's agents root, and the
+ * broker's own entry for the agent is no symlink, so a link out of the root cannot claim it.
  */
-const INTEGRITY_WIRED = false
+function offBrokerDir(agentId: string, dir: string): boolean {
+  if (agentId !== path.basename(agentId) || agentId === '.' || agentId === '..') return false
+  try {
+    if (fs.lstatSync(path.join(agentsDir(), agentId)).isSymbolicLink()) return false
+  } catch {
+    // No local entry: nothing here to redirect.
+  }
+  return !insideDir(dir, agentsDir())
+}
 
 /** Shepherd names a fix-round successor with `-s<N>`; a caller that sends no marker is still read by it. */
 const FIX_ROUND = /-s\d+$/
@@ -1911,6 +1933,24 @@ export class SocketServer {
   }
 
   /**
+   * TP-4256 A3, Class 4: the sweep runs first, so a launch file changed since the last tick (a
+   * plan.json that drops `--settings`) latches before the verdict is read. The ledger is consulted
+   * before the caller's path: an agent it knows is always answered by `verdict`.
+   */
+  private handleIntegrityRelaunch(conn: Conn, msg: { agentId?: unknown; agentDir?: unknown }): void {
+    const t = 'integrity_relaunch_result'
+    if (typeof msg.agentId !== 'string' || typeof msg.agentDir !== 'string')
+      return reply(conn, { t, ok: false, reason: 'malformed integrity_relaunch' })
+    this.settingsWatch.sweep()
+    if (!this.integrity.knows(msg.agentId) && offBrokerDir(msg.agentId, msg.agentDir))
+      return reply(conn, { t, ok: true, offBroker: true })
+    const verdict = this.integrity.verdict(msg.agentId)
+    if (verdict.ok) return reply(conn, { t, ok: true })
+    if (verdict.reason === 'no baseline') return reply(conn, { t, ok: false, reason: verdict.reason })
+    reply(conn, { t, ok: false, reason: verdict.reason, file: verdict.file, field: verdict.field })
+  }
+
+  /**
    * Appended as the broker, like `noteBuildMismatch`: `enqueueForHuman` needs a registered sender and
    * answers with `send_result`, and the hook is neither.
    */
@@ -2292,6 +2332,8 @@ export class SocketServer {
         return this.handleServiceAsk(conn, msg)
       case 'integrity_check':
         return this.handleIntegrityCheck(conn, msg)
+      case 'integrity_relaunch':
+        return this.handleIntegrityRelaunch(conn, msg)
       case 'answers_since':
         return reply(conn, this.answersSince(msg))
       case 'spawn':
