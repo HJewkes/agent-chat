@@ -1,5 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { gitMirrorDirFor } from '../leak-guard/git-mirror.js'
+import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
+import { hooksDirOf } from '../leak-guard/hooks-dir.js'
+import { holdsAgentChatShim } from '../leak-guard/shim-header.js'
 
 /**
  * A full `PATH` for the broker and its agents, whoever autostarted the broker (CC-456).
@@ -10,7 +14,9 @@ import path from 'node:path'
  * `/usr/sbin`; an agent without `agent-chat gh-write` reached for an absolute gh instead.
  * `claude-bin.ts` closed the same gap for the claude binary alone (CC-132).
  *
- * The inherited entries stay first, so the shim dirs keep winning. After them come, in order:
+ * The inherited entries stay first, less any dir holding an agent-chat shim (CC-1653): a launch
+ * puts its own shims back first, and an inherited one would be baked as a later shim's real git.
+ * After them come, in order:
  * 1. `AGENT_CHAT_BASE_PATH`, an explicit override;
  * 2. `<state dir>/login-path`, the `PATH` of the last `agent-chat service start` from a shell;
  * 3. the usual bin dirs that exist on this machine.
@@ -36,6 +42,8 @@ export interface BasePathRequest {
   isDir?: (dir: string) => boolean
   /** Reads the first line of `<state dir>/login-path`. Injected for the same reason as `isDir`. */
   readFirstLine?: (file: string) => string | undefined
+  /** True for a dir holding an agent-chat shim. Injected for the same reason as `isDir`. */
+  isShimDir?: (dir: string) => boolean
 }
 
 const realIsDir = (dir: string): boolean => {
@@ -63,6 +71,7 @@ const entries = (value: string | undefined): string[] =>
 export function resolveBasePath(req: BasePathRequest): string {
   const isDir = req.isDir ?? realIsDir
   const readFirstLine = req.readFirstLine ?? realReadFirstLine
+  const isShimDir = req.isShimDir ?? holdsAgentChatShim
   const home = req.env.HOME
   const known = KNOWN_DIRS.filter(dir => home !== undefined || !dir.includes('$HOME'))
     .map(dir => dir.replace('$HOME', home ?? ''))
@@ -73,8 +82,26 @@ export function resolveBasePath(req: BasePathRequest): string {
     ...entries(readFirstLine(loginPathFile(req.stateDir))),
     ...known,
   ]
-  return [...new Set(all)].join(path.delimiter)
+  return [...new Set(all)].filter(dir => !isShimDir(dir)).join(path.delimiter)
 }
+
+/**
+ * CC-1653: what a broker started from an agent session inherits of that agent's push guard. The
+ * shim dir, a GIT_EXEC_PATH at a shim's mirror and the hooks-path pair belong to that one launch;
+ * each later launch sets its own.
+ */
+export function clearInheritedShimEnv(env: NodeJS.ProcessEnv): void {
+  const shimDir = env[GIT_SHIM_DIR_ENV]
+  delete env[GIT_SHIM_DIR_ENV]
+  const execPath = env.GIT_EXEC_PATH
+  if (execPath !== undefined && (holdsAgentChatShim(execPath) || execPath === mirrorOf(shimDir)))
+    delete env.GIT_EXEC_PATH
+  if (hooksDirOf(env as Record<string, string>) === undefined) return
+  for (const key of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) delete env[key]
+}
+
+const mirrorOf = (shimDir: string | undefined): string | undefined =>
+  shimDir === undefined ? undefined : gitMirrorDirFor(shimDir)
 
 /** Best-effort, like `recordClaudeBin`: a failed write costs a later broker the recorded dirs, not a start. */
 export function recordLoginPath(

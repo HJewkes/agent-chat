@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { noAnswerMessage } from '../cli/restart-guard.js'
+import { HOST_PATH } from './helpers/git-shim-fixture.js'
 
 const SCRIPT = path.resolve(import.meta.dirname, '../../scripts/restart-window.sh')
 
@@ -126,7 +127,7 @@ afterEach(() => {
 })
 
 const shimEnv = (env: Record<string, string> = {}): Record<string, string> => ({
-  PATH: `${path.join(dir, 'bin')}:${process.env.PATH}`,
+  PATH: `${path.join(dir, 'bin')}:${HOST_PATH}`,
   HOME: dir,
   AGENT_CHAT_HOME: home,
   SHIM_LOG: log,
@@ -178,6 +179,30 @@ describe('restart-window process patterns', () => {
 })
 
 describe('restart-window pre-checks', () => {
+  it('refuses inside an agent session and names the owner terminal route (CC-1653)', () => {
+    const r = run({ AGENT_CHAT_NAME: 'tp-operator' })
+
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('this is an agent session (AGENT_CHAT_NAME is set (tp-operator))')
+    expect(r.err).toContain("run it from the owner's terminal")
+    expect(r.err).toContain('systemd-run --user')
+    expect(r.calls).not.toContain('service restart')
+  })
+
+  it('refuses with an agent-chat shim dir on PATH (CC-1653)', () => {
+    const shimDir = path.join(dir, 'git-bin')
+    fs.mkdirSync(shimDir)
+    fs.writeFileSync(path.join(shimDir, 'git'), '#!/bin/sh -p\n# Written by agent-chat at each spawn.\n', {
+      mode: 0o755,
+    })
+
+    const r = run({ PATH: `${path.join(dir, 'bin')}:${shimDir}:${HOST_PATH}` })
+
+    expect(r.code).toBe(1)
+    expect(r.err).toContain(`agent-chat shim ${shimDir}/git is on PATH`)
+    expect(r.calls).not.toContain('service restart')
+  })
+
   it('exits 1 with the guard message when the restart refuses on an open ask', () => {
     const r = run({ FAKE_RESTART_FAIL: 'refusing to restart: unanswered ask from alice' })
 

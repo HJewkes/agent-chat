@@ -2062,6 +2062,31 @@ The only layer no agent input reaches is the server. One GitHub ruleset on `~ALL
 That is an owner ruleset write. The profile `disallowedTools` push rules remain a literal-text
 backstop.
 
+### Incident: a broker restarted from an agent session (CC-1653)
+
+On 2026-10-26 the broker was restarted by `scripts/restart-window.sh` run from an agent session.
+The new broker inherited that session's PATH, which began with the shared shim dir `git-bin` and
+a gh shim dir. Each spawn then wrote the no-rewrite shim `git-hooks/git-bin/git` with the first
+`git` on the broker's PATH as its real git, which was the shared shim. On every push the shared
+shim saw `core.hooksPath` set to `git-hooks/no-rewrite`, not its own guard `git-hooks`, and
+refused with `git-shim: push refused (hooks-path)`. No agent spawned after the restart could push.
+
+Three layers now close it:
+
+- `findRealGit` skips any `git` whose first 512 bytes carry the `# Written by agent-chat`
+  header, so no shim, wherever it sits, is baked as another's real git.
+- Every broker start (`agent-chat broker`, which the detached start and each auto-start run)
+  drops each PATH entry holding an agent-chat `git` or `gh` shim, from the inherited PATH, the
+  override and the recorded login PATH. It also drops `AGENT_CHAT_GIT_SHIM_DIR`, a
+  `GIT_EXEC_PATH` at a shim's mirror and the `core.hooksPath` `GIT_CONFIG_*` pair. Each launch
+  puts its own shims and env back.
+- `restart-window.sh` refuses when `AGENT_CHAT_NAME` is set or an agent-chat shim is on PATH.
+  Run it from the owner's terminal, or with the user manager's clean env:
+  `systemd-run --user --wait --pipe <checkout>/scripts/restart-window.sh`.
+
+The shim file is shared by every no-rewrite agent, so the next spawn after a clean restart
+rewrites it for all of them, including agents already running.
+
 ## Owner override and its trust limit
 
 The owner's override today is a `git push` from their own shell. That shell carries no
@@ -2117,7 +2142,8 @@ push guard should sit ahead of every other shim. Only a plan that sets the guard
 carries the variable. The owner's shell and the owner's own Claude sessions never see it.
 
 The shim is a `sh -p` script with the real git's absolute path baked in. That path is the first
-`git` on the broker's PATH whose realpath is not the shim, so the shim never calls itself.
+`git` on the broker's PATH whose realpath is not the shim and whose first 512 bytes do not carry
+the `# Written by agent-chat` header, so the shim never calls itself or another agent-chat shim.
 The path is not resolved further, so a package-manager upgrade does not strand it. The shim
 skips git's global options (`-C`, `-c`, `--git-dir` and the rest) to find the subcommand. The
 word `push` is matched by name. Another word that is not a git builtin is looked up as

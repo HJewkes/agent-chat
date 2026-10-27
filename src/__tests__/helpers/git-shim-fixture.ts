@@ -5,22 +5,15 @@ import path from 'node:path'
 import { afterAll, expect } from 'vitest'
 import { findRealGit, writeGitShim } from '../../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../../leak-guard/hooks-dir.js'
+import { holdsAgentChatShim } from '../../leak-guard/shim-header.js'
 import { expectSpawned } from './spawn-result.js'
 
 export const NO_VERIFY = ['--no', 'verify'].join('-')
 
-const isAgentShim = (dir: string): boolean => {
-  try {
-    return fs.readFileSync(path.join(dir, 'git'), 'utf8').includes('# Written by agent-chat')
-  } catch {
-    return false
-  }
-}
-
-/** PATH without an agent session's own shim, so the shim under test never execs a second shim (CC-442). */
+/** PATH without an agent session's own shims, so the shim under test never execs a second shim (CC-442). */
 export const HOST_PATH = (process.env.PATH ?? '')
   .split(path.delimiter)
-  .filter(dir => !isAgentShim(dir))
+  .filter(dir => !holdsAgentChatShim(dir))
   .join(path.delimiter)
 
 export interface GitShimFixture {
