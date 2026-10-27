@@ -20,6 +20,7 @@ import {
   type AskBroker,
   type CollectRecords,
 } from '../cli/verbs/leak-integrity.js'
+import { leakPosttool, leakPretool, type PretoolIo } from '../cli/verbs/leak-pretool.js'
 import { currentRecords } from '../leak-guard/integrity/env-records.js'
 import { agentDir } from '../paths.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
@@ -161,8 +162,9 @@ async function setup() {
   const leadNonce = nonceOf(lead)
   const env = { HOME: home, CLAUDE_CONFIG_DIR: configDir }
   const ask: AskBroker = async frame => answer(server, frame, 'integrity_result')
-  const hook = (nonce: string = leadNonce) =>
-    integrityDenial(nonce, JSON.stringify({ session_id: SESSION }), env, ask, INTEGRITY_DEADLINE_MS, inline)
+  const check = (nonce: string, raw: string) =>
+    integrityDenial(nonce, raw, env, ask, INTEGRITY_DEADLINE_MS, inline)
+  const hook = (nonce: string = leadNonce) => check(nonce, JSON.stringify({ session_id: SESSION }))
   const relaunch = (id: string = lead) =>
     relaunchRefusal(id, async agentId =>
       answer(
@@ -183,7 +185,7 @@ async function setup() {
       .filter(row => row.meta?.event === 'integrity_quarantine' && row.meta.agent_id === id)
   return {
     ...{ root, home, acHome, core, supervisor, exits, stopAttach },
-    ...{ lead, leadNonce, sibling, spawn, hook, relaunch, bash, notices },
+    ...{ lead, leadNonce, sibling, spawn, check, hook, relaunch, bash, notices },
   }
 }
 
@@ -225,6 +227,36 @@ describe('a launch the broker admitted, then a clean tool call', () => {
     const wired = await setup()
 
     expect(await wired.hook('f'.repeat(64))).toMatch(/integrity check refused: no baseline/)
+  })
+})
+
+/** What a hook verb printed before it exited. */
+const hookOutput = (run: (io: PretoolIo) => Promise<void>, raw: string): Promise<string> =>
+  new Promise(resolve => {
+    let out = ''
+    const io: PretoolIo = {
+      readInput: async () => raw,
+      write: (text, done) => {
+        out += text
+        done()
+      },
+      exit: () => resolve(out),
+    }
+    void run(io)
+  })
+
+describe('the hook verbs the admitted settings name', () => {
+  it('posttool blocks the call that changed .zshrc, then pretool denies the next one', async () => {
+    const wired = await setup()
+    const raw = JSON.stringify({ session_id: SESSION, tool_name: 'Read', tool_input: { file_path: '/x' } })
+    const pretool = () => hookOutput(io => leakPretool(io, wired.leadNonce, wired.check), raw)
+    expect(await pretool()).toBe('')
+
+    wired.bash(`echo 'alias ls=rm' >> ~/.zshrc`)
+
+    const post = await hookOutput(io => leakPosttool(wired.leadNonce, io, wired.check), raw)
+    expect(JSON.parse(post)).toMatchObject({ decision: 'block', reason: expect.stringMatching(ZSHRC) })
+    expect(await pretool()).toMatch(/deny.*\.zshrc changed/)
   })
 })
 
