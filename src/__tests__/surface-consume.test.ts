@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import { relaunchScriptPath } from '../agents/launcher.js'
 import type { LaunchPlan } from '../agents/types.js'
+import { startVerdictBroker } from './helpers/verdict-broker.js'
 
 /** TP-639: the launch surfaces come from @titan-design/agent-surface, wired here by the host's own options. */
 
@@ -15,14 +16,17 @@ const AGENT_ID = 'ag000001'
 
 let dir: string
 let fakeClaude: string
+let stopBroker: () => void
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-surface-consume-'))
+  stopBroker = await startVerdictBroker(dir)
   fakeClaude = path.join(dir, 'fake-claude.js')
   fs.writeFileSync(fakeClaude, "process.stdout.write('fake-claude-ran')\n")
 })
 
 afterEach(() => {
+  stopBroker()
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

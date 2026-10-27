@@ -8,6 +8,7 @@ import { seatPrefixes } from '../agents/pane-sources.js'
 import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 import { resolvePaneColourConfig } from '../config.js'
 import { SURFACE_NAMES } from '../protocol.js'
+import { startVerdictBroker } from './helpers/verdict-broker.js'
 
 /** CC-327: an interactive agent's pane names it and wears its coordinator's colour. */
 
@@ -66,9 +67,11 @@ describe('the session name Claude Code shows', () => {
 describe('run-agent against a home and an autonomy root on disk', () => {
   let dir: string
   let fakeClaude: string
+  let stopBroker: () => void
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-pane-'))
+    stopBroker = await startVerdictBroker(dir)
     fakeClaude = path.join(dir, 'fake-claude.js')
     fs.writeFileSync(fakeClaude, "process.stdout.write('fake-claude-ran')\n")
     const autonomy = path.join(dir, 'aw', 'claude-channels', 'sources', 'autonomy')
@@ -82,6 +85,7 @@ describe('run-agent against a home and an autonomy root on disk', () => {
   })
 
   afterEach(() => {
+    stopBroker()
     delete process.env.AGENT_CHAT_HOME
     fs.rmSync(dir, { recursive: true, force: true })
   })

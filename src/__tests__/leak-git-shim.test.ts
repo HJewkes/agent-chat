@@ -14,6 +14,7 @@ import {
   NO_VERIFY,
 } from './helpers/git-shim-fixture.js'
 import { expectSpawned } from './helpers/spawn-result.js'
+import { startVerdictBroker } from './helpers/verdict-broker.js'
 
 /**
  * TP-596, against real git, temp repos and a local bare remote. Each push test names the
@@ -536,7 +537,7 @@ describe('where the agent git shim is put on PATH', () => {
   const CLI = path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
 
   /** The PATH the launched process sees, from the built `run-agent`. */
-  function launchedPath(planEnv: Record<string, string>): string[] {
+  async function launchedPath(planEnv: Record<string, string>): Promise<string[]> {
     const state = fs.mkdtempSync(path.join(SCRATCH, 'state-'))
     const fake = path.join(state, 'fake-claude.js')
     fs.writeFileSync(fake, 'process.stdout.write(process.env.PATH)\n')
@@ -553,6 +554,7 @@ describe('where the agent git shim is put on PATH', () => {
     }
     fs.mkdirSync(path.join(state, 'agents', agentId), { recursive: true })
     fs.writeFileSync(path.join(state, 'agents', agentId, 'plan.json'), JSON.stringify(plan))
+    const stopBroker = await startVerdictBroker(state)
     const run = expectSpawned(
       spawnSync(process.execPath, [CLI, 'run-agent', agentId], {
         encoding: 'utf8',
@@ -560,20 +562,21 @@ describe('where the agent git shim is put on PATH', () => {
       }),
       `run-agent ${agentId}`,
     )
+    stopBroker()
     return run.stdout.split(':')
   }
 
-  it('puts the shim dir first on an agent launch PATH, ahead of a PATH the plan sets', () => {
-    const entries = launchedPath({ [GIT_SHIM_DIR_ENV]: '/state/git-bin', PATH: '/plan/bin' })
+  it('puts the shim dir first on an agent launch PATH, ahead of a PATH the plan sets', async () => {
+    const entries = await launchedPath({ [GIT_SHIM_DIR_ENV]: '/state/git-bin', PATH: '/plan/bin' })
 
     expect(entries[0]).toBe('/state/git-bin')
     expect(entries).toContain('/plan/bin')
   })
 
   // Kills: the prepend applied outside the agent launch path.
-  it('a human launch env has no shim dir on PATH', () => {
+  it('a human launch env has no shim dir on PATH', async () => {
     const before = process.env.PATH
-    const entries = launchedPath({})
+    const entries = await launchedPath({})
 
     expect(entries.some(entry => entry.endsWith('git-bin'))).toBe(false)
     expect(process.env.PATH).toBe(before)

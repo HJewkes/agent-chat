@@ -1103,8 +1103,8 @@ const isHumanResume = (req: ResumeRequest): boolean =>
   req.humanUnproven === undefined &&
   req.forChild === undefined
 
-/** The ledger's two calls a launch needs; `SocketServer` passes its own ledger. */
-export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict'>
+/** The ledger calls a launch needs; `SocketServer` passes its own ledger. */
+export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict' | 'knows' | 'parentOf'>
 
 /**
  * TP-4256 A3: an agent's ledger parent, from its own `agent_spawned` meta. A teleport successor's
@@ -3588,7 +3588,29 @@ export class Supervisor implements TeleportHost {
   ): void {
     const config = buildMcpConfig(profile, cliEntry(), plan.surface)
     if (this.ledger === undefined) writeLaunchFiles(plan, config, created, OFF_BROKER)
-    else this.ledger.admit(req, admission => writeLaunchFiles(plan, config, created, admission))
+    else
+      this.ledger.admit({ ...req, parent: this.admittedParent(req) }, admission =>
+        writeLaunchFiles(plan, config, created, admission),
+      )
+  }
+
+  /**
+   * The ledger enrols a parent once and latches any later admit naming another, while
+   * `ledgerParent` can change its answer when an adopted parent is admitted; so an agent the
+   * ledger knows keeps the parent it was enrolled under.
+   */
+  private admittedParent(req: AdmitRequest): Parent {
+    return this.ledger?.parentOf(req.agentId) ?? this.ledgerParent(req.parent)
+  }
+
+  /**
+   * A session the human started by hand is adopted at register and never admitted, so it has no
+   * launch for the ledger to check (plan risk 6). Its children root at the human; once the ledger
+   * admits it (an `agent resume` of it), the chain of a child enrolled after that counts.
+   */
+  private ledgerParent(parent: Parent): Parent {
+    if (parent === HUMAN_ROOT || this.ledger?.knows(parent)) return parent
+    return this.spawnEventOf(parent)?.meta.origin === 'adopted' ? HUMAN_ROOT : parent
   }
 
   /** The parent an agent's spawn row recorded, so every relaunch of it admits under the same one. */
@@ -3596,9 +3618,13 @@ export class Supervisor implements TeleportHost {
     return ledgerParentOf(this.spawnEventOf(agentId)?.meta)
   }
 
-  /** TP-4313: a parent is unadmitted only while the ledger has no baseline for it; a quarantined one stays the ledger's call. */
+  /**
+   * TP-4313: a parent is unadmitted only while the ledger has no baseline for it; a quarantined one
+   * stays the ledger's call, and a hand-started session the ledger roots at the human is never one.
+   */
   private unadmitted(parent: Parent): parent is string {
     if (parent === HUMAN_ROOT || this.ledger === undefined) return false
+    if (this.ledgerParent(parent) === HUMAN_ROOT) return false
     const verdict = this.ledger.verdict(parent)
     return !verdict.ok && verdict.reason === 'no baseline'
   }

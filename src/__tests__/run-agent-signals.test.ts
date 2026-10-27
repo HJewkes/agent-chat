@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { LaunchPlan } from '../agents/types.js'
+import { startVerdictBroker } from './helpers/verdict-broker.js'
 
 /**
  * CC-438, against the built CLI: a signal sent to `run-agent` is logged and still reaches
@@ -19,16 +20,19 @@ let stateDir: string
 let fakeClaude: string
 let received: string
 let claudePid: string
+let stopBroker: () => void
 
-beforeEach(() => {
+beforeEach(async () => {
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-run-agent-sig-'))
   fakeClaude = path.join(stateDir, 'fake-claude.js')
   received = path.join(stateDir, 'received.txt')
   claudePid = path.join(stateDir, 'claude.pid')
+  stopBroker = await startVerdictBroker(stateDir)
 })
 
 // A failing run can leave the fake claude orphaned, which is the very bug under test.
 afterEach(() => {
+  stopBroker()
   try {
     process.kill(Number(fs.readFileSync(claudePid, 'utf8')), 'SIGKILL')
   } catch {
