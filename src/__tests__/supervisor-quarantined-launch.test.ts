@@ -108,9 +108,9 @@ const spawnScout = async (over: { requestedBy: string; parentAgentId?: string })
   return result.ok ? (result.agentId as string) : `refused: ${result.reason}`
 }
 
-/** A child of the desk that has exited, with a transcript on disk so it can be resumed. */
-async function finishedScout(): Promise<string> {
-  const agentId = await spawnScout({ requestedBy: 'coordinator', parentAgentId: DESK })
+/** A child of `parent` that has exited, with a transcript on disk so it can be resumed. */
+async function finishedScout(parent = DESK): Promise<string> {
+  const agentId = await spawnScout({ requestedBy: 'coordinator', parentAgentId: parent })
   exitLatest()
   await new Promise(resolve => setImmediate(resolve))
   const agent = core.agents.get(agentId)
@@ -296,6 +296,27 @@ describe('each broker launch path', () => {
 
     expect(result.started).toBe(starts)
     expect(admit.mock.calls[0]?.[0].parent).toBe(starts ? HUMAN_ROOT : 'aglead01')
+  })
+
+  it('a child of a hand-started session still wakes after that session is resumed', async () => {
+    core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'lead',
+      msgId: 'aglead01',
+      meta: { origin: 'adopted', name: 'lead', depth: '0' },
+    })
+    const child = await finishedScout('aglead01')
+    const leadFile = path.join(tmpDir(), 'lead-settings.json')
+    fs.writeFileSync(leadFile, '{}')
+    ledger.admit({ agentId: 'aglead01', parent: HUMAN_ROOT }, () => ({ startup: {}, files: [leadFile] }))
+    const admit = vi.spyOn(ledger, 'admit')
+
+    const woken = await supervisor.resume('scout', { requestedBy: 'human', source: 'watchdog' })
+
+    expect(woken.ok).toBe(true)
+    expect(admit.mock.calls[0]?.[0].parent).toBe(HUMAN_ROOT)
+    expect(ledger.verdict(child)).toEqual({ ok: true })
   })
 
   it('tells the human not to run the relaunch script of a refused teleport successor', async () => {

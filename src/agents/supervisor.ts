@@ -1101,7 +1101,7 @@ const isHumanResume = (req: ResumeRequest): boolean =>
   req.forChild === undefined
 
 /** The ledger calls a launch needs; `SocketServer` passes its own ledger. */
-export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict' | 'knows'>
+export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict' | 'knows' | 'parentOf'>
 
 /**
  * TP-4256 A3: an agent's ledger parent, from its own `agent_spawned` meta. A teleport successor's
@@ -3549,15 +3549,24 @@ export class Supervisor implements TeleportHost {
     const config = buildMcpConfig(profile, cliEntry(), plan.surface)
     if (this.ledger === undefined) writeLaunchFiles(plan, config, created, OFF_BROKER)
     else
-      this.ledger.admit({ ...req, parent: this.ledgerParent(req.parent) }, admission =>
+      this.ledger.admit({ ...req, parent: this.admittedParent(req) }, admission =>
         writeLaunchFiles(plan, config, created, admission),
       )
   }
 
   /**
+   * The ledger enrols a parent once and latches any later admit naming another, while
+   * `ledgerParent` can change its answer when an adopted parent is admitted; so an agent the
+   * ledger knows keeps the parent it was enrolled under.
+   */
+  private admittedParent(req: AdmitRequest): Parent {
+    return this.ledger?.parentOf(req.agentId) ?? this.ledgerParent(req.parent)
+  }
+
+  /**
    * A session the human started by hand is adopted at register and never admitted, so it has no
    * launch for the ledger to check (plan risk 6). Its children root at the human; once the ledger
-   * admits it (an `agent resume` of it), its own chain counts.
+   * admits it (an `agent resume` of it), the chain of a child enrolled after that counts.
    */
   private ledgerParent(parent: Parent): Parent {
     if (parent === HUMAN_ROOT || this.ledger?.knows(parent)) return parent

@@ -118,6 +118,11 @@ export class IntegrityLedger {
     return this.store.principal(agentId) !== undefined
   }
 
+  /** The write-once parent `agentId` was enrolled under; undefined before its first admit. */
+  parentOf(agentId: string): Parent | undefined {
+    return this.store.principal(agentId)?.parent
+  }
+
   agentOf(nonce: string): string | undefined {
     return this.store.launch(nonce)?.agentId
   }
