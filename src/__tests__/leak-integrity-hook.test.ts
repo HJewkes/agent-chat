@@ -17,12 +17,20 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
-import { integrityDenial, UNREACHABLE } from '../cli/verbs/leak-integrity.js'
-import type { Records } from '../leak-guard/integrity/record.js'
+import {
+  integrityDenial,
+  INTEGRITY_DEADLINE_MS,
+  UNREACHABLE,
+  type CollectRecords,
+} from '../cli/verbs/leak-integrity.js'
+import { currentRecords } from '../leak-guard/integrity/env-records.js'
+import { MAX_HASH_BYTES, recordOf, type Records } from '../leak-guard/integrity/record.js'
 
 /** TP-4256 A3: the hook settings, the launcher's registration, and the hook's broker check. Paths are synthetic. */
 
 const NONCE = 'd'.repeat(64)
+/** The worker's collection, run in-process: a worker needs the built file, which source-level tests do not have. */
+const inline: CollectRecords = async (session, env) => currentRecords(session, env)
 const MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
 const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
 const dirs: string[] = []
@@ -109,7 +117,9 @@ describe('writeLaunchFiles with the broker integrity port', () => {
   const recorder = () => {
     const calls: { nonce: string; agentId: string; startup: Records; files: readonly string[] }[] = []
     const port: LaunchIntegrity = {
+      retire: () => undefined,
       register: (nonce, agentId, startup, files) => calls.push({ nonce, agentId, startup, files }),
+      quarantineOf: () => undefined,
     }
     return { calls, port }
   }
@@ -157,19 +167,46 @@ describe('the hook check never allows on failure', () => {
   it('denies when the broker is down', async () => {
     const down = () => Promise.reject(new Error('could not reach or start the agent-chat broker'))
 
-    expect(await integrityDenial(NONCE, raw, env(), down)).toBe(UNREACHABLE)
+    expect(await integrityDenial(NONCE, raw, env(), down, INTEGRITY_DEADLINE_MS, inline)).toBe(UNREACHABLE)
   })
 
   it('denies when the broker does not answer by the deadline', async () => {
     const silent = () => new Promise<never>(() => undefined)
 
-    expect(await integrityDenial(NONCE, raw, env(), silent, 20)).toBe(UNREACHABLE)
+    expect(await integrityDenial(NONCE, raw, env(), silent, 20, inline)).toBe(UNREACHABLE)
   })
 
   it('lets a call through only on an ok answer', async () => {
-    expect(
-      await integrityDenial(NONCE, raw, env(), async () => ({ t: 'integrity_result', ok: true })),
-    ).toBeUndefined()
+    const ok = async () => ({ t: 'integrity_result', ok: true }) as const
+
+    expect(await integrityDenial(NONCE, raw, env(), ok, INTEGRITY_DEADLINE_MS, inline)).toBeUndefined()
+  })
+
+  // Mutation caught: the records collected on the hook's own thread, ahead of the deadline timer.
+  it('denies at the deadline when collecting the records never ends', async () => {
+    const ok = async () => ({ t: 'integrity_result', ok: true }) as const
+    const stuck: CollectRecords = () => new Promise<never>(() => undefined)
+
+    expect(await integrityDenial(NONCE, raw, env(), ok, 20, stuck)).toBe(UNREACHABLE)
+  })
+})
+
+describe('a file recorded for the hook', () => {
+  it('is hashed up to the cap and only stat-recorded past it, so a sparse giant costs no read', () => {
+    const dir = tmpdir()
+    const small = path.join(dir, 'snapshot-small.sh')
+    const giant = path.join(dir, 'snapshot-giant.sh')
+    fs.writeFileSync(small, 'export A=1\n')
+    fs.writeFileSync(giant, '')
+    fs.truncateSync(giant, MAX_HASH_BYTES + 1)
+
+    const started = Date.now()
+    const [hashed, unhashed] = [recordOf(small, 'session'), recordOf(giant, 'session')]
+
+    expect(hashed).toMatchObject({ state: 'present', sha256: expect.stringMatching(/^[0-9a-f]{64}$/) })
+    expect(unhashed).toMatchObject({ state: 'present', lstat: { size: String(MAX_HASH_BYTES + 1) } })
+    expect(unhashed).not.toHaveProperty('sha256')
+    expect(Date.now() - started).toBeLessThan(1000)
   })
 })
 

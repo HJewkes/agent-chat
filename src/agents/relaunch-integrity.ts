@@ -1,5 +1,6 @@
 import net from 'node:net'
 import { BrokerClient } from '../client/broker-client.js'
+import type { Mismatch } from '../leak-guard/integrity/record.js'
 import { socketPath } from '../paths.js'
 import type { ServerMessage } from '../protocol.js'
 
@@ -59,8 +60,10 @@ export async function relaunchRefusal(
     return undefined
   }
   if (result.ok) return undefined
-  return (
-    `agent-chat run-agent: this launch is quarantined: ${result.file} changed (${result.field}). ` +
-    'Its launch files are not run again; `agent-chat agent resume` writes new ones under a fresh baseline.'
-  )
+  return `agent-chat run-agent: ${quarantinedLaunch(result)}.`
 }
+
+/** One wording for every place a quarantined launch is refused, broker-side or in run-agent. */
+export const quarantinedLaunch = (mismatch: Mismatch): string =>
+  `this launch is quarantined: ${mismatch.file} changed (${mismatch.field}). ` +
+  'Its launch files are not run again; `agent-chat agent resume` writes new ones under a fresh baseline'

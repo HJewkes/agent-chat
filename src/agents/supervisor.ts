@@ -82,6 +82,7 @@ import {
 } from '@titan-design/agent-surface'
 import { defaultSpawnSurface, resolveSurface, surfaceBlockerFor } from './surface-resolution.js'
 import { psLauncherProbe, relaunchScriptPath, surfaceFor, type LauncherProbe } from './launcher.js'
+import { quarantinedLaunch } from './relaunch-integrity.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
   countLiveHeadless,
@@ -3454,6 +3455,8 @@ export class Supervisor implements TeleportHost {
     anchor?: string,
     reuseAnchor = false,
   ): Promise<LaunchHandle> {
+    const quarantine = this.launchIntegrity?.quarantineOf(plan.agentId)
+    if (quarantine !== undefined) throw new Error(quarantinedLaunch(quarantine))
     const columnAfter = anchor === undefined ? undefined : this.columnFor(anchor)
     return surfaceFor(surface, {
       ...this.surfaceOptions,
@@ -5135,12 +5138,12 @@ export class Supervisor implements TeleportHost {
   }
 
   private noticeDeadSuccessor(input: RelaunchInput, lead: string, reason: string): void {
-    this.core.append({
-      kind: 'notice',
-      actor: 'agent-chat',
-      target: HUMAN,
-      body: `${lead}. Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
-    })
+    const quarantine = this.launchIntegrity?.quarantineOf(input.agentId)
+    const next =
+      quarantine === undefined
+        ? `Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`
+        : `${quarantinedLaunch(quarantine)}; do not run its relaunch script.`
+    this.core.append({ kind: 'notice', actor: 'agent-chat', target: HUMAN, body: `${lead}. ${next}` })
     this.seatJournal?.({ event: 'teleport-failed', agent: input.name })
     logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })
   }

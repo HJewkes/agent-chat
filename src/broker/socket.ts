@@ -471,9 +471,19 @@ export class SocketServer {
   )
   /** TP-4256 A3: what `writeLaunchFiles` registers each launch through: its shell-file baseline and launch files. */
   readonly launchIntegrity: LaunchIntegrity = {
+    // The sweep first, so a change made before the rewrite still quarantines the launch it belonged to.
+    retire: agentId => {
+      this.settingsWatch.sweep()
+      const previous = this.integrity.latestOf(agentId)
+      if (previous !== undefined) this.settingsWatch.forget(previous)
+    },
     register: (nonce, agentId, startup, files) => {
       this.integrity.registerLaunch(nonce, agentId, startup)
       this.settingsWatch.register(nonce, files)
+    },
+    quarantineOf: agentId => {
+      this.settingsWatch.sweep()
+      return this.integrity.quarantineOf(agentId)
     },
   }
 
@@ -1919,8 +1929,7 @@ export class SocketServer {
    * (a plan.json that drops `--settings`) quarantines the launch before the relaunch is answered.
    */
   private handleIntegrityRelaunch(conn: Conn, agentId: unknown): void {
-    this.settingsWatch.sweep()
-    const quarantine = typeof agentId === 'string' ? this.integrity.quarantineOf(agentId) : undefined
+    const quarantine = typeof agentId === 'string' ? this.launchIntegrity.quarantineOf(agentId) : undefined
     if (quarantine === undefined) return reply(conn, { t: 'integrity_relaunch_result', ok: true })
     reply(conn, { t: 'integrity_relaunch_result', ok: false, ...quarantine })
   }

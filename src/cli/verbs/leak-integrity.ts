@@ -1,6 +1,7 @@
+import { Worker } from 'node:worker_threads'
 import { BrokerClient } from '../../client/broker-client.js'
 import { decideWithin } from '../../leak-guard/failopen.js'
-import { currentRecords } from '../../leak-guard/integrity/env-records.js'
+import type { Records } from '../../leak-guard/integrity/record.js'
 import type { ClientMessage, ServerMessage } from '../../protocol.js'
 
 /**
@@ -17,6 +18,23 @@ export const INTEGRITY_DEADLINE_MS = 12_000
 type CheckFrame = Extract<ClientMessage, { t: 'integrity_check' }>
 type CheckResult = Extract<ServerMessage, { t: 'integrity_result' }>
 export type AskBroker = (frame: CheckFrame) => Promise<CheckResult>
+export type CollectRecords = (session: string, env: NodeJS.ProcessEnv) => Promise<Records>
+
+/**
+ * Off the main thread: the agent can fill shell-snapshots with names and sizes of its choosing, and a
+ * synchronous walk would hold the deadline below off until Claude Code's own timeout ended the hook.
+ * Unref'd, since the hook exits from its write callback and a stuck native read cannot be terminated.
+ */
+export const collectInWorker: CollectRecords = (session, env) =>
+  new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('../../leak-guard/integrity/records-worker.js', import.meta.url), {
+      workerData: { session, env: { ...env } },
+    })
+    worker.unref()
+    worker.once('message', resolve)
+    worker.once('error', reject)
+    worker.once('exit', code => reject(new Error(`records worker exited ${code}`)))
+  })
 
 const askBroker: AskBroker = async frame => {
   const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
@@ -59,10 +77,11 @@ export async function integrityDenial(
   env: NodeJS.ProcessEnv = process.env,
   ask: AskBroker = askBroker,
   deadlineMs: number = INTEGRITY_DEADLINE_MS,
+  collect: CollectRecords = collectInWorker,
 ): Promise<string | undefined> {
   const session = sessionOf(raw)
   const decide = async (): Promise<string> =>
-    denialOf(await ask({ t: 'integrity_check', nonce, session, records: currentRecords(session, env) }))
+    denialOf(await ask({ t: 'integrity_check', nonce, session, records: await collect(session, env) }))
   const deadline = { ms: deadlineMs, denial: () => UNREACHABLE }
   const out = await decideWithin(
     decide,

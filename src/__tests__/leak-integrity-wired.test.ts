@@ -11,7 +11,13 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
-import { integrityDenial, type AskBroker } from '../cli/verbs/leak-integrity.js'
+import {
+  integrityDenial,
+  INTEGRITY_DEADLINE_MS,
+  type AskBroker,
+  type CollectRecords,
+} from '../cli/verbs/leak-integrity.js'
+import { currentRecords } from '../leak-guard/integrity/env-records.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
 /**
@@ -95,7 +101,8 @@ function setup() {
   launch(SIBLING)
   const env = { HOME: home, CLAUDE_CONFIG_DIR: configDir }
   const ask: AskBroker = async frame => answer(server, frame, 'integrity_result')
-  const hook = (n: string = nonce) => integrityDenial(n, JSON.stringify({ session_id: SESSION }), env, ask)
+  const hook = (n: string = nonce) =>
+    integrityDenial(n, JSON.stringify({ session_id: SESSION }), env, ask, INTEGRITY_DEADLINE_MS, inline)
   const relaunch = () =>
     relaunchRefusal(AGENT, async agentId =>
       answer(server, { t: 'integrity_relaunch', agentId }, 'integrity_relaunch_result'),
@@ -116,6 +123,9 @@ function setup() {
     core.events.since(0, 500).filter(row => row.kind === 'notice' && row.meta?.agent_id === AGENT)
   return { home, acHome, nonce, launch, hook, relaunch, bash, notices }
 }
+
+/** The worker's collection, run in-process: a worker needs the built file, which these source-level rows do not. */
+const inline: CollectRecords = async (session, env) => currentRecords(session, env)
 
 const nonceIn = (settings: string): string => {
   const match = /--integrity '([0-9a-f]{64})'/.exec(fs.readFileSync(settings, 'utf8'))
@@ -273,5 +283,31 @@ describe('a resume after a quarantine', () => {
     expect(await wired.hook(resumed)).toBeUndefined()
     expect(await wired.relaunch()).toBeUndefined()
     expect(await wired.hook()).toMatch(/quarantined/)
+  })
+})
+
+describe('a resume with no quarantine', () => {
+  // Mutation caught: the old nonce's launch-file watch kept after the rewrite, which latches it.
+  it('runs under a new nonce and files no notice for the files it rewrote', async () => {
+    const wired = setup()
+    expect(await wired.hook()).toBeUndefined()
+
+    const resumed = wired.launch(AGENT)
+
+    expect(await wired.hook(resumed)).toBeUndefined()
+    expect(await wired.relaunch()).toBeUndefined()
+    expect(wired.notices()).toEqual([])
+  })
+
+  // Mutation caught: the old watch dropped without a sweep, which loses a change made before the resume.
+  it('still quarantines the old launch for a change made before the resume', async () => {
+    const wired = setup()
+    expect(await wired.hook()).toBeUndefined()
+    wired.bash(`echo x >> "$A/mcp.json"`)
+
+    wired.launch(AGENT)
+
+    expect(await wired.hook()).toMatch(/mcp\.json changed/)
+    expect(wired.notices()).toHaveLength(1)
   })
 })

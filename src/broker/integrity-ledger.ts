@@ -43,6 +43,10 @@ export class IntegrityLedger {
     this.latest.set(agentId, nonce)
   }
 
+  latestOf(agentId: string): string | undefined {
+    return this.latest.get(agentId)
+  }
+
   agentOf(nonce: string): string | undefined {
     return this.store.get(nonce)?.agentId
   }

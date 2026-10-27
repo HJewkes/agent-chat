@@ -5,7 +5,7 @@ import { resolveGitShellAliases, resolvePermissionHookTimeout } from '../config.
 import { GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
 import { defaultScanInputs, hooksDirOf, probeScanner, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { startupRecords } from '../leak-guard/integrity/env-records.js'
-import type { Records } from '../leak-guard/integrity/record.js'
+import type { Mismatch, Records } from '../leak-guard/integrity/record.js'
 import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName, SurfaceName } from '../protocol.js'
 import { inboxSpoolDir } from '../server/inbox-spool.js'
@@ -396,7 +396,11 @@ function realpathOrUndefined(dir: string): string | undefined {
  * launch-file watch. Only the broker holds one; a launch written anywhere else has no `--integrity`.
  */
 export interface LaunchIntegrity {
+  /** Called before the agent's files are rewritten, so the rewrite is not read as a change to its previous launch. */
+  retire(agentId: string): void
   register(nonce: string, agentId: string, startup: Records, files: readonly string[]): void
+  /** Why the agent's newest launch is quarantined, checked after a fresh sweep; undefined to launch it. */
+  quarantineOf(agentId: string): Mismatch | undefined
 }
 
 /** The env the launched shell starts with, as far as the broker can know it: its own, under the plan's. */
@@ -429,6 +433,7 @@ export function writeLaunchFiles(
     [planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2)],
     [relaunchScriptPath(plan.agentId), relaunchScript(agentChatLauncher(), plan.agentId), SCRIPT_MODE],
   ]
+  integrity?.retire(plan.agentId)
   for (const [file, body, mode] of files) writePrivate(file, body, mode)
   if (integrity !== undefined && nonce !== undefined)
     integrity.register(

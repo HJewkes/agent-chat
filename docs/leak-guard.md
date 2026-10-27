@@ -1535,13 +1535,17 @@ stats and hashes files, and decides by nonce, ledger and real path.
   writes the launch files, then registers the nonce with the broker's ledger: the startup record
   (the shell startup files in `HOME` and `ZDOTDIR`, plus absolute `BASH_ENV` and `ENV`, read from
   the broker's env under the plan's) and every file it wrote, for the watch. A resume or a mode
-  switch calls it again, so it gets a new nonce and a fresh baseline. The old nonce stays
-  quarantined.
+  switch calls it again, so it gets a new nonce and a fresh baseline. Before the rewrite the
+  broker sweeps the watch, so a change already made still quarantines the old launch, and then
+  stops watching the old launch's files, so the rewrite itself is not read as a change. A
+  quarantined old nonce stays quarantined.
 - **Hooks.** The guard's PreToolUse hook runs `leak-guard pretool --integrity <nonce>`, and a
   PostToolUse twin with the same matcher runs `leak-guard posttool --integrity <nonce>`. Each reads
   `session_id` from stdin and builds the current records from its own `HOME`, `ZDOTDIR`,
   `CLAUDE_CONFIG_DIR`, `CLAUDE_ENV_FILE`, `BASH_ENV` and `ENV`
-  (`src/leak-guard/integrity/env-records.ts`). It sends `integrity_check`. Pretool denies when
+  (`src/leak-guard/integrity/env-records.ts`), in a worker, so a directory the agent filled with
+  large or many files runs into the 12 s deadline below rather than past Claude Code's 15 s. A
+  file over 8 MiB is recorded by size, inode and ctime but not hashed. It sends `integrity_check`. Pretool denies when
   either the guard or the check denies. Posttool prints `{"decision":"block","reason":...}`, so
   the model learns that the call it just made changed a sourced file.
 - **No fail-open.** An unreachable broker, a reply past 12 s, a crash and a nonce the broker did not
@@ -1551,7 +1555,10 @@ stats and hashes files, and decides by nonce, ledger and real path.
   from the files on disk. The broker sweeps the watch first, so a `plan.json` rewritten to drop
   `--settings` is caught even when no tool call has reported it. A quarantined launch exits 77.
   Only `agent-chat agent resume`, which writes new files under a new nonce, gets past a
-  quarantine. If `run-agent` cannot reach the broker, it starts the launch with a line on
+  quarantine. The `relaunch` script is agent-writable, so the broker does not rely on it calling
+  `run-agent`: every launch the broker starts (spawn, resume, mode switch, teleport successor and
+  its retries) is refused when the agent's newest launch is quarantined, and a lost-teleport notice
+  names the quarantine instead of telling the human to run the script. If `run-agent` cannot reach the broker, it starts the launch with a line on
   stderr: the next broker holds no baseline for the agent, so refusing would protect nothing.
 - **Without the flag.** A settings file with no `--integrity` skips the check, so owner sessions
   and settings written before A3 work as before.
