@@ -197,6 +197,21 @@ describe('resume after a broker restart', () => {
     expect(ledger.verdict(scout)).toEqual({ ok: false, reason: 'no baseline' })
   })
 
+  it('resumes the child of a hand-started session the ledger never admitted, rooted at the human', async () => {
+    const before = supervisorWith()
+    const scout = await spawned(before, 'scout', DESK)
+    await exitResumable(scout)
+    const ledger = new IntegrityLedger()
+    const admit = vi.spyOn(ledger, 'admit')
+
+    const outcome = await supervisorWith(ledger).resume('scout', { requestedBy: 'human' })
+
+    expect(outcome).toMatchObject({ ok: true, agentId: scout })
+    expect(admit.mock.calls.map(([req]) => req)).toEqual([
+      { agentId: scout, parent: HUMAN_ROOT, humanProof: true },
+    ])
+  })
+
   it('starts no parent for a child its own record refuses', async () => {
     const before = supervisorWith()
     const lead = await spawned(before, 'lead', DESK)

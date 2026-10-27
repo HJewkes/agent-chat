@@ -3569,9 +3569,13 @@ export class Supervisor implements TeleportHost {
     return ledgerParentOf(this.spawnEventOf(agentId)?.meta)
   }
 
-  /** TP-4313: a parent is unadmitted only while the ledger has no baseline for it; a quarantined one stays the ledger's call. */
+  /**
+   * TP-4313: a parent is unadmitted only while the ledger has no baseline for it; a quarantined one
+   * stays the ledger's call, and a hand-started session the ledger roots at the human is never one.
+   */
   private unadmitted(parent: Parent): parent is string {
     if (parent === HUMAN_ROOT || this.ledger === undefined) return false
+    if (this.ledgerParent(parent) === HUMAN_ROOT) return false
     const verdict = this.ledger.verdict(parent)
     return !verdict.ok && verdict.reason === 'no baseline'
   }
