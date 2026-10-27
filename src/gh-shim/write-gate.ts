@@ -81,7 +81,7 @@ function logLine(file: string, line: string): void {
  * file, so no agent can switch it: going to `enforce` is its own reviewed one-line change.
  */
 export type GateMode = 'log' | 'enforce'
-export const GATE_MODE: GateMode = 'log'
+export const GATE_MODE: GateMode = 'enforce'
 
 export const WOULD_REFUSE = 'gh-shim: would-refuse (write)'
 
