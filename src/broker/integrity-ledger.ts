@@ -113,6 +113,11 @@ export class IntegrityLedger {
     return admission
   }
 
+  /** Whether any admit enrolled `agentId`; a principal it knows is always answered by `verdict`. */
+  knows(agentId: string): boolean {
+    return this.store.principal(agentId) !== undefined
+  }
+
   agentOf(nonce: string): string | undefined {
     return this.store.launch(nonce)?.agentId
   }

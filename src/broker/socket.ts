@@ -117,6 +117,20 @@ function insideDir(candidate: string, root: string): boolean {
   return !outside
 }
 
+/**
+ * Files written for another host's broker: the dir lies outside this broker's agents root, and the
+ * broker's own entry for the agent is no symlink, so a link out of the root cannot claim it.
+ */
+function offBrokerDir(agentId: string, dir: string): boolean {
+  if (agentId !== path.basename(agentId) || agentId === '.' || agentId === '..') return false
+  try {
+    if (fs.lstatSync(path.join(agentsDir(), agentId)).isSymbolicLink()) return false
+  } catch {
+    // No local entry: nothing here to redirect.
+  }
+  return !insideDir(dir, agentsDir())
+}
+
 /** Shepherd names a fix-round successor with `-s<N>`; a caller that sends no marker is still read by it. */
 const FIX_ROUND = /-s\d+$/
 
@@ -1920,15 +1934,16 @@ export class SocketServer {
 
   /**
    * TP-4256 A3, Class 4: the sweep runs first, so a launch file changed since the last tick (a
-   * plan.json that drops `--settings`) latches before the verdict is read. A dir outside this
-   * broker's agents root holds files written for another host's broker, which holds no baseline here.
+   * plan.json that drops `--settings`) latches before the verdict is read. The ledger is consulted
+   * before the caller's path: an agent it knows is always answered by `verdict`.
    */
   private handleIntegrityRelaunch(conn: Conn, msg: { agentId?: unknown; agentDir?: unknown }): void {
     const t = 'integrity_relaunch_result'
     if (typeof msg.agentId !== 'string' || typeof msg.agentDir !== 'string')
       return reply(conn, { t, ok: false, reason: 'malformed integrity_relaunch' })
-    if (!insideDir(msg.agentDir, agentsDir())) return reply(conn, { t, ok: true, offBroker: true })
     this.settingsWatch.sweep()
+    if (!this.integrity.knows(msg.agentId) && offBrokerDir(msg.agentId, msg.agentDir))
+      return reply(conn, { t, ok: true, offBroker: true })
     const verdict = this.integrity.verdict(msg.agentId)
     if (verdict.ok) return reply(conn, { t, ok: true })
     if (verdict.reason === 'no baseline') return reply(conn, { t, ok: false, reason: verdict.reason })

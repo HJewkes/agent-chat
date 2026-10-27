@@ -118,4 +118,26 @@ describe('run-agent relaunch verdict', () => {
     expect(relaunch('a1', `${home}/agents-x/a1`)).toMatchObject({ ok: true, offBroker: true })
     expect(relaunch('a1', `${home}/remote/../agents/a1`)).toMatchObject({ ok: false, reason: 'no baseline' })
   })
+
+  it('refuses a quarantined agent whatever dir it claims, so a path outside the root cannot launder it', () => {
+    const { home, admit, server, relaunch } = setup()
+    admit('a1', HUMAN_ROOT)
+    server.integrity.latch('a1', { file: '/home/example/.zshrc', field: 'sha256' })
+
+    expect(relaunch('a1', path.join(home, 'elsewhere', 'a1'))).toMatchObject({
+      ok: false,
+      reason: 'quarantined',
+    })
+  })
+
+  it('refuses an unknown agent whose entry under the root is a symlink out of it', () => {
+    const { home, relaunch } = setup()
+    const outside = path.join(home, 'elsewhere', 'a1')
+    fs.mkdirSync(outside, { recursive: true })
+    fs.mkdirSync(path.join(home, 'agents'), { recursive: true })
+    fs.symlinkSync(outside, path.join(home, 'agents', 'a1'))
+
+    expect(relaunch('a1', outside)).toMatchObject({ ok: false, reason: 'no baseline' })
+    expect(relaunch('../elsewhere', path.join(home, 'elsewhere'))).toMatchObject({ ok: false })
+  })
 })
