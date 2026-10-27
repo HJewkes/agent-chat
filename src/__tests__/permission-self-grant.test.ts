@@ -4,7 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { EventLog } from '../broker/event-log.js'
+import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
@@ -75,7 +75,8 @@ const GRANT: ClientMessage = {
   grant: 'repo-skills',
 }
 
-const rows = (core: BrokerCore) => core.events.since(0, 1000)
+const rows = (core: BrokerCore) =>
+  core.events.since(0, 1000).filter(row => row.meta?.event !== INTEGRITY_WIRED_SINCE)
 
 describe('a self-grant record from the hook', () => {
   it('appends an approval_request of source self-grant closed by an allow resolution', () => {

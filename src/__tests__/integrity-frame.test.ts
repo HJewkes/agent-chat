@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
-import { EventLog } from '../broker/event-log.js'
+import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
 import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
@@ -42,7 +42,10 @@ function setup() {
     server.handleMessage(conn, { t: 'integrity_check', nonce, session: 's1', records } as ClientMessage)
     return frames.at(-1)
   }
-  const notices = () => core.events.since(0, 500).filter(row => row.kind === 'notice')
+  const notices = () =>
+    core.events
+      .since(0, 500)
+      .filter(row => row.kind === 'notice' && row.meta?.event !== INTEGRITY_WIRED_SINCE)
   const admit = (): string => {
     const settings = path.join(dir, 'settings.json')
     fs.writeFileSync(settings, '{}')
