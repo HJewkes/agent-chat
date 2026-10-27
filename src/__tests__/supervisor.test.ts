@@ -11,6 +11,7 @@ import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import {
   coordinatorExemption,
+  type GrantBounds,
   MAX_COORDINATOR_DEPTH,
   Supervisor,
   type SpawnOutcome,
@@ -2400,25 +2401,43 @@ describe('spawn privilege', () => {
   })
 
   /**
-   * CC-451: a coordinator may grant the configured web-read tools it lacks, so
-   * it can dispatch web research without a human. Everything else above holds.
+   * CC-451, CC-1654: a coordinator may grant the research tools a profile
+   * declares and it lacks, so it can dispatch web research without a human.
+   * Everything else above holds. Profiles are written before the supervisor
+   * exists, because a declaration written after broker start exempts nothing.
    */
   describe('coordinator web exemption', () => {
     const COORDINATOR_TOOLS = ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Monitor']
     const COORDINATOR_DENIED = ['Bash(agent-chat endorse:*)', 'AskUserQuestion']
 
-    const writeProfile = (name: string, allowedTools: string[], disallowedTools: string[]): void => {
+    const writeProfile = (
+      name: string,
+      allowedTools: string[],
+      disallowedTools: string[],
+      researchTools?: string[],
+      extra: Record<string, unknown> = {},
+    ): void => {
       fs.writeFileSync(
         path.join(profilesDirFor(), `${name}.json`),
-        JSON.stringify({
-          model: 'sonnet',
-          allowedTools,
-          disallowedTools,
-          isolation: 'none',
-          surface: 'headless',
-        }),
+        profileJson(allowedTools, disallowedTools, researchTools, extra),
       )
     }
+
+    const profileJson = (
+      allowedTools: string[],
+      disallowedTools: string[],
+      researchTools?: string[],
+      extra: Record<string, unknown> = {},
+    ): string =>
+      JSON.stringify({
+        model: 'sonnet',
+        allowedTools,
+        disallowedTools,
+        ...(researchTools ? { researchTools } : {}),
+        isolation: 'none',
+        surface: 'headless',
+        ...extra,
+      })
 
     const writeConfig = (config: unknown): void => {
       fs.writeFileSync(
@@ -2432,6 +2451,7 @@ describe('spawn privilege', () => {
         'web-reader',
         ['WebSearch', 'WebFetch', 'Read', 'Write', 'Grep', 'Glob'],
         ['Edit', 'Bash', 'AskUserQuestion'],
+        ['WebSearch', 'WebFetch'],
       )
 
     const spawnAs = async (
@@ -2442,9 +2462,9 @@ describe('spawn privilege', () => {
     ) => sup.spawn(spawnReq({ profile, requestedBy: 'coord-agent', parentAgentId, cwd }))
 
     it('lets a coordinator without web tools spawn a web researcher', async () => {
+      webReader()
       const sup = withStubbedSurface()
       const shared = workspace()
-      webReader()
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2458,9 +2478,9 @@ describe('spawn privilege', () => {
     })
 
     it('records the exempted tools on the spawn row', async () => {
+      webReader()
       const sup = withStubbedSurface()
       const shared = workspace()
-      webReader()
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2475,9 +2495,9 @@ describe('spawn privilege', () => {
     })
 
     it('leaves the exemption off the row when the parent already held the tools', async () => {
+      webReader()
       const sup = withStubbedSurface()
       const shared = workspace()
-      webReader()
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2491,14 +2511,15 @@ describe('spawn privilege', () => {
       expect(row?.meta.granted_by_exemption).toBeUndefined()
     })
 
-    it('refuses a web child that does not deny Bash', async () => {
-      const sup = withStubbedSurface()
-      const shared = workspace()
+    it('refuses a web child that allows bare Bash', async () => {
       writeProfile(
         'web-shell',
         ['WebFetch', 'Read', 'Bash'],
         ['Bash(agent-chat endorse:*)', 'AskUserQuestion'],
+        ['WebFetch'],
       )
+      const sup = withStubbedSurface()
+      const shared = workspace()
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2514,9 +2535,9 @@ describe('spawn privilege', () => {
     })
 
     it('still refuses a non-exempt tool the coordinator lacks', async () => {
+      writeProfile('web-editor', ['WebFetch', 'Read', 'Edit'], ['Bash', 'AskUserQuestion'], ['WebFetch'])
       const sup = withStubbedSurface()
       const shared = workspace()
-      writeProfile('web-editor', ['WebFetch', 'Read', 'Edit'], ['Bash', 'AskUserQuestion'])
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2531,9 +2552,9 @@ describe('spawn privilege', () => {
     })
 
     it('does not relax a web tool the coordinator was denied', async () => {
+      webReader()
       const sup = withStubbedSurface()
       const shared = workspace()
-      webReader()
       const parentAgentId = spawnedParentWithDeny('coord-agent', shared, COORDINATOR_TOOLS, [
         ...COORDINATOR_DENIED,
         'WebFetch',
@@ -2547,9 +2568,9 @@ describe('spawn privilege', () => {
     })
 
     it('restores the old refusal when the configured set is empty', async () => {
+      webReader()
       const sup = withStubbedSurface()
       const shared = workspace()
-      webReader()
       writeConfig({ coordinatorGrantableTools: [] })
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
@@ -2565,9 +2586,9 @@ describe('spawn privilege', () => {
     })
 
     it('grants nothing when the configured set is malformed', async () => {
+      webReader()
       const sup = withStubbedSurface()
       const shared = workspace()
-      webReader()
       writeConfig({ coordinatorGrantableTools: 'WebSearch' })
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
@@ -2584,9 +2605,9 @@ describe('spawn privilege', () => {
 
     /** Monitor runs shell commands, so a Bash deny alone does not keep a fetched page from running code. */
     it('refuses a web child that allows Monitor even when it denies Bash', async () => {
+      writeProfile('web-monitor', ['WebFetch', 'Read', 'Monitor'], ['Bash', 'AskUserQuestion'], ['WebFetch'])
       const sup = withStubbedSurface()
       const shared = workspace()
-      writeProfile('web-monitor', ['WebFetch', 'Read', 'Monitor'], ['Bash', 'AskUserQuestion'])
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2601,9 +2622,9 @@ describe('spawn privilege', () => {
     })
 
     it('refuses a web child that allows a scoped Bash form', async () => {
+      writeProfile('web-git', ['WebFetch', 'Read', 'Bash(git:*)'], ['Bash', 'AskUserQuestion'], ['WebFetch'])
       const sup = withStubbedSurface()
       const shared = workspace()
-      writeProfile('web-git', ['WebFetch', 'Read', 'Bash(git:*)'], ['Bash', 'AskUserQuestion'])
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2618,9 +2639,14 @@ describe('spawn privilege', () => {
     })
 
     it('refuses a web child that allows an MCP tool', async () => {
+      writeProfile(
+        'web-mcp',
+        ['WebFetch', 'Read', 'mcp__other__run'],
+        ['Bash', 'AskUserQuestion'],
+        ['WebFetch'],
+      )
       const sup = withStubbedSurface()
       const shared = workspace()
-      writeProfile('web-mcp', ['WebFetch', 'Read', 'mcp__other__run'], ['Bash', 'AskUserQuestion'])
       const parentAgentId = spawnedParentWithDeny(
         'coord-agent',
         shared,
@@ -2633,25 +2659,280 @@ describe('spawn privilege', () => {
       expect(result.ok).toBe(false)
       expect(result.reason).toMatch(/not granted \(WebFetch\)/)
     })
+
+    /**
+     * CC-1654: the shape the researcher needs. It runs one helper, so it cannot deny all of Bash;
+     * it loads no settings file, writes only under its findings dir, and the broker's config lists
+     * the helper.
+     */
+    const FETCH_PDF = 'Bash(fetch-pdf *)'
+    const RESEARCH_TOOLS = ['WebSearch', 'WebFetch', FETCH_PDF, 'Read(//tmp/papers/**)']
+    const SCOPED_WRITE = 'Write(//tmp/findings/**)'
+    const researcherArgs = (
+      extraAllowed: string[] = [],
+      extraResearch: string[] = [],
+      write = SCOPED_WRITE,
+    ) =>
+      [
+        [...RESEARCH_TOOLS, 'Read', write, 'Grep', 'Glob', ...extraAllowed],
+        ['Edit', 'AskUserQuestion'],
+        [...RESEARCH_TOOLS, ...extraResearch],
+        { settingSources: [] },
+      ] as const
+    const writeResearcher = (
+      name: string,
+      extraAllowed: string[] = [],
+      extraResearch: string[] = [],
+      write = SCOPED_WRITE,
+    ): void => {
+      const [allowed, denied, research, extra] = researcherArgs(extraAllowed, extraResearch, write)
+      writeProfile(name, [...allowed], [...denied], [...research], extra)
+    }
+    const listCommands = (commands: string[] = [FETCH_PDF]): void =>
+      writeConfig({ coordinatorGrantableCommands: commands })
+    /** A coordinator with no shell, so the helper command is a real escalation; a bare `Bash` would hold it. */
+    const SEAT_TOOLS = [...COORDINATOR_TOOLS.filter(tool => tool !== 'Bash'), 'mcp__active-work__*']
+    const SEAT_DENIED = [
+      'Bash(agent-chat endorse:*)',
+      'Bash(agent-chat dismiss:*)',
+      'Bash(agent-chat send:*)',
+      'Bash(agent-chat answer:*)',
+      'Bash(agent-chat approve:*)',
+      'AskUserQuestion',
+    ]
+
+    it.each([
+      ['without web tools', SEAT_TOOLS, ['WebSearch', 'WebFetch', FETCH_PDF]],
+      ['holding web tools', [...SEAT_TOOLS, 'WebSearch', 'WebFetch'], [FETCH_PDF]],
+      ['holding Bash, which covers the helper', [...SEAT_TOOLS, 'Bash'], ['WebSearch', 'WebFetch']],
+    ])('lets a coordinator %s spawn the researcher', async (_, tools, exempted) => {
+      writeResearcher('researcher')
+      listCommands()
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, tools, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.reason).toBeUndefined()
+      expect(result.ok).toBe(true)
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.target === 'scout')
+      expect(row?.meta.granted_by_exemption).toBe(exempted.join(','))
+    })
+
+    it('admits a read-only research tool the profile newly declares, with no list to edit', async () => {
+      const preprints = 'WebFetch(domain:preprints.example)'
+      writeResearcher('researcher', [preprints], [preprints])
+      listCommands()
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.ok).toBe(true)
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.target === 'scout')
+      expect(row?.meta.granted_by_exemption).toContain(preprints)
+    })
+
+    /** A command runs code, so an unchanged profile file still cannot grant one the broker never listed. */
+    it('refuses a declared helper command the broker config does not list', async () => {
+      writeResearcher('researcher', ['Bash(fetch-preprint *)'], ['Bash(fetch-preprint *)'])
+      listCommands()
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(Bash\(fetch-preprint \*\)\)/)
+    })
+
+    it('refuses the researcher when the broker config lists no helper command', async () => {
+      writeResearcher('researcher')
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(Bash\(fetch-pdf \*\)\)/)
+    })
+
+    it.each(['Bash(*)', 'Bash(:*)', 'Bash( *)', 'Bash(*sh *)'])(
+      'refuses a declared %s even when the broker config lists it',
+      async wildcard => {
+        writeResearcher('researcher', [wildcard], [wildcard])
+        listCommands([FETCH_PDF, wildcard])
+        const sup = withStubbedSurface()
+        const shared = workspace()
+        const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+        const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+        expect(result.ok).toBe(false)
+        expect(result.reason).toMatch(/WebFetch/)
+      },
+    )
+
+    /** An unscoped write could rewrite the helper before the child runs it. */
+    it('refuses a researcher with a helper command and unscoped Write', async () => {
+      writeResearcher('researcher', [], [], 'Write')
+      listCommands()
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/WebFetch/)
+    })
+
+    it.each(['Bash', 'Bash(git push:*)', 'Monitor', 'mcp__other__run'])(
+      'refuses a researcher that also allows %s, though the coordinator holds it',
+      async extra => {
+        writeResearcher('researcher', [extra])
+        listCommands()
+        const sup = withStubbedSurface()
+        const shared = workspace()
+        const parentAgentId = spawnedParentWithDeny(
+          'coord-agent',
+          shared,
+          [...SEAT_TOOLS, extra],
+          SEAT_DENIED,
+        )
+
+        const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+        expect(result.ok).toBe(false)
+        expect(result.reason).toMatch(/more capable than itself/)
+        expect(result.reason).toMatch(/WebFetch/)
+      },
+    )
+
+    it.each(['Bash', 'Edit', 'mcp__other__run'])(
+      'refuses a researcher that declares %s a research tool',
+      async extra => {
+        writeResearcher('researcher', [extra], [extra])
+        listCommands()
+        const sup = withStubbedSurface()
+        const shared = workspace()
+        const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+        const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+        expect(result.ok).toBe(false)
+        expect(result.reason).toMatch(/more capable than itself/)
+      },
+    )
+
+    /** Without a Bash deny, a project or local settings file could allow Bash the profile never named. */
+    it('refuses a researcher that does not deny Bash and still loads settings files', async () => {
+      const [allowed, denied, research] = researcherArgs()
+      writeProfile('researcher', [...allowed], [...denied], [...research])
+      listCommands()
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/more capable than itself/)
+    })
+
+    it('decides the exemption on the bytes it loaded, not on a later read of the file', async () => {
+      writeResearcher('researcher')
+      listCommands()
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+      const file = path.join(profilesDirFor(), 'researcher.json')
+      const widened = 'WebFetch(domain:elsewhere.example)'
+      const [allowed, denied, research, extra] = researcherArgs([widened], [widened])
+      const swapped = profileJson([...allowed], [...denied], [...research], extra)
+      const realRead = fs.readFileSync
+      let reads = 0
+      vi.spyOn(fs, 'readFileSync').mockImplementation(((
+        target: fs.PathOrFileDescriptor,
+        options?: unknown,
+      ) =>
+        target === file && reads++ === 0
+          ? swapped
+          : realRead(target, options as BufferEncoding)) as typeof fs.readFileSync)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(reads).toBeGreaterThan(0)
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(.*WebFetch\(domain:elsewhere\.example\)/)
+    })
+
+    it('exempts nothing for a researcher file written after the broker started', async () => {
+      listCommands()
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      writeResearcher('researcher')
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, SEAT_TOOLS, SEAT_DENIED)
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'researcher')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/more capable than itself/)
+    })
   })
 })
 
-/** CC-451: the exemption rule itself, apart from the spawn path that reaches it. */
+/** CC-451, CC-1654: the exemption rule itself, apart from the spawn path that reaches it. */
 describe('coordinatorExemption', () => {
   const researcher = {
-    allowedTools: ['WebSearch', 'WebFetch', 'Read', 'Write', 'Grep', 'Glob'],
-    disallowedTools: ['Edit', 'Bash', 'AskUserQuestion'],
-  }
-
-  it('gives a coordinator the grantable tools for a confined child', () => {
-    expect([...coordinatorExemption('coordinator', researcher, ['WebSearch', 'WebFetch'])]).toEqual([
+    allowedTools: [
       'WebSearch',
       'WebFetch',
-    ])
+      'Bash(fetch-pdf *)',
+      'Read',
+      'Write(//tmp/findings/**)',
+      'Grep',
+      'Glob',
+    ],
+    researchTools: ['WebSearch', 'WebFetch', 'Bash(fetch-pdf *)'],
+    settingSources: [],
+  }
+  const listed: GrantBounds = { grantable: undefined, commands: ['Bash(fetch-pdf *)'] }
+
+  it('gives a coordinator the declared research tools the broker allows', () => {
+    expect([...coordinatorExemption('coordinator', researcher, listed)]).toEqual(researcher.researchTools)
+  })
+
+  it('leaves out a declared command the broker does not list', () => {
+    const bounds = { grantable: undefined, commands: [] }
+    expect([...coordinatorExemption('coordinator', researcher, bounds)]).toEqual(['WebSearch', 'WebFetch'])
+  })
+
+  it('narrows the declaration to a configured list', () => {
+    const bounds = { ...listed, grantable: ['WebFetch', 'Edit'] }
+    expect([...coordinatorExemption('coordinator', researcher, bounds)]).toEqual(['WebFetch'])
   })
 
   it('gives a worker nothing, even for the same confined child', () => {
-    expect(coordinatorExemption('worker', researcher, ['WebSearch', 'WebFetch']).size).toBe(0)
+    expect(coordinatorExemption('worker', researcher, listed).size).toBe(0)
+  })
+
+  it('gives nothing to a child that neither denies Bash nor drops settings files', () => {
+    const { settingSources: _loadsSettings, ...withSettings } = researcher
+    expect(coordinatorExemption('coordinator', withSettings, listed).size).toBe(0)
+  })
+
+  it('gives nothing to a child that runs a command beside an unscoped Write', () => {
+    const writer = { ...researcher, allowedTools: [...researcher.allowedTools, 'Write'] }
+    expect(coordinatorExemption('coordinator', writer, listed).size).toBe(0)
+  })
+
+  it('gives nothing to a child that declares no research tools', () => {
+    expect(coordinatorExemption('coordinator', { allowedTools: ['WebFetch', 'Read'] }, listed).size).toBe(0)
   })
 })
 

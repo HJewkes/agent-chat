@@ -7,6 +7,7 @@ import {
   DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
   resolveAccountRotation,
   resolveAgentSlots,
+  resolveCoordinatorGrantableCommands,
   resolveCoordinatorGrantableTools,
   resolveContextHintPolicy,
   resolveFullSuiteSlots,
@@ -384,8 +385,8 @@ describe('resolveReportBatchMs', () => {
 })
 
 describe('resolveCoordinatorGrantableTools', () => {
-  it('defaults to the two web-read tools', () => {
-    expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch', 'WebFetch'])
+  it('leaves the profile declaration unnarrowed by default', () => {
+    expect(resolveCoordinatorGrantableTools()).toBeUndefined()
   })
 
   it('keeps a narrowed list', () => {
@@ -393,14 +394,30 @@ describe('resolveCoordinatorGrantableTools', () => {
     expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch'])
   })
 
-  it('drops a wildcard and any tool outside the web-read set', () => {
-    writeConfigJson({ coordinatorGrantableTools: ['*', 'Bash', 'Monitor', 'WebFetch'] })
+  it('drops an entry that is not a tool name', () => {
+    writeConfigJson({ coordinatorGrantableTools: [7, null, 'WebFetch'] })
     expect(resolveCoordinatorGrantableTools()).toEqual(['WebFetch'])
   })
 
   it('grants nothing for a value that is not a list', () => {
     writeConfigJson({ coordinatorGrantableTools: 'WebSearch' })
     expect(resolveCoordinatorGrantableTools()).toEqual([])
+  })
+})
+
+describe('resolveCoordinatorGrantableCommands', () => {
+  it('lists no command by default, so a profile alone never grants one', () => {
+    expect(resolveCoordinatorGrantableCommands()).toEqual([])
+  })
+
+  it('keeps the listed commands', () => {
+    writeConfigJson({ coordinatorGrantableCommands: ['Bash(fetch-pdf *)'] })
+    expect(resolveCoordinatorGrantableCommands()).toEqual(['Bash(fetch-pdf *)'])
+  })
+
+  it('lists nothing for a value that is not a list', () => {
+    writeConfigJson({ coordinatorGrantableCommands: 'Bash(fetch-pdf *)' })
+    expect(resolveCoordinatorGrantableCommands()).toEqual([])
   })
 })
 

@@ -272,6 +272,7 @@ const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
   model: true,
   allowedTools: true,
   disallowedTools: true,
+  researchTools: true,
   isolation: true,
   surface: true,
   surfaceLifetime: true,
@@ -423,6 +424,8 @@ export function parseProfile(
     return { error: `${name}: "allowedTools" must be an array of strings` }
   if (body.disallowedTools !== undefined && !isStringArray(body.disallowedTools))
     return { error: `${name}: "disallowedTools" must be an array of strings` }
+  if (body.researchTools !== undefined && !isStringArray(body.researchTools))
+    return { error: `${name}: "researchTools" must be an array of strings` }
   if (body[DENY_ALIAS] !== undefined && !isStringArray(body[DENY_ALIAS]))
     return { error: `${name}: "${DENY_ALIAS}" must be an array of strings` }
   if (!ISOLATION_NAMES.includes(body.isolation as never))
@@ -464,6 +467,7 @@ export function parseProfile(
     model: body.model,
     allowedTools: body.allowedTools,
     ...(denies.denied === undefined ? {} : { disallowedTools: denies.denied }),
+    ...(isStringArray(body.researchTools) ? { researchTools: body.researchTools } : {}),
     isolation: body.isolation as AgentProfile['isolation'],
     surface: body.surface as AgentProfile['surface'],
     ...(body.surfaceLifetime === undefined
@@ -533,7 +537,8 @@ export function loadProfileSource(
     }
     const profile = parseProfile(name, parsed, file)
     return {
-      profile: 'error' in profile ? profile : withWorkerConfigDenies(profile, path.dirname(dir)),
+      profile:
+        'error' in profile ? profile : withWorkerConfigDenies(withResearchDenies(profile), path.dirname(dir)),
       source,
     }
   }
@@ -573,6 +578,18 @@ function withWorkerConfigDenies(profile: AgentProfile, agentHome: string): Agent
     return { ...profile, warnings: [...(profile.warnings ?? []), warning] }
   }
   const added = rules.filter(rule => !denied.includes(rule))
+  return added.length === 0 ? profile : { ...profile, disallowedTools: [...denied, ...added] }
+}
+
+/**
+ * CC-1654: a profile that declares `researchTools` cannot deny all of Bash and still run its scoped
+ * helper, so it denies the agent-chat verbs the builtins deny instead. Only narrows, and lets a
+ * coordinator that was denied those verbs pass the CC-40 deny check when it spawns one.
+ */
+function withResearchDenies(profile: AgentProfile): AgentProfile {
+  if (profile.researchTools === undefined) return profile
+  const denied = profile.disallowedTools ?? []
+  const added = [...HUMAN_ONLY_CLI_DENY, ...WORKER_CLI_DENY].filter(rule => !denied.includes(rule))
   return added.length === 0 ? profile : { ...profile, disallowedTools: [...denied, ...added] }
 }
 
