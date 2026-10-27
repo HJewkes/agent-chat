@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { itermIdentity, oscTitle, parseHex } from '@titan-design/agent-surface'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { writeLaunchFiles } from '../agents/launch-files.js'
+import { OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import { relaunchScriptPath } from '../agents/launcher.js'
 import type { LaunchPlan } from '../agents/types.js'
 
@@ -138,7 +138,7 @@ describe('a relaunch script stored before the swap', () => {
   it('is what a new launch writes too, so old and new scripts are interchangeable', () => {
     process.env.AGENT_CHAT_HOME = dir
     try {
-      writeLaunchFiles(plan(), {})
+      writeLaunchFiles(plan(), {}, undefined, OFF_BROKER)
       const written = fs.readFileSync(relaunchScriptPath(AGENT_ID), 'utf8')
 
       expect(written).toContain(`'run-agent' '${AGENT_ID}'`)

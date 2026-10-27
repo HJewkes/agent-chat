@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import { clearSuperseded, markSuperseded, writeLaunchFiles } from '../agents/launch-files.js'
+import { clearSuperseded, markSuperseded, OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import { surfaceFor } from '../agents/launcher.js'
 import { SENSITIVE_DIRS } from '../agents/spawn-cwd.js'
 import { findTranscript } from '../agents/transcript.js'
@@ -310,7 +310,7 @@ export const defaultLauncherDeps = (homeDir: string): LauncherDeps => ({
   homeDir,
   cliEntry: cliEntry(),
   env: process.env,
-  writeFiles: writeLaunchFiles,
+  writeFiles: (plan, mcpConfig) => void writeLaunchFiles(plan, mcpConfig, undefined, OFF_BROKER),
   launch: async (surface, plan) => void (await surfaceFor(surface).launch(plan)),
   markSuperseded,
   clearSuperseded,

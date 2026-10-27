@@ -39,7 +39,7 @@ function fixture() {
   const ledger = new IntegrityLedger((agentId, mismatch) => notices.push([agentId, mismatch]))
   const fileOf = (agentId: string) => path.join(dir, `${agentId}-settings.json`)
   const admit = (agentId: string, parent: Parent, options: AdmitOptions = {}) =>
-    ledger.admit({ agentId, parent, humanProof: options.humanProof === true }, nonce => {
+    ledger.admit({ agentId, parent, humanProof: options.humanProof === true }, ({ nonce }) => {
       fs.writeFileSync(fileOf(agentId), options.content?.(nonce) ?? SETTINGS)
       return { startup: records, files: [fileOf(agentId)] }
     }).nonce

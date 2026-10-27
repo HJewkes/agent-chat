@@ -2,7 +2,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { checkConfigDir } from '../agents/config-dir.js'
-import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
+import {
+  buildMcpConfig,
+  hookSettingsPath,
+  mcpConfigPath,
+  OFF_BROKER,
+  writeLaunchFiles,
+} from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
 import { surfaceFor } from '../agents/launcher.js'
@@ -235,7 +241,7 @@ export const defaultSpawnHost = (): SpawnHost => ({
   cliEntry: cliEntry(),
   homeDir: os.homedir(),
   loadProfile: name => loadProfile(name),
-  writeFiles: writeLaunchFiles,
+  writeFiles: (plan, mcpConfig) => void writeLaunchFiles(plan, mcpConfig, undefined, OFF_BROKER),
   launch: async (surface, plan, anchor) =>
     void (await surfaceFor(surface, anchor === undefined ? {} : { anchor }).launch(plan)),
   discard: agentId => fs.rmSync(agentDir(agentId), { recursive: true, force: true }),

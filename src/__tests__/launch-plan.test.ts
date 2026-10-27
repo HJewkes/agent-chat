@@ -19,6 +19,7 @@ import {
   buildHookSettings,
   buildMcpConfig,
   hookSettingsPath,
+  OFF_BROKER,
   planPath,
   readLaunchPlan,
   selfGrantPinOf,
@@ -173,10 +174,10 @@ describe('the argv every surface shares', () => {
   it('writes the guard hooks when the plan points git at them', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
     const hooks = path.join(process.env.AGENT_CHAT_HOME, 'git-hooks')
-    writeLaunchFiles(buildLaunchPlan(input()), {})
+    writeLaunchFiles(buildLaunchPlan(input()), {}, undefined, OFF_BROKER)
     expect(fs.existsSync(hooks)).toBe(false)
 
-    writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {})
+    writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {}, undefined, OFF_BROKER)
 
     const prePush = path.join(hooks, 'no-rewrite', 'pre-push')
     expect(fs.statSync(prePush).mode & 0o777).toBe(0o755)
@@ -691,7 +692,7 @@ describe('the launch files', () => {
     process.env.AGENT_CHAT_HOME = home
     const plan = buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') }))
 
-    writeLaunchFiles(plan, buildMcpConfig(profile(), '/repo/dist/cli.js'))
+    writeLaunchFiles(plan, buildMcpConfig(profile(), '/repo/dist/cli.js'), undefined, OFF_BROKER)
 
     expect(readLaunchPlan('ag000001')).toEqual(plan)
   })
@@ -699,7 +700,7 @@ describe('the launch files', () => {
   it('keeps the brief owner-only, because that is the only place it lives', () => {
     const home = tmpdir()
     process.env.AGENT_CHAT_HOME = home
-    writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/repo/dist/cli.js'))
+    writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/repo/dist/cli.js'), undefined, OFF_BROKER)
 
     expect(fs.statSync(planPath('ag000001')).mode & 0o777).toBe(0o600)
     expect(fs.statSync(path.dirname(planPath('ag000001'))).mode & 0o777).toBe(0o700)
@@ -708,7 +709,7 @@ describe('the launch files', () => {
   it('rewrites an existing plan without loosening its mode', () => {
     const home = tmpdir()
     process.env.AGENT_CHAT_HOME = home
-    const files = () => writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/e'))
+    const files = () => writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/e'), undefined, OFF_BROKER)
     files()
     fs.chmodSync(planPath('ag000001'), 0o644)
     files()
@@ -720,7 +721,7 @@ describe('the launch files', () => {
   describe('the relaunch script', () => {
     const written = (): string => {
       process.env.AGENT_CHAT_HOME = tmpdir()
-      writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/e'))
+      writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/e'), undefined, OFF_BROKER)
       return relaunchScriptPath('ag000001')
     }
 
@@ -960,10 +961,10 @@ describe('the PermissionRequest hook (CC-144)', () => {
   it('writes the settings file owner-only beside the plan, with the permission hook only for a print run', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
     const read = (): string => fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')
-    writeLaunchFiles(buildLaunchPlan(input({ surface: 'iterm-pane', hookSettingsPath: '/x' })), {})
+    writeLaunchFiles(buildLaunchPlan(input({ surface: 'iterm-pane', hookSettingsPath: '/x' })), {}, undefined, OFF_BROKER)
     expect(read()).not.toContain('PermissionRequest')
 
-    writeLaunchFiles(buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') })), {})
+    writeLaunchFiles(buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') })), {}, undefined, OFF_BROKER)
 
     expect(fs.statSync(hookSettingsPath('ag000001')).mode & 0o777).toBe(0o600)
     expect(read()).toContain('"timeout": 1800')
@@ -1092,6 +1093,7 @@ describe('arming the repo skill self-grant (CC-694)', () => {
       buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
       {},
       created,
+      OFF_BROKER,
     )
 
     const settings = fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')
@@ -1108,6 +1110,8 @@ describe('arming the repo skill self-grant (CC-694)', () => {
     writeLaunchFiles(
       buildLaunchPlan(input({ profile: optedIn, cwd, hookSettingsPath: hookSettingsPath('ag000001') })),
       {},
+      undefined,
+      OFF_BROKER,
     )
 
     expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).not.toContain('--self-grant-skills')
@@ -1134,6 +1138,8 @@ describe('the leak guard PreToolUse hook (CC-270)', () => {
       writeLaunchFiles(
         buildLaunchPlan(input({ surface, hookSettingsPath: hookSettingsPath('ag000001') })),
         {},
+        undefined,
+        OFF_BROKER,
       )
       const { args } = readLaunchPlan('ag000001')
 
