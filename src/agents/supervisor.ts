@@ -947,6 +947,9 @@ export interface ResumeRequest {
   launchReason?: string
   /** CC-1472: resume on this machine, through its host launcher; never falls back to resuming here. */
   host?: string
+  /** TP-4256 A3: as on {@link SpawnRequest}; an unregistered resume carrying either is not the human's. */
+  callerAgent?: string
+  humanUnproven?: string
 }
 
 interface Live {
@@ -1090,7 +1093,9 @@ const isHumanResume = (req: ResumeRequest): boolean =>
   req.requesterAgentId === undefined &&
   req.source === undefined &&
   req.cause === undefined &&
-  req.launchedBy === undefined
+  req.launchedBy === undefined &&
+  req.callerAgent === undefined &&
+  req.humanUnproven === undefined
 
 /** The ledger's two calls a launch needs; `SocketServer` passes its own ledger. */
 export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'verdict'>

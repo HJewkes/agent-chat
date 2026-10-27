@@ -9,6 +9,7 @@ import { Registry } from '../broker/registry.js'
 import { CALLER_AGENT_MAX, SocketServer, sanitizeCallerAgent } from '../broker/socket.js'
 import type { PeerPorts } from '../broker/peer-locality.js'
 import { ProfileBaseline, type ProfileDriftMode } from '../agents/profile-baseline.js'
+import { Supervisor } from '../agents/supervisor.js'
 import { PortSpawnFrame } from '../cli/verbs/port-agent.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
@@ -277,6 +278,41 @@ describe('an unregistered spawn with no positive proof of the human (CC-1246)', 
     expect(driftWarnings(second)).toEqual([expect.stringContaining('review it before trusting its denies')])
     expect(spawnedRow('impl-a')?.meta).toMatchObject({ human_unproven: 'no peer pid' })
     expect(spawnedRow('impl-a')?.meta).not.toHaveProperty('caller_agent')
+  })
+})
+
+describe('an unregistered resume gets the same human proof as a spawn (TP-4256 A3)', () => {
+  const resumeAsked = async (
+    ports: PeerPorts,
+    frame: Partial<Extract<ClientMessage, { t: 'resume' }>> = {},
+  ) => {
+    const resume = vi
+      .spyOn(Supervisor.prototype, 'resume')
+      .mockResolvedValue({ ok: false, reason: 'stubbed' })
+    await start('flag', ports)({ t: 'resume', name: 'scout', ...frame })
+    return resume.mock.calls[0]?.[1]
+  }
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it.each([
+    [
+      'a claimed agent caller',
+      tree(PLAIN_TERMINAL, 700),
+      { callerAgent: 'coord-a' },
+      { callerAgent: 'coord-a' },
+    ],
+    ['a Claude Code ancestor', tree(UNDER_CLAUDE, 700), {}, { callerAgent: 'claude-code:650' }],
+    ['a proof gap', tree(PLAIN_TERMINAL, undefined), {}, { humanUnproven: 'no peer pid' }],
+  ])('marks a resume from %s as not the human', async (_case, ports, frame, marked) => {
+    expect(await resumeAsked(ports, frame)).toMatchObject({ requestedBy: 'human', ...marked })
+  })
+
+  it('leaves a plain-terminal resume unmarked', async () => {
+    const req = await resumeAsked(tree(PLAIN_TERMINAL, 700))
+
+    expect(req).not.toHaveProperty('callerAgent')
+    expect(req).not.toHaveProperty('humanUnproven')
   })
 })
 

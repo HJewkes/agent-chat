@@ -34,6 +34,15 @@ async function spawnWith(...flags: string[]): Promise<ClientMessage | undefined>
   return sent.find(f => f.t === 'spawn')
 }
 
+async function resumeFrame(): Promise<ClientMessage | undefined> {
+  await buildProgram()
+    .exitOverride()
+    .configureOutput({ writeErr: () => undefined, writeOut: () => undefined })
+    .parseAsync(['agent', 'resume', 'planner'], { from: 'user' })
+    .catch(() => undefined)
+  return sent.find(f => f.t === 'resume')
+}
+
 describe('callerAgentField', () => {
   it('names the agent from AGENT_CHAT_NAME, ahead of its id', () => {
     expect(callerAgentField({ AGENT_CHAT_NAME: 'tc-x', AGENT_CHAT_AGENT_ID: 'id-1' })).toEqual({
@@ -80,5 +89,11 @@ describe('agent spawn from an agent shell', () => {
 
     expect(frame).toBeDefined()
     expect(frame).not.toHaveProperty('callerAgent')
+  })
+
+  it('sends the caller agent on a resume frame too (TP-4256 A3)', async () => {
+    vi.stubEnv('AGENT_CHAT_NAME', 'tc-coord')
+
+    expect(await resumeFrame()).toMatchObject({ t: 'resume', callerAgent: 'tc-coord' })
   })
 })

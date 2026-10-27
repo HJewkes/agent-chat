@@ -211,6 +211,20 @@ const ROWS: Row[] = [
     quarantine: 'self',
   },
   {
+    path: 'unregistered resume with a Claude Code ancestor',
+    arrange: finishedScout,
+    act: resumed({ requestedBy: 'human', callerAgent: 'claude-code:700' }),
+    admitted: agentId => ({ agentId, parent: DESK, humanProof: false }),
+    quarantine: 'self',
+  },
+  {
+    path: 'unregistered resume with a human proof gap',
+    arrange: finishedScout,
+    act: resumed({ requestedBy: 'human', humanUnproven: 'no controlling tty' }),
+    admitted: agentId => ({ agentId, parent: DESK, humanProof: false }),
+    quarantine: 'self',
+  },
+  {
     path: 'mode switch',
     arrange: () => spawnScout({ requestedBy: 'coordinator', parentAgentId: DESK }),
     act: async agentId => ({

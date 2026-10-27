@@ -1217,7 +1217,8 @@ export class SocketServer {
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
-      ...(requester === undefined ? launchFieldsOf(msg) : {}),
+      // TP-4256 A3: the same proof a spawn needs, since a human resume clears a quarantine.
+      ...(requester === undefined ? { ...launchFieldsOf(msg), ...callerAgentOf(conn, msg, this.peer) } : {}),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
