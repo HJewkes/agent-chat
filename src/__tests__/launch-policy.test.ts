@@ -7,6 +7,7 @@ import {
   buildHookSettings,
   buildMcpConfig,
   hookSettingsPath,
+  OFF_BROKER,
   readCarriedUserSettings,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
@@ -263,7 +264,7 @@ describe('the settings file of a launch without user settings', () => {
 
   const writtenSettings = (plan: LaunchPlan): Record<string, unknown> => {
     process.env.AGENT_CHAT_HOME = tmpdir()
-    writeLaunchFiles(plan, {})
+    writeLaunchFiles(plan, {}, undefined, OFF_BROKER)
     return JSON.parse(fs.readFileSync(hookSettingsPath(plan.agentId), 'utf8')) as Record<string, unknown>
   }
 

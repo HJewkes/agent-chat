@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { endHostSession } from '../agents/end-session.js'
-import { writeLaunchFiles } from '../agents/launch-files.js'
+import { OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import { agentDir, cliEntry } from '../paths.js'
@@ -102,7 +102,7 @@ export const defaultCallerLaunch = (): CallerLaunchDeps => {
   const local = { cliEntry: cliEntry(), cwd: process.cwd(), env: process.env }
   return {
     local,
-    writeFiles: writeLaunchFiles,
+    writeFiles: (plan, mcpConfig) => void writeLaunchFiles(plan, mcpConfig, undefined, OFF_BROKER),
     arm: (spec, hostPid) => armHelper(local, spec, hostPid),
     endParent: pid => void endHostSession('this session', pid),
   }
