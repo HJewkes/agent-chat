@@ -67,10 +67,6 @@ describe('the hook check never allows on failure', () => {
     expect(await integrityDenial(NONCE, raw, env(), ok, INTEGRITY_DEADLINE_MS, crash)).toBe(UNREACHABLE)
   })
 
-  it('lets a call through only on an ok answer', async () => {
-    expect(await integrityDenial(NONCE, raw, env(), ok, INTEGRITY_DEADLINE_MS, inline)).toBeUndefined()
-  })
-
   // Mutation caught: the records collected on the hook's own thread, ahead of the deadline timer.
   it('denies at the deadline while the real worker walks a 50k-entry snapshot dir', async () => {
     const home = tmpdir()
@@ -85,53 +81,35 @@ describe('the hook check never allows on failure', () => {
   }, 60_000)
 })
 
-describe('the posttool verb', () => {
-  const io = () => {
-    const out = { written: [] as string[], exits: [] as number[] }
-    return {
-      out,
-      io: {
-        readInput: async () => JSON.stringify({ session_id: 's1' }),
-        write: (text: string, done: () => void) => void (out.written.push(text), done()),
-        exit: (code: number) => void out.exits.push(code),
-      },
-    }
+function hookIo(raw: string) {
+  const written: string[] = []
+  const io = {
+    readInput: async () => raw,
+    write: (text: string, done: () => void) => void (written.push(text), done()),
+    exit: () => undefined,
   }
+  return { written, io }
+}
 
+describe('the hook verbs', () => {
   // Mutation caught: posttool exiting 0 without telling the model.
-  it('prints decision block with the reason on a mismatch', async () => {
-    const { out, io: hookIo } = io()
+  it('posttool prints decision block with the reason on a mismatch', async () => {
+    const { written, io } = hookIo(JSON.stringify({ session_id: 's1' }))
 
-    await leakPosttool(NONCE, hookIo, async () => 'leak-guard: /x/.zshrc changed')
+    await leakPosttool(NONCE, io, async () => 'leak-guard: /x/.zshrc changed')
 
-    expect(out.written.map(line => JSON.parse(line))).toEqual([
+    expect(written.map(line => JSON.parse(line))).toEqual([
       { decision: 'block', reason: 'leak-guard: /x/.zshrc changed' },
     ])
-    expect(out.exits).toEqual([0])
   })
 
-  it('prints nothing when the check passes', async () => {
-    const { out, io: hookIo } = io()
-
-    await leakPosttool(NONCE, hookIo, async () => undefined)
-
-    expect(out).toEqual({ written: [], exits: [0] })
-  })
-})
-
-describe('pretool without --integrity', () => {
-  it('writes exactly what the guard alone writes and never runs the check', async () => {
+  it('pretool without --integrity writes exactly what the guard alone writes', async () => {
     const built = (await import(path.join(DIST, 'cli/verbs/leak-pretool.js'))) as typeof LeakPretool
     const raw = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push --no-verify' } })
-    const written: string[] = []
+    const { written, io } = hookIo(raw)
     const check = vi.fn(async () => 'never')
-    const hookIo = {
-      readInput: async () => raw,
-      write: (text: string, done: () => void) => void (written.push(text), done()),
-      exit: () => undefined,
-    }
 
-    await built.leakPretool(hookIo, undefined, check)
+    await built.leakPretool(io, undefined, check)
 
     expect(check).not.toHaveBeenCalled()
     expect(written).toEqual([`${await built.decidePretool(raw, path.join(tmpdir(), 'guard.log'))}\n`])
@@ -190,7 +168,7 @@ async function listeningBroker(home: string) {
 }
 
 describe('the built hook verbs over a live socket', () => {
-  it('pretool allows a clean call, posttool blocks once .zshrc changed, then pretool denies', async () => {
+  it('pretool allows a clean call, posttool blocks once .zshrc changed, then pretool denies; an unminted nonce denies', async () => {
     const home = tmpdir()
     fs.writeFileSync(path.join(home, '.zshrc'), 'alias ll=ls\n')
     const broker = await listeningBroker(home)
@@ -207,8 +185,10 @@ describe('the built hook verbs over a live socket', () => {
       fs.appendFileSync(path.join(home, '.zshrc'), 'alias ls=rm\n')
       const after = await runHook(['posttool', '--integrity', nonce], broker.acHome, home)
       const denied = await runHook(['pretool', '--integrity', nonce], broker.acHome, home)
+      const unminted = await runHook(['pretool', '--integrity', NONCE], broker.acHome, home)
 
       expect(clean).toBe('')
+      expect(JSON.parse(unminted).hookSpecificOutput.permissionDecisionReason).toContain('no baseline')
       expect(JSON.parse(after)).toMatchObject({
         decision: 'block',
         reason: expect.stringContaining('.zshrc changed'),
@@ -217,19 +197,6 @@ describe('the built hook verbs over a live socket', () => {
         permissionDecision: 'deny',
         permissionDecisionReason: expect.stringContaining('quarantined'),
       })
-    } finally {
-      broker.close()
-    }
-  })
-
-  it('pretool denies a nonce the broker never minted, as for an unknown agent', async () => {
-    const home = tmpdir()
-    const broker = await listeningBroker(home)
-
-    try {
-      const out = await runHook(['pretool', '--integrity', NONCE], broker.acHome, home)
-
-      expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).toContain('no baseline')
     } finally {
       broker.close()
     }

@@ -82,12 +82,7 @@ export async function integrityDenial(
   const session = sessionOf(raw)
   const decide = async (): Promise<string> =>
     denialOf(await ask({ t: 'integrity_check', nonce, session, records: await collect(session, env) }))
-  const deadline = { ms: deadlineMs, denial: () => UNREACHABLE }
-  const out = await decideWithin(
-    decide,
-    deadline,
-    () => undefined,
-    () => UNREACHABLE,
-  )
+  const deny = (): string => UNREACHABLE
+  const out = await decideWithin(decide, { ms: deadlineMs, denial: deny }, () => undefined, deny)
   return out === '' ? undefined : out
 }
