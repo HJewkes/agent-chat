@@ -186,7 +186,11 @@ import { inheritedProfile } from './teleport-config.js'
 import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
-import { resolveCoordinatorGrantableTools, resolveProfileDriftMode } from '../config.js'
+import {
+  resolveCoordinatorGrantableCommands,
+  resolveCoordinatorGrantableTools,
+  resolveProfileDriftMode,
+} from '../config.js'
 import { knownMachineAliases } from './machine-registry.js'
 import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
@@ -1137,6 +1141,17 @@ function burndownReportTo(): string[] {
 }
 
 /**
+ * CC-1654: the allow-side mirror of `stillDenied`, one level and one way only: a parent granted a
+ * tool's base name holds every scoped form of it, so `Write` covers `Write(//dir/**)`. A scoped
+ * parent grant never covers the bare tool or another scope.
+ */
+function held(granted: Set<string>, tool: string): boolean {
+  if (granted.has(tool)) return true
+  const base = tool.split('(')[0] ?? tool
+  return base !== tool && granted.has(base)
+}
+
+/**
  * CC-69: unlike the allow side, a blanket deny genuinely does subsume a scoped
  * one — denying all of `Bash` is strictly stronger than denying `Bash(x:*)`, so
  * a child that denies plain `Bash` still satisfies a parent that was only
@@ -1149,7 +1164,7 @@ function stillDenied(childDenied: Set<string>, tool: string): boolean {
   return base !== tool && childDenied.has(base)
 }
 
-/** CC-451: what a web-exempt child may hold besides the exempt tools. None of them runs code. */
+/** CC-451: the tool kinds, bare or scoped, a web-exempt child may hold besides the exempt tools. */
 const NON_EXEC_TOOLS: ReadonlySet<string> = new Set([
   'Read',
   'Write',
@@ -1159,48 +1174,78 @@ const NON_EXEC_TOOLS: ReadonlySet<string> = new Set([
   AGENT_CHAT_TOOLS,
 ])
 
-/** CC-1654: the tool kinds a research grant may be, bare or scoped. Bash counts only scoped to a named command. */
+/** CC-1654: the tools that change files, which beside any runnable command can rewrite what it runs. */
+const WRITE_TOOLS: readonly string[] = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']
+
+/** CC-1654: the read-only tool kinds a profile may declare as research by itself, bare or scoped. */
 const RESEARCH_TOOL_KINDS: ReadonlySet<string> = new Set(['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'])
 
-function isResearchGrant(tool: string): boolean {
+const kindOf = (tool: string): string => {
   const open = tool.indexOf('(')
-  if (open === -1) return RESEARCH_TOOL_KINDS.has(tool)
-  const kind = tool.slice(0, open)
-  return tool.endsWith(')') && (kind === 'Bash' || RESEARCH_TOOL_KINDS.has(kind))
+  return open === -1 ? tool : tool.slice(0, open)
 }
 
+/** A scoped Bash grant whose command is a named program: never empty, never a wildcard. */
+function namesCommand(tool: string): boolean {
+  if (kindOf(tool) !== 'Bash' || !tool.endsWith(')')) return false
+  const command = tool.slice('Bash('.length, -1)
+  const ends = [command.indexOf(' '), command.indexOf(':')].filter(at => at >= 0)
+  const head = command.slice(0, ends.length === 0 ? command.length : Math.min(...ends))
+  return head !== '' && !head.includes('*')
+}
+
+const isResearchGrant = (tool: string): boolean => RESEARCH_TOOL_KINDS.has(kindOf(tool)) || namesCommand(tool)
+
 /**
- * CC-1654: no Bash beyond what the profile names can run without a prompt. A Bash deny ensures it
- * (CC-451); a profile running a scoped helper cannot deny Bash, so it must load no settings file,
- * where a `Bash(*)` allow would otherwise apply (`launch-policy.ts`).
+ * CC-1654: whether the child's whole posture keeps it from running code a fetched page chose. A
+ * settings file can allow `Bash(*)` (`launch-policy.ts`), so it denies Bash or loads none; and once
+ * it may run any command, an unscoped write tool could rewrite that command first.
  */
-const shellConfined = (profile: Pick<AgentProfile, 'disallowedTools' | 'settingSources'>): boolean =>
-  (profile.disallowedTools ?? []).includes('Bash') || profile.settingSources?.length === 0
+function cannotRunCode(
+  profile: Pick<AgentProfile, 'allowedTools' | 'disallowedTools' | 'settingSources'>,
+): boolean {
+  const denied = profile.disallowedTools ?? []
+  if (!denied.includes('Bash') && profile.settingSources?.length !== 0) return false
+  if (!profile.allowedTools.some(tool => kindOf(tool) === 'Bash')) return true
+  return !profile.allowedTools.some(tool => WRITE_TOOLS.includes(tool) && !denied.includes(tool))
+}
+
+/** What the broker, not the profile, lets a coordinator grant; config.json is the owner's. */
+export interface GrantBounds {
+  /** `coordinatorGrantableTools`: narrows every grant when set. */
+  grantable: readonly string[] | undefined
+  /** `coordinatorGrantableCommands`: the scoped Bash grants allowed at all. */
+  commands: readonly string[]
+}
+
+const brokerAllows = (tool: string, bounds: GrantBounds): boolean =>
+  (kindOf(tool) !== 'Bash' || bounds.commands.includes(tool)) &&
+  (bounds.grantable === undefined || bounds.grantable.includes(tool))
 
 /**
  * CC-451, CC-1654: the tools a requester of `role` may grant `profile` without
- * holding them: the `researchTools` the profile declares, narrowed by
- * `grantable` when the config names a list. Only a coordinator, and only to a
- * child that allows nothing outside its declaration and `NON_EXEC_TOOLS`, so a
- * fetched page cannot talk it into running code. Fails closed: a declaration
- * naming any other kind, or an allowed Monitor, bare Bash, undeclared Bash form
- * or MCP tool, voids the exemption. `allowedTools` does not confine on its
- * own, since a settings file can allow more, so the child must also deny Bash
- * or load no settings file. The caller drops the declaration of a profile file
- * changed since broker start, since the profile vouches for itself here.
+ * holding them: the `researchTools` the profile declares that `bounds` allow.
+ * A profile can declare read-only kinds by itself; a command runs code, so it
+ * needs the broker's own list too. Only a coordinator, and only to a child that
+ * allows nothing outside its declaration and `NON_EXEC_TOOLS` kinds and
+ * `cannotRunCode`. Fails closed: a declaration naming any other kind, or an
+ * allowed Monitor, bare Bash, undeclared Bash form or MCP tool, voids the
+ * exemption. The caller drops the declaration of a profile file changed since
+ * broker start.
  */
 export function coordinatorExemption(
   role: AgentRole,
   profile: Pick<AgentProfile, 'allowedTools' | 'disallowedTools' | 'researchTools' | 'settingSources'>,
-  grantable: readonly string[] | undefined,
+  bounds: GrantBounds,
 ): Set<string> {
-  if (role !== 'coordinator') return new Set()
-  if (!shellConfined(profile)) return new Set()
+  if (role !== 'coordinator' || !cannotRunCode(profile)) return new Set()
   const declared = profile.researchTools ?? []
   if (!declared.every(isResearchGrant)) return new Set()
-  const confined = profile.allowedTools.every(tool => declared.includes(tool) || NON_EXEC_TOOLS.has(tool))
+  const confined = profile.allowedTools.every(
+    tool => declared.includes(tool) || NON_EXEC_TOOLS.has(kindOf(tool)),
+  )
   if (!confined) return new Set()
-  return new Set(grantable === undefined ? declared : declared.filter(tool => grantable.includes(tool)))
+  return new Set(declared.filter(tool => brokerAllows(tool, bounds)))
 }
 
 /** Only a worktree the strategy cut records `base_ref`; an adopted one has no base to report. */
@@ -2432,7 +2477,7 @@ export class Supervisor implements TeleportHost {
     let exempted: string[] = []
     const granted = this.grantedTools(req.parentAgentId)
     if (granted !== undefined) {
-      const missing = profile.allowedTools.filter(tool => !granted.has(tool))
+      const missing = profile.allowedTools.filter(tool => !held(granted, tool))
       const exempt = this.exemptionFor(req, profile)
       exempted = missing.filter(tool => exempt.has(tool))
       const escalated = missing.filter(tool => !exempt.has(tool))
@@ -2479,7 +2524,10 @@ export class Supervisor implements TeleportHost {
 
   /** CC-1654: `profile` is as `loadCheckedProfile` left it, which dropped a drifted file's declaration. */
   private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
-    return coordinatorExemption(this.requesterFor(req).role, profile, resolveCoordinatorGrantableTools())
+    return coordinatorExemption(this.requesterFor(req).role, profile, {
+      grantable: resolveCoordinatorGrantableTools(),
+      commands: resolveCoordinatorGrantableCommands(),
+    })
   }
 
   /**

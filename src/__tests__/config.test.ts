@@ -7,6 +7,7 @@ import {
   DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
   resolveAccountRotation,
   resolveAgentSlots,
+  resolveCoordinatorGrantableCommands,
   resolveCoordinatorGrantableTools,
   resolveContextHintPolicy,
   resolveFullSuiteSlots,
@@ -401,6 +402,22 @@ describe('resolveCoordinatorGrantableTools', () => {
   it('grants nothing for a value that is not a list', () => {
     writeConfigJson({ coordinatorGrantableTools: 'WebSearch' })
     expect(resolveCoordinatorGrantableTools()).toEqual([])
+  })
+})
+
+describe('resolveCoordinatorGrantableCommands', () => {
+  it('lists no command by default, so a profile alone never grants one', () => {
+    expect(resolveCoordinatorGrantableCommands()).toEqual([])
+  })
+
+  it('keeps the listed commands', () => {
+    writeConfigJson({ coordinatorGrantableCommands: ['Bash(fetch-pdf *)'] })
+    expect(resolveCoordinatorGrantableCommands()).toEqual(['Bash(fetch-pdf *)'])
+  })
+
+  it('lists nothing for a value that is not a list', () => {
+    writeConfigJson({ coordinatorGrantableCommands: 'Bash(fetch-pdf *)' })
+    expect(resolveCoordinatorGrantableCommands()).toEqual([])
   })
 })
 

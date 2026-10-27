@@ -60,6 +60,7 @@ export interface AgentChatConfig {
   machineStopPressureLevel?: unknown
   fullSuiteSlots?: unknown
   coordinatorGrantableTools?: unknown
+  coordinatorGrantableCommands?: unknown
   poolProbe?: unknown
   tmuxSurfaceOnLinux?: unknown
   machines?: unknown
@@ -525,24 +526,33 @@ export function resolveFullSuiteSlots(): number {
 
 /**
  * `coordinatorGrantableTools` in `config.json`, read per spawn; `[]` turns the CC-451 exemption off.
- * Absent means every research tool a profile declares (CC-1654). A list can only narrow that
- * declaration, so a name no profile declares grants nothing; a non-string is logged and dropped,
- * and a non-array grants nothing rather than the default.
+ * Absent means every read-only research tool a profile declares (CC-1654). A list can only narrow
+ * that declaration, so a name no profile declares grants nothing; a non-string is logged and
+ * dropped, and a non-array grants nothing rather than the default.
  */
 export function resolveCoordinatorGrantableTools(): string[] | undefined {
   const value = readConfig().coordinatorGrantableTools
-  if (value === undefined) return undefined
+  return value === undefined ? undefined : toolNamesFrom('coordinatorGrantableTools', value)
+}
+
+/**
+ * CC-1654: `coordinatorGrantableCommands`, the scoped Bash grants such as `Bash(fetch-pdf *)` a
+ * coordinator may hand a research profile that declares them. A command runs code, so a profile's
+ * declaration alone never grants one: absent or malformed lists none.
+ */
+export function resolveCoordinatorGrantableCommands(): string[] {
+  const value = readConfig().coordinatorGrantableCommands
+  return value === undefined ? [] : toolNamesFrom('coordinatorGrantableCommands', value)
+}
+
+function toolNamesFrom(key: string, value: unknown): string[] {
   if (!Array.isArray(value)) {
-    logInvalidOnce({ key: 'coordinatorGrantableTools', value, fallback: [] })
+    logInvalidOnce({ key, value, fallback: [] })
     return []
   }
   const names = value.filter((tool): tool is string => typeof tool === 'string')
   if (names.length < value.length)
-    logInvalidOnce({
-      key: 'coordinatorGrantableTools',
-      value: value.filter(tool => typeof tool !== 'string'),
-      fallback: 'ignored',
-    })
+    logInvalidOnce({ key, value: value.filter(tool => typeof tool !== 'string'), fallback: 'ignored' })
   return names
 }
 
