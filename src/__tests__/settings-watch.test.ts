@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
+import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
 import type { FileRecord, Records } from '../leak-guard/integrity/record.js'
@@ -12,7 +13,6 @@ import type { ClientMessage, ServerMessage } from '../protocol.js'
 
 /** TP-4256 A5: the broker re-hashes the settings.json it wrote. Names, ids and paths are synthetic. */
 
-const NONCE = 'c'.repeat(64)
 const ZSHRC = '/home/example/.zshrc'
 const WITH_HOOK = JSON.stringify({
   hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'guard' }] }] },
@@ -50,15 +50,14 @@ function setup() {
   core.append({ kind: 'agent_spawned', actor: 'coord', target: 'scout', msgId: 'a1', body: 'work' })
   const server = new SocketServer(core)
   servers.push(server)
-  server.integrity.registerLaunch(NONCE, 'a1', { [ZSHRC]: zshrc })
-  server.settingsWatch.register(NONCE, [settings, plan])
+  const { nonce } = admit(server, 'a1', [settings, plan])
   const frames: ServerMessage[] = []
   const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
   const check = (): ServerMessage | undefined => {
     const records: Records = { [ZSHRC]: zshrc }
     server.handleMessage(conn, {
       t: 'integrity_check',
-      nonce: NONCE,
+      nonce,
       session: 's1',
       records,
     } as ClientMessage)
@@ -67,6 +66,9 @@ function setup() {
   const notices = () => core.events.since(0, 500).filter(row => row.kind === 'notice')
   return { settings, plan, check, notices, server }
 }
+
+const admit = (server: SocketServer, agentId: string, files: string[]) =>
+  server.integrity.admit({ agentId, parent: HUMAN_ROOT }, () => ({ startup: { [ZSHRC]: zshrc }, files }))
 
 describe('settings-watch', () => {
   it('quarantines and files one notice when the hook is dropped and no later call comes', () => {
@@ -115,10 +117,8 @@ describe('settings-watch', () => {
   it("detects a rewrite of a sibling's settings.json made outside pretool and quarantines the sibling", () => {
     const { settings, check, notices, server } = setup()
     const sibling = path.join(path.dirname(settings), 'sibling-settings.json')
-    const siblingNonce = 'f'.repeat(64)
     fs.copyFileSync(settings, sibling)
-    server.integrity.registerLaunch(siblingNonce, 'a1', { [ZSHRC]: zshrc })
-    server.settingsWatch.register(siblingNonce, [sibling])
+    const { nonce: siblingNonce } = admit(server, 'a2', [sibling])
 
     fs.appendFileSync(sibling, ' ')
     server.settingsWatch.sweep()
@@ -152,31 +152,17 @@ describe('settings-watch', () => {
 })
 
 describe('settings-watch edge cases', () => {
-  it('keeps watching a change whose nonce the ledger does not know yet', () => {
-    const { settings, notices, server } = setup()
-    const late = 'd'.repeat(64)
-    server.settingsWatch.register(late, [settings])
-    fs.writeFileSync(settings, JSON.stringify({ hooks: {} }))
-
-    vi.advanceTimersByTime(TICK_MS)
-    server.integrity.registerLaunch(late, 'a1', { [ZSHRC]: zshrc })
-    vi.advanceTimersByTime(TICK_MS)
-
-    expect(notices()).toHaveLength(2)
-    expect(server.integrity.check(late, 's1', { [ZSHRC]: zshrc })).toMatchObject({ reason: 'quarantined' })
-  })
-
   it('refuses a baseline when any file is missing', () => {
     const { settings, plan, server } = setup()
     fs.rmSync(settings)
 
-    expect(() => server.settingsWatch.register('e'.repeat(64), [plan, settings])).toThrow(/unreadable/)
+    expect(() => admit(server, 'a2', [plan, settings])).toThrow(/unreadable/)
   })
 
   it('refuses an empty list of files', () => {
     const { server } = setup()
 
-    expect(() => server.settingsWatch.register('e'.repeat(64), [])).toThrow(/no files/)
+    expect(() => admit(server, 'a2', [])).toThrow(/no files/)
   })
 })
 
@@ -237,7 +223,7 @@ describe('settings-watch reads only the same bounded regular file', () => {
       const fifo = path.join(dirs.at(-1) ?? '', 'pipe')
       execFileSync('mkfifo', [fifo])
 
-      expect(() => server.settingsWatch.register('e'.repeat(64), [fifo])).toThrow(/unreadable/)
+      expect(() => admit(server, 'a2', [fifo])).toThrow(/unreadable/)
     },
     5_000,
   )
