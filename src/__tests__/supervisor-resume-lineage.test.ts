@@ -10,6 +10,7 @@ import { Registry } from '../broker/registry.js'
 import { HUMAN_ROOT, IntegrityLedger } from '../broker/integrity-ledger.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
+import { agentDir } from '../paths.js'
 
 /**
  * TP-4313: the integrity ledger forgets every principal at a broker restart, so a child resumed
@@ -181,11 +182,28 @@ describe('resume after a broker restart', () => {
     expect(ledger.verdict(scout)).toEqual({ ok: true })
   })
 
-  it('refuses a child whose parent outlived the restart live, naming it and admitting nothing', async () => {
+  it('re-admits a parent that outlived the restart live from its launch on disk, then the child under it', async () => {
     const before = supervisorWith()
     const lead = await spawned(before, 'lead', DESK)
     const scout = await spawned(before, 'scout', lead)
     await exitResumable(scout)
+    const ledger = restartedLedger()
+    const admit = vi.spyOn(ledger, 'admit')
+
+    const outcome = await supervisorWith(ledger).resume('scout', { requestedBy: 'human' })
+
+    expect(outcome).toMatchObject({ ok: true, agentId: scout })
+    expect(admit.mock.calls.map(([req]) => req)).toEqual([{ agentId: scout, parent: lead, humanProof: true }])
+    expect(ledger.parentOf(lead)).toBe(DESK)
+    expect(ledger.verdict(scout)).toEqual({ ok: true })
+  })
+
+  it('refuses a child whose live parent left no launch to re-admit, naming it and admitting nothing', async () => {
+    const before = supervisorWith()
+    const lead = await spawned(before, 'lead', DESK)
+    const scout = await spawned(before, 'scout', lead)
+    await exitResumable(scout)
+    fs.rmSync(agentDir(lead), { recursive: true })
     const ledger = restartedLedger()
     const admit = vi.spyOn(ledger, 'admit')
 

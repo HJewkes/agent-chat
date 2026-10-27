@@ -79,6 +79,19 @@ export interface LaunchWrite {
   readonly files: readonly string[]
 }
 
+/**
+ * What a launch that outlived its broker left on disk. An intact one carries the nonce its hook
+ * still asks with, absent for a launch written before the ledger was wired.
+ */
+export type Survivor =
+  | {
+      readonly intact: true
+      readonly nonce?: string
+      readonly startup: Records
+      readonly files: readonly string[]
+    }
+  | { readonly intact: false; readonly mismatch: Mismatch }
+
 export type Verdict =
   | { ok: true }
   | { ok: false; reason: 'no baseline' }
@@ -111,6 +124,22 @@ export class IntegrityLedger {
     this.store.putLaunch(admission.nonce, { agentId: req.agentId, startup, sessions: {} })
     this.watch.replace(req.agentId, files)
     return admission
+  }
+
+  /**
+   * TP-4341: enrols a running agent a previous broker admitted, under the nonce its hook still
+   * asks with. The ledger is memory only, so a restart proves nothing; a launch file that is not
+   * as a broker writes it does, and latches. It never clears, and leaves a known principal as is.
+   */
+  readmit(req: Omit<AdmitRequest, 'humanProof'>, survivor: Survivor): void {
+    if (this.knows(req.agentId)) return
+    if (survivor.intact) this.watch.replace(req.agentId, survivor.files)
+    this.enrol(req.agentId, req.parent)
+    if (!survivor.intact) return void this.latch(req.agentId, survivor.mismatch)
+    if (survivor.nonce === undefined) return
+    if (this.store.launch(survivor.nonce) !== undefined)
+      return void this.latch(req.agentId, { file: LINEAGE, field: 'nonce in use' })
+    this.store.putLaunch(survivor.nonce, { agentId: req.agentId, startup: survivor.startup, sessions: {} })
   }
 
   /** Whether any admit enrolled `agentId`; a principal it knows is always answered by `verdict`. */
