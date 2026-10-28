@@ -33,9 +33,17 @@ export function clearLaunchTmpDirs(env: NodeJS.ProcessEnv): void {
   for (const key of TMP_ENV) if (isLaunchTmpDir(env[key])) delete env[key]
 }
 
-/** Removes the launch identity and any launch's private temp dir from `env` in place. */
+/**
+ * TP-4347: a restart's owner token and its test seam belong to the one broker that restart
+ * starts. Inherited, the token would let that broker's children outrank the lock too.
+ */
+export const RESTART_TOKEN_ENV = 'AGENT_CHAT_RESTART_TOKEN'
+export const RESTART_GAP_ENV = 'AGENT_CHAT_TEST_RESTART_GAP_MS'
+const RESTART_ENV = [RESTART_TOKEN_ENV, RESTART_GAP_ENV] as const
+
+/** Removes the launch identity, any restart token and any launch's private temp dir from `env` in place. */
 export function clearLaunchIdentity(env: NodeJS.ProcessEnv): void {
-  for (const key of LAUNCH_IDENTITY_ENV) delete env[key]
+  for (const key of [...LAUNCH_IDENTITY_ENV, ...RESTART_ENV]) delete env[key]
   clearLaunchTmpDirs(env)
 }
 

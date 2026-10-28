@@ -18,6 +18,9 @@ export const pidPath = (): string => path.join(home(), 'broker.pid')
 /** Expiry in epoch ms written by `service stop --hold`; a broker refuses to start before it. */
 export const holdPath = (): string => path.join(home(), 'broker.hold')
 
+/** `{token, pid, until}` written by `service restart`; only the broker it starts may bind before `until`. */
+export const restartLockPath = (): string => path.join(home(), 'broker.restart-lock')
+
 /** `{port, version, started}` — what `restart` reads to reuse the port it was on. */
 export const metaPath = (): string => path.join(home(), 'broker.meta.json')
 

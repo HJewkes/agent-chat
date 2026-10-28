@@ -17,6 +17,7 @@ import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
 import { RetryKeys } from './retry-keys.js'
 import { timeoutAdvice } from './timeout-advice.js'
 import { cliEntry, home, socketPath } from '../paths.js'
+import { restartLockHolder } from '../broker/restart-lock.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 
@@ -102,6 +103,7 @@ export async function retryOnBrokerTimeout<T>(
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
+const RESTART_LOCK_POLL_MS = 250
 const RETRY_WINDOW_S = Math.ceil(RECONNECT_DELAYS_MS.reduce((sum, ms) => sum + ms, 0) / 1000)
 
 /**
@@ -413,23 +415,41 @@ export class BrokerClient {
   }
 
   private async climbLadder(): Promise<void> {
-    try {
-      this.attach(await this.tryConnect())
-      return
-    } catch {
-      if (this.options.autoStart !== false) this.spawnBroker()
+    if (await this.tryAttach()) return
+    if (this.options.autoStart !== false) {
+      if (await this.awaitRestart()) return
+      this.spawnBroker()
     }
     for (const delay of RECONNECT_DELAYS_MS) {
       await wait(delay)
       if (this.closed) throw new Error('broker client closed')
-      try {
-        this.attach(await this.tryConnect())
-        return
-      } catch {
-        // keep retrying until the delay budget runs out
-      }
+      if (await this.tryAttach()) return
     }
     throw new Error('could not reach or start the agent-chat broker')
+  }
+
+  /**
+   * TP-4347: never spawn while a `service restart` holds the lock. The broker would refuse to
+   * bind anyway; waiting saves the doomed spawn and keeps the ladder from giving up before the
+   * restart's own broker is up. The lock is capped, so this wait is too.
+   */
+  private async awaitRestart(): Promise<boolean> {
+    if (restartLockHolder() === undefined) return false
+    while (restartLockHolder() !== undefined) {
+      await wait(RESTART_LOCK_POLL_MS)
+      if (this.closed) throw new Error('broker client closed')
+      if (await this.tryAttach()) return true
+    }
+    return this.tryAttach()
+  }
+
+  private async tryAttach(): Promise<boolean> {
+    try {
+      this.attach(await this.tryConnect())
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** Fire-and-forget: for messages the broker does not answer. */

@@ -9,7 +9,9 @@ import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } 
 import { clearInheritedShimEnv, recordLoginPath, resolveBasePath } from '../agents/base-path.js'
 import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
-import { withoutLaunchIdentity } from '../launch-identity.js'
+import { RESTART_GAP_ENV, RESTART_TOKEN_ENV, withoutLaunchIdentity } from '../launch-identity.js'
+import { isEphemeralHome } from '../broker/ephemeral.js'
+import { MAX_RESTART_LOCK_S, releaseRestartLock, takeRestartLock } from '../broker/restart-lock.js'
 import { fail, withBroker } from './client.js'
 import { brokerSource, guardRestart, unreachableMessage } from './restart-guard.js'
 
@@ -62,10 +64,10 @@ export async function status(options: { port?: number }): Promise<void> {
 /** Attached sessions at stop time, or null when the broker is already unreachable. */
 async function attachedSessions(): Promise<number | null> {
   try {
-    const res = (await withBroker(b => b.request({ t: 'list' }, 'list_result'))) as Extract<
-      ServerMessage,
-      { t: 'list_result' }
-    >
+    // No auto-start: a stop must never start a broker, and under a restart lock it would wait out the lock.
+    const res = (await withBroker(b => b.request({ t: 'list' }, 'list_result'), {
+      autoStart: false,
+    })) as Extract<ServerMessage, { t: 'list_result' }>
     return res.sessions.length
   } catch {
     return null
@@ -94,6 +96,16 @@ export async function start(options: { port?: number; foreground?: boolean }): P
     return
   }
 
+  const launched = await launchDetached(port)
+  if (!launched.up) fail(notAnswering())
+  printUp()
+}
+
+/** `token` is a restart's lock token: the one credential a broker may bind with while the lock is held. */
+async function launchDetached(
+  port: number | undefined,
+  token?: string,
+): Promise<{ pid: number | undefined; up: boolean }> {
   // Only the detached start lifts a hold: `agent-chat broker`, which every auto-start runs, is the foreground path.
   clearHold()
   recordLoginPath(home(), process.env.PATH)
@@ -103,13 +115,16 @@ export async function start(options: { port?: number; foreground?: boolean }): P
   const env = withoutLaunchIdentity(
     port === undefined ? process.env : { ...process.env, AGENT_CHAT_PORT: String(port) },
   )
-  spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore', env }).unref()
+  if (token !== undefined) env[RESTART_TOKEN_ENV] = token
+  const child = spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore', env })
+  child.unref()
+  return { pid: child.pid, up: await waitFor(() => probeSocket(), TERM_GRACE_MS) }
+}
 
-  const up = await waitFor(() => probeSocket(), TERM_GRACE_MS)
-  if (!up) {
-    console.error(`Started, but nothing is answering on ${socketPath()} yet. Check: agent-chat service logs`)
-    process.exit(1)
-  }
+const notAnswering = (): string =>
+  `Started, but nothing is answering on ${socketPath()} yet. Check: agent-chat service logs`
+
+function printUp(): void {
   const meta = readMeta()
   console.log(`Broker up on ${socketPath()}${meta?.port ? ` and port ${meta.port}` : ''}.`)
 }
@@ -172,16 +187,58 @@ async function stopBroker(held = false): Promise<void> {
   }
 }
 
+/**
+ * TP-4347: the lock is taken here rather than in restart-window.sh, so manual and rollback
+ * restarts are covered too. Released on every return; a crash leaves a lock whose holder
+ * pid is dead, which counts as none.
+ */
 export async function restart(options: { port?: number; force?: boolean }): Promise<void> {
   await refuseIfBusy('restart', options.force)
+  const lock = takeRestartLock(MAX_RESTART_LOCK_S)
+  if ('holder' in lock) {
+    const { pid, until } = lock.holder
+    fail(`restart: another restart holds the lock (pid ${pid}, until ${new Date(until).toISOString()})`)
+  }
+  let failure: string | undefined
+  try {
+    failure = await restartUnderLock(options, lock.token)
+  } finally {
+    releaseRestartLock(lock.token)
+  }
+  if (failure !== undefined) fail(failure)
+}
+
+/** Returns why the restart failed, or undefined once the broker this restart launched owns the socket. */
+async function restartUnderLock(options: { port?: number }, token: string): Promise<string | undefined> {
   const previous = readMeta()?.port ?? undefined
   await stopBroker()
   // §4.5: the registry is in-memory, so process lifetime IS the registration
   // lease. Everything durable survives; presence does not, briefly.
   console.log('Registrations are in-memory: every session shows as reconnecting for a few seconds.')
-  const port = options.port ?? previous
-  await start(port === undefined ? {} : { port })
+  await testRestartGap()
+  if (await probeSocket()) return notOurBroker(readPidFile(), undefined)
+  const launched = await launchDetached(options.port ?? previous, token)
+  if (!launched.up) return notAnswering()
+  // The pid file is written just after the bind, so the socket can answer before it names its owner.
+  if (!(await waitFor(async () => readPidFile() === launched.pid, TERM_GRACE_MS))) {
+    return notOurBroker(readPidFile(), launched.pid)
+  }
+  printUp()
+  return undefined
 }
+
+const notOurBroker = (onSocket: number | null, ours: number | undefined): string =>
+  `restart: the broker on the socket (pid ${onSocket ?? 'unknown'}) is not the one this restart ` +
+  `started (pid ${ours ?? 'none: another broker was already up'})`
+
+/** Test seam: widens the gap a racing session reconnect lands in. Honoured only under an ephemeral home. */
+async function testRestartGap(): Promise<void> {
+  const ms = Number(process.env[RESTART_GAP_ENV])
+  if (!isEphemeralHome(home()) || !Number.isFinite(ms) || ms <= 0) return
+  await new Promise(resolve => setTimeout(resolve, Math.min(ms, MAX_TEST_GAP_MS)))
+}
+
+const MAX_TEST_GAP_MS = 10_000
 
 /** Last `n` lines of `text`, ignoring a trailing newline. */
 export function tailLines(text: string, n: number): string[] {
