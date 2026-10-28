@@ -73,6 +73,12 @@ export interface AdmitRequest {
   readonly parent: Parent
   /** Set only for a launch the broker proved a human asked for; it is the one way to clear. */
   readonly humanProof?: boolean
+  /**
+   * TP-4345 S3: a quarantine an earlier broker recorded on an ancestor the lineage skipped. It
+   * latches the agent at its first enrol, before `humanProof` can clear it, so a later relaunch
+   * does not undo the human's clear.
+   */
+  readonly recorded?: Mismatch
 }
 
 /** What the launcher wrote under the minted nonce: the startup record and every file to watch. */
@@ -116,10 +122,12 @@ export class IntegrityLedger {
     private readonly store: IntegrityStore = memoryStore(),
   ) {}
 
-  /** Sweep, enrol, clear, mint, write, record, re-watch: one synchronous call, in this order. */
+  /** Sweep, enrol, latch a record, clear, mint, write, record, re-watch: one synchronous call, in this order. */
   admit(req: AdmitRequest, write: (admission: LaunchAdmission) => LaunchWrite): LaunchAdmission {
     this.watch.sweepAgent(req.agentId)
+    const first = !this.knows(req.agentId)
     this.enrol(req.agentId, req.parent)
+    if (first && req.recorded !== undefined) this.latch(req.agentId, req.recorded)
     if (req.humanProof === true) this.clear(req.agentId)
     const admission = new LaunchAdmission(MINT, randomBytes(32).toString('hex'), req.agentId)
     const { startup, files } = write(admission)

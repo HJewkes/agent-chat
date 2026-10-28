@@ -59,12 +59,14 @@ import {
   DetachedReaper,
   hostProbe,
   isStaleLive,
+  batchProbe,
   launcherPid,
   remoteHostOf,
   staleAtStart,
   type DeadLiveness,
   type ProcessProbe,
 } from './detached-reap.js'
+import { ledgerParentOf, spawnRowIndex, survivorRoot, type SurvivorRoot } from './survivor-root.js'
 import { HARNESS_UNSUPPORTED, harnessRefusal, loadProfileSource, recordedRole, roleOf } from './profiles.js'
 import { loadSeatPolicy, seatPolicyPath } from './seat-policy.js'
 import {
@@ -1111,12 +1113,13 @@ const isHumanResume = (req: ResumeRequest): boolean =>
 /** The ledger calls a launch needs; `SocketServer` passes its own ledger. */
 export type LaunchLedger = Pick<IntegrityLedger, 'admit' | 'readmit' | 'verdict' | 'knows' | 'parentOf'>
 
-/**
- * TP-4256 A3: an agent's ledger parent, from its own `agent_spawned` meta. A teleport successor's
- * is its predecessor, so it never steps outside that agent's quarantine; '' is a human's spawn.
- */
-const ledgerParentOf = (meta: Readonly<Record<string, string>> | undefined): Parent =>
-  meta?.teleport_from || meta?.parent || HUMAN_ROOT
+/** TP-4345 S3: an admit under `root`; a skipped ancestor's recorded quarantine latches it unless a human's resume clears. */
+const rootAdmission = (agentId: string, root: SurvivorRoot, humanProof?: boolean): AdmitRequest => ({
+  agentId,
+  parent: root.parent,
+  ...(humanProof === undefined ? {} : { humanProof }),
+  ...(root.inherited === undefined ? {} : { recorded: root.inherited.mismatch }),
+})
 
 /** TP-4313: how many unadmitted ancestors one resume brings back before it refuses. */
 const LINEAGE_DEPTH = 8
@@ -1347,6 +1350,8 @@ export class Supervisor implements TeleportHost {
   private readonly reattached = new Map<string, NodeJS.Timeout | undefined>()
   /** TP-4341: agents whose re-admit is resolving its lineage, so a looped chain stops. */
   private readonly readmitting = new Set<string>()
+  /** TP-4345 S3: the lineage walk's spawn rows, so a long chain is not one copy of the log per step. */
+  private readonly spawnRow = spawnRowIndex(() => this.core.events.agentEvents())
   /** TP-4345 S2: survivors that reattached inside the start's settle window, for its sweep row. */
   private readonly reattachedAtStart = new Set<string>()
   private readmitSweep: NodeJS.Timeout | undefined
@@ -3629,36 +3634,57 @@ export class Supervisor implements TeleportHost {
    */
   private ledgerParent(parent: Parent): Parent {
     if (parent === HUMAN_ROOT || this.ledger?.knows(parent)) return parent
-    if (this.spawnEventOf(parent)?.meta.origin === 'adopted') return HUMAN_ROOT
+    if (this.spawnRow(parent)?.meta.origin === 'adopted') return HUMAN_ROOT
     this.readmit(parent)
     return parent
   }
 
   /** The parent an agent's spawn row recorded, so every relaunch of it admits under the same one. */
   private recordedParent(agentId: string): Parent {
-    return this.ledgerLineage(this.spawnEventOf(agentId)?.meta)
+    return this.rootOf(agentId).parent
+  }
+
+  /** A relaunch of `agentId` under its root, carrying any quarantine on record for a skipped ancestor. */
+  private recordedAdmission(agentId: string, humanProof?: boolean): AdmitRequest {
+    return rootAdmission(agentId, this.rootOf(agentId), humanProof)
   }
 
   /**
-   * TP-4341: a predecessor that ended before this broker admitted anything never can be, so the
-   * chain goes on at the parent its own row recorded, down to the human for a hand-started one.
-   * A predecessor the ledger knows, or one still running, stays the parent.
+   * TP-4345 S3: the root `survivorRoot` resolves, which resume, spawn and teleport all share. With
+   * the ledger off nothing reads it, so it stays the recorded parent and probes no process.
    */
-  private ledgerLineage(meta: Readonly<Record<string, string>> | undefined, depth = 0): Parent {
-    const predecessor = meta?.teleport_from
-    if (!predecessor || depth === LINEAGE_DEPTH || this.ledger?.knows(predecessor))
-      return ledgerParentOf(meta)
-    const state = this.core.agents.get(predecessor)?.state
-    const row = this.spawnEventOf(predecessor)
-    if (row === undefined || state === undefined || !DEPARTED.has(state)) return predecessor
-    return this.ledgerLineage(row.meta, depth + 1)
+  private rootOf(agentId: string, meta = this.spawnRow(agentId)?.meta): SurvivorRoot {
+    const ledger = this.ledger
+    if (ledger === undefined) return { parent: ledgerParentOf(meta) }
+    const probe = batchProbe(this.processProbe)
+    const root = survivorRoot(agentId, meta, {
+      spawnMeta: id => this.spawnRow(id)?.meta,
+      knows: id => ledger.knows(id),
+      running: id => this.running(id, probe),
+      onRecord: id => this.core.events.quarantineOnRecord(id),
+    })
+    if (root.unresolved !== undefined) this.readmits?.skipped(agentId, root.unresolved)
+    return root
+  }
+
+  /**
+   * TP-4345 S3 (D3): held by this supervisor, connected under its own id, or with a process the
+   * probe cannot prove gone. A row that is merely not exited or retired is not enough.
+   */
+  private running(agentId: string, probe: ProcessProbe): boolean {
+    if (this.live.has(agentId) || this.reattached.has(agentId)) return true
+    const agent = this.core.agents.get(agentId)
+    if (agent === undefined || DEPARTED.has(agent.state)) return false
+    const conn = this.core.registry.connFor(agent.name)
+    if (conn !== undefined && this.core.registry.entryFor(conn)?.agentId === agentId) return true
+    return !agentLiveness(agent, probe).dead
   }
 
   /** A successor never carries `humanProof`: a teleport is the agent's own act, not the human's. */
   private successorAdmission(input: RelaunchInput): AdmitRequest {
     const teleportFrom = input.inheritedFrom ?? input.meta?.teleport_from
     const meta = teleportFrom === undefined ? input.meta : { ...input.meta, teleport_from: teleportFrom }
-    return { agentId: input.agentId, parent: this.ledgerLineage(meta) }
+    return rootAdmission(input.agentId, this.rootOf(input.agentId, meta))
   }
 
   /**
@@ -3685,12 +3711,14 @@ export class Supervisor implements TeleportHost {
     if (DEPARTED.has(agent.state)) return 'departed'
     const survivor = survivingLaunch(agentId, this.core.events.integrityWiredSince())
     if (survivor === undefined) return 'no launch dir'
-    const parent = this.ledgerParent(this.recordedParent(agentId))
+    const root = this.rootOf(agentId)
+    const parent = this.ledgerParent(root.parent)
     if (parent !== HUMAN_ROOT && !ledger.knows(parent))
       return `lineage unresolved via ${parent} (${this.core.agents.get(parent)?.state ?? 'unknown'})`
-    const recorded = this.core.events.quarantineOnRecord(agentId)
+    const own = this.core.events.quarantineOnRecord(agentId)
+    const recorded = own ?? root.inherited?.mismatch
     const latched = ledger.readmit({ agentId, parent }, survivor, recorded)
-    if (latched !== undefined) return latchReason(latched, recorded)
+    if (latched !== undefined) return latchReason(latched, recorded, own ? undefined : root.inherited?.via)
     this.readmits?.admitted(agentId, parent, survivor.intact && survivor.nonce !== undefined)
     return undefined
   }
@@ -4822,7 +4850,7 @@ export class Supervisor implements TeleportHost {
     const humanProof = isHumanResume(req)
     // TP-4341: the clear and the row that records it, with no await between them for a quarantine to fall in.
     this.writeAdmitted(
-      { agentId: agent.agentId, parent: this.recordedParent(agent.agentId), humanProof },
+      this.recordedAdmission(agent.agentId, humanProof),
       plan,
       profile,
       this.createdWorktree(agent.agentId, allocation, isolation),
@@ -4958,7 +4986,7 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
     this.writeAdmitted(
-      { agentId: agent.agentId, parent: this.recordedParent(agent.agentId) },
+      this.recordedAdmission(agent.agentId),
       plan,
       profile,
       this.createdWorktree(agent.agentId, allocation, isolation),

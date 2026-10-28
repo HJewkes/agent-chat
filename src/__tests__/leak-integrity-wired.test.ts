@@ -1011,6 +1011,8 @@ describe('TP-4345 S2: every re-admit outcome after a restart writes one row', ()
     const child = await wired.spawn('child', 'lead', { requestedBy: 'coord', parentAgentId: wired.lead })
     fs.rmSync(agentDir(wired.lead), { recursive: true })
     const after = restarted(wired)
+    // TP-4345 S3: only a running parent stays the root; one that never reattached is skipped.
+    attach(after.core, wired.lead)
 
     attach(after.core, child, 'child')
 
