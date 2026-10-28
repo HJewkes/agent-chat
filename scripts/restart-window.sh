@@ -220,26 +220,30 @@ check() { # check <label> <ok: 0|1>
   if [ "$2" -eq 0 ]; then echo "ok: $1"; else echo "FAIL: $1"; failed=1; fi
 }
 # Counts broker.log lines (JSON, ISO ts) of one event at or after the restart, across the rotated file too.
+# An optional second argument counts only rows whose launcher field equals it.
 count() {
   node -e '
     const fs = require("fs")
-    const [dir, event, since] = process.argv.slice(1)
+    const [dir, event, since, launcher] = process.argv.slice(1)
     let n = 0
     for (const f of [`${dir}/broker.log`, `${dir}/broker.log.1`]) {
       if (!fs.existsSync(f)) continue
       for (const line of fs.readFileSync(f, "utf8").split("\n")) {
         try {
           const row = JSON.parse(line)
-          if (row.event === event && row.ts >= since) n++
+          if (row.event === event && row.ts >= since && (!launcher || row.launcher === launcher)) n++
         } catch {}
       }
     }
     console.log(n)
-  ' "$log_dir" "$1" "$started_at" 2>/dev/null || echo "?"
+  ' "$log_dir" "$1" "$started_at" "${2:-}" 2>/dev/null || echo "?"
 }
 
 n="$(count broker_started)"
 check "exactly one broker_started since restart (found $n)" "$([ "$n" = 1 ] && echo 0 || echo 1)"
+# TP-4347: a session's auto-start can win the race and still make the count above 1.
+n="$(count broker_started restart)"
+check "the broker was started by this restart (found $n with launcher restart)" "$([ "$n" = 1 ] && echo 0 || echo 1)"
 n="$(count ledger_shadow_error)"
 check "no ledger_shadow_error since restart (found $n)" "$([ "$n" = 0 ] && echo 0 || echo 1)"
 # Retries agent ls each second until its output parses or the deadline after the restart passes.

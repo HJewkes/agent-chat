@@ -57,7 +57,8 @@ import {
 import { hostLeaseRefusal } from '../host-lease.js'
 import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
-import { clearLaunchIdentity } from '../launch-identity.js'
+import { clearLaunchIdentity, RESTART_TOKEN_ENV } from '../launch-identity.js'
+import { restartLockHolder } from './restart-lock.js'
 import { startAgeOutSweep } from './age-out.js'
 import { startBurndownKick } from './burndown-kick.js'
 import { brokerJobKick } from './job-kick.js'
@@ -102,12 +103,13 @@ export function newAgentSlots(): Semaphore {
  * not shift under a caller that only wants to know whether it won the race.
  */
 export async function startBroker(options: StartBrokerOptions = {}): Promise<net.Server | null> {
+  const restartToken = process.env[RESTART_TOKEN_ENV]
   // A broker started by hand from inside an agent still must not hand that launch's identity or temp dir to its children.
   clearLaunchIdentity(process.env)
   const sock = socketPath()
   fs.mkdirSync(home(), { recursive: true })
-  if (isHeld() || isOffLease() || !(await claimSocketPath(sock))) return null
-  const listener = await listenOn(sock)
+  if (isHeld() || isRestartLocked(restartToken) || isOffLease() || !(await claimSocketPath(sock))) return null
+  const listener = await listenOn(sock, launcherOf(restartToken))
   if (listener === null) return null
 
   const { core, socketServer } = openServices()
@@ -254,6 +256,19 @@ function isHeld(): boolean {
   return true
 }
 
+/** TP-4347: a live `service restart` lock admits only the broker carrying its token. */
+function isRestartLocked(token: string | undefined): boolean {
+  const lock = restartLockHolder()
+  if (lock === undefined || lock.token === token) return false
+  logEvent('broker_exit', { reason: 'restart lock held', holder: lock.pid })
+  return true
+}
+
+/** Logged on `broker_started`, so a restart's post-checks can tell its own broker from a racer's. */
+function launcherOf(token: string | undefined): BrokerLauncher {
+  return token !== undefined && restartLockHolder()?.token === token ? 'restart' : 'auto'
+}
+
 /** CC-806: the factory host lease names another machine, so this broker must not bind. */
 function isOffLease(): boolean {
   const message = hostLeaseRefusal()
@@ -341,6 +356,9 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
   return { core, socketServer }
 }
 
+/** `restart`: started by `service restart` holding the lock. `auto`: anything else. */
+type BrokerLauncher = 'restart' | 'auto'
+
 interface Listener {
   server: net.Server
   openConnections: () => number
@@ -355,7 +373,7 @@ interface Listener {
  * same question, but only through a callback, which would make the idle reaper's
  * timer async for no gain — and a counter is something a test can state outright.
  */
-async function listenOn(sock: string): Promise<Listener | null> {
+async function listenOn(sock: string, launcher: BrokerLauncher): Promise<Listener | null> {
   let open = 0
   let handle: ((conn: net.Socket) => void) | undefined
   const early: net.Socket[] = []
@@ -373,7 +391,7 @@ async function listenOn(sock: string): Promise<Listener | null> {
   if (!(await bind(server, sock))) return null
   server.on('error', err => logEvent('broker_error', { error: String(err) }))
   fs.chmodSync(sock, 0o600) // this user only; the trust boundary is the OS account
-  logEvent('broker_started', { pid: process.pid, sock })
+  logEvent('broker_started', { pid: process.pid, ppid: process.ppid, sock, launcher })
   const serve = (socketServer: SocketServer): void => {
     handle = conn => socketServer.onConnection(conn)
     for (const conn of early.splice(0)) handle(conn)
