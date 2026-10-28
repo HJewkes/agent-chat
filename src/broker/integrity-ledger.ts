@@ -135,15 +135,18 @@ export class IntegrityLedger {
    * that no human resume has cleared. It never clears, and leaves a known principal as is.
    * Returns the mismatch it latched on, if any (TP-4345 S2), so the caller can say why.
    */
-  readmit(req: Omit<AdmitRequest, 'humanProof'>, survivor: Survivor, recorded?: Mismatch): Mismatch | undefined {
+  readmit(
+    req: Omit<AdmitRequest, 'humanProof'>,
+    survivor: Survivor,
+    recorded?: Mismatch,
+  ): Mismatch | undefined {
     if (this.knows(req.agentId)) return undefined
     if (survivor.intact) this.watch.replace(req.agentId, survivor.files)
     this.enrol(req.agentId, req.parent)
     const mismatch = survivor.intact ? recorded : survivor.mismatch
     if (mismatch !== undefined) return this.latched(req.agentId, mismatch)
     if (!survivor.intact || survivor.nonce === undefined) return undefined
-    if (this.store.launch(survivor.nonce) !== undefined)
-      return this.latched(req.agentId, NONCE_IN_USE)
+    if (this.store.launch(survivor.nonce) !== undefined) return this.latched(req.agentId, NONCE_IN_USE)
     this.store.putLaunch(survivor.nonce, { agentId: req.agentId, startup: survivor.startup, sessions: {} })
     return undefined
   }
