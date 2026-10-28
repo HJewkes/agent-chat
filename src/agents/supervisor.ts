@@ -15,6 +15,7 @@ import {
   type Verdict,
 } from '../broker/integrity-ledger.js'
 import type { IntegrityCall, NoteWouldDeny } from '../broker/integrity-shadow.js'
+import { latchReason, readmitRecorder, type ReadmitRecord } from '../broker/integrity-readmit.js'
 import {
   encode,
   HUMAN,
@@ -1346,6 +1347,10 @@ export class Supervisor implements TeleportHost {
   private readonly reattached = new Map<string, NodeJS.Timeout | undefined>()
   /** TP-4341: agents whose re-admit is resolving its lineage, so a looped chain stops. */
   private readonly readmitting = new Set<string>()
+  /** TP-4345 S2: survivors that reattached inside the start's settle window, for its sweep row. */
+  private readonly reattachedAtStart = new Set<string>()
+  private readmitSweep: NodeJS.Timeout | undefined
+  private readonly readmits: ReadmitRecord | undefined
   private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly hookSpawn: HookSpawnFn | undefined
@@ -1413,6 +1418,7 @@ export class Supervisor implements TeleportHost {
     this.hosts = options.hosts
     this.ledger = options.integrity
     this.wouldDeny = options.wouldDeny
+    this.readmits = this.ledger && readmitRecorder(input => void core.append(input))
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
     this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
@@ -1446,6 +1452,10 @@ export class Supervisor implements TeleportHost {
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
     for (const agentId of [...this.staleAtBoot.keys()]) this.reapAtStart(agentId)
+    if (this.readmits !== undefined) {
+      this.readmitSweep = setTimeout(() => this.sweepReadmits(), this.settleMs)
+      this.readmitSweep.unref?.()
+    }
   }
 
   /**
@@ -1473,6 +1483,8 @@ export class Supervisor implements TeleportHost {
     if (row.kind === 'agent_attached') this.remoteSpawns.attached(agentId)
     // TP-4341: a reconnect is a surviving agent's first contact with a restarted broker.
     if (row.kind === 'agent_attached') this.readmit(agentId)
+    if (row.kind === 'agent_attached' && this.readmitSweep !== undefined && !this.live.has(agentId))
+      this.reattachedAtStart.add(agentId)
     const entry = this.live.get(agentId)
     if (!entry) return this.onUnwatchedRow(row.kind, agentId)
 
@@ -3654,21 +3666,45 @@ export class Supervisor implements TeleportHost {
    * once its lineage resolves. Whatever cannot be checked stays unknown, which still denies.
    */
   private readmit(agentId: string): void {
-    const agent = this.core.agents.get(agentId)
     if (this.ledger === undefined || this.ledger.knows(agentId) || this.readmitting.has(agentId)) return
-    if (agent === undefined || DEPARTED.has(agent.state)) return
     this.readmitting.add(agentId)
     try {
-      const survivor = survivingLaunch(agentId, this.core.events.integrityWiredSince())
-      if (survivor === undefined) return
-      const parent = this.ledgerParent(this.recordedParent(agentId))
-      if (parent === HUMAN_ROOT || this.ledger.knows(parent))
-        this.ledger.readmit({ agentId, parent }, survivor, this.core.events.quarantineOnRecord(agentId))
+      const skipped = this.tryReadmit(this.ledger, agentId)
+      if (skipped !== undefined) this.readmits?.skipped(agentId, skipped)
     } catch (err) {
       logEvent('integrity_readmit_failed', { agentId, error: String(err) })
     } finally {
       this.readmitting.delete(agentId)
     }
+  }
+
+  /** TP-4345 S2: enrols the survivor and writes its row, or returns why it was skipped. */
+  private tryReadmit(ledger: LaunchLedger, agentId: string): string | undefined {
+    const agent = this.core.agents.get(agentId)
+    if (agent === undefined) return 'unknown agent'
+    if (DEPARTED.has(agent.state)) return 'departed'
+    const survivor = survivingLaunch(agentId, this.core.events.integrityWiredSince())
+    if (survivor === undefined) return 'no launch dir'
+    const parent = this.ledgerParent(this.recordedParent(agentId))
+    if (parent !== HUMAN_ROOT && !ledger.knows(parent))
+      return `lineage unresolved via ${parent} (${this.core.agents.get(parent)?.state ?? 'unknown'})`
+    const recorded = this.core.events.quarantineOnRecord(agentId)
+    const latched = ledger.readmit({ agentId, parent }, survivor, recorded)
+    if (latched !== undefined) return latchReason(latched, recorded)
+    this.readmits?.admitted(agentId, parent, survivor.intact && survivor.nonce !== undefined)
+    return undefined
+  }
+
+  /** TP-4345 S2: once the start's settle window closes, how many of the survivors that reattached the ledger enrolled. */
+  private sweepReadmits(): void {
+    this.readmitSweep = undefined
+    const live = [...this.reattachedAtStart].filter(id => {
+      const state = this.core.agents.get(id)?.state
+      return state !== undefined && !DEPARTED.has(state)
+    })
+    const skipped = live.filter(id => this.ledger?.knows(id) !== true)
+    this.readmits?.sweep({ live: live.length, admitted: live.length - skipped.length, skipped })
+    this.reattachedAtStart.clear()
   }
 
   /**
@@ -5671,6 +5707,7 @@ export class Supervisor implements TeleportHost {
     this.reaper.close()
     this.remoteSpawns.close()
     for (const timer of this.reattached.values()) clearTimeout(timer)
+    clearTimeout(this.readmitSweep)
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
       if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
