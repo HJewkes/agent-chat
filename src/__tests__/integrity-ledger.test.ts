@@ -100,4 +100,22 @@ describe('IntegrityLedger', () => {
       field: 'sha256',
     })
   })
+
+  it("TP-4345 S3: latches a first admit on a skipped ancestor's record, and a later relaunch keeps a human clear", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-integrity-ledger-'))
+    dirs.push(dir)
+    const settings = path.join(dir, 'settings.json')
+    fs.writeFileSync(settings, '{}')
+    const ledger = new IntegrityLedger()
+    const write = () => ({ startup, files: [settings] })
+    const recorded = { file: '/synthetic/settings.json', field: 'sha256' }
+
+    ledger.admit({ agentId: 'a2', parent: HUMAN_ROOT, recorded }, write)
+    const latched = ledger.verdict('a2')
+    ledger.admit({ agentId: 'a2', parent: HUMAN_ROOT, humanProof: true }, write)
+    ledger.admit({ agentId: 'a2', parent: HUMAN_ROOT, recorded }, write)
+
+    expect(latched).toMatchObject({ ok: false, reason: 'quarantined', ...recorded })
+    expect(ledger.verdict('a2')).toEqual({ ok: true })
+  })
 })

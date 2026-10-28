@@ -19,10 +19,14 @@ export interface ReadmitSweep {
   readonly skipped: readonly string[]
 }
 
-/** The skip reason for a mismatch the ledger's own `readmit` latched on. */
-export function latchReason(mismatch: Mismatch, recorded: Mismatch | undefined): string {
+/**
+ * The skip reason for a mismatch the ledger's own `readmit` latched on; `via` names the skipped
+ * ancestor whose record it was (TP-4345 S3).
+ */
+export function latchReason(mismatch: Mismatch, recorded: Mismatch | undefined, via?: string): string {
   if (mismatch.file === NONCE_IN_USE.file && mismatch.field === NONCE_IN_USE.field) return 'nonce in use'
-  return `files: ${mismatch.file}/${mismatch.field}${mismatch === recorded ? ' (on record)' : ''}`
+  const source = via === undefined ? ' (on record)' : ` (on record for ${via})`
+  return `files: ${mismatch.file}/${mismatch.field}${mismatch === recorded ? source : ''}`
 }
 
 const parentName = (parent: Parent): string => (parent === HUMAN_ROOT ? 'human' : parent)

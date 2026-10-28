@@ -9,6 +9,7 @@ import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { HUMAN_ROOT, IntegrityLedger } from '../broker/integrity-ledger.js'
 import { Supervisor } from '../agents/supervisor.js'
+import type { ProcessProbe } from '../agents/detached-reap.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { agentDir } from '../paths.js'
 
@@ -41,10 +42,14 @@ const spawnChild = () => ({
   },
 })
 
+/** Every process is alive and its argv unreadable, so no live row is ever proven gone. */
+const allAlive: ProcessProbe = { isAlive: () => true, readArgv: () => undefined, sessionRecords: () => [] }
+
 /** A broker's supervisor over the shared event log; a new one with a fresh ledger is a restart. */
 function supervisorWith(ledger?: IntegrityLedger): Supervisor {
   const supervisor = new Supervisor(core, {
     ...(ledger === undefined ? {} : { integrity: ledger }),
+    processProbe: allAlive,
     nameFreeMs: 50,
     launcherRunning: async () => false,
     surface: { platform: 'darwin', spawn: spawnChild as never, runAppleScript: async () => 'fake-pane' },
@@ -174,7 +179,7 @@ function recordedExited(agentId: string, name: string, parent: string): void {
 }
 
 describe('resume after a broker restart', () => {
-  it('resumes an exited parent first, so the child admits under a known parent', async () => {
+  it('roots a child past its exited parent at the nearest running ancestor, resuming no parent (TP-4345 S3)', async () => {
     const before = supervisorWith()
     const lead = await spawned(before, 'lead', DESK)
     await exitResumable(lead)
@@ -186,11 +191,8 @@ describe('resume after a broker restart', () => {
     const outcome = await supervisorWith(ledger).resume('scout', { requestedBy: 'human' })
 
     expect(outcome).toMatchObject({ ok: true, agentId: scout })
-    expect(admit.mock.calls.map(([req]) => req)).toEqual([
-      { agentId: lead, parent: DESK, humanProof: false },
-      { agentId: scout, parent: lead, humanProof: true },
-    ])
-    expect(ledger.verdict(lead)).toEqual({ ok: true })
+    expect(admit.mock.calls.map(([req]) => req)).toEqual([{ agentId: scout, parent: DESK, humanProof: true }])
+    expect(core.agents.get(lead)?.state).toBe('exited')
     expect(ledger.verdict(scout)).toEqual({ ok: true })
   })
 
