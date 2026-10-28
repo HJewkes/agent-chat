@@ -19,6 +19,15 @@ describe('what a broker spawned by an agent carries', () => {
     expect(env).toEqual({ AGENT_CHAT_HOME: '/h', PATH: '/bin' })
   })
 
+  it('drops a restart’s lock token and its test seam, so no auto-started broker inherits them (TP-4347)', () => {
+    const env = withoutLaunchIdentity({
+      AGENT_CHAT_RESTART_TOKEN: 'secret',
+      AGENT_CHAT_TEST_RESTART_GAP_MS: '750',
+      PATH: '/bin',
+    })
+    expect(env).toEqual({ PATH: '/bin' })
+  })
+
   it('drops another launch’s private temp dir, which is per-launch like the identity (CC-901)', () => {
     const env = withoutLaunchIdentity({
       TMPDIR: '/tmp/ac-lead-123',

@@ -46,7 +46,7 @@ case "$1 $2" in
     if [ -n "\${FAKE_RESTART_FAIL_THEN:-}" ]; then echo "$FAKE_RESTART_FAIL_THEN" >&2; exit 1; fi
     now=$(date -u +%Y-%m-%dT%H:%M:%S.999Z)
     for ((i = 0; i < \${FAKE_STARTED:-1}; i++)); do
-      echo "{\\"ts\\":\\"$now\\",\\"event\\":\\"broker_started\\"}" >> "$AGENT_CHAT_HOME/broker.log\${FAKE_LOG_SUFFIX:-}"
+      echo "{\\"ts\\":\\"$now\\",\\"event\\":\\"broker_started\\",\\"launcher\\":\\"\${FAKE_LAUNCHER:-restart}\\"}" >> "$AGENT_CHAT_HOME/broker.log\${FAKE_LOG_SUFFIX:-}"
     done
     for ((i = 0; i < \${FAKE_SHADOW_ERRORS:-0}; i++)); do
       echo "{\\"ts\\":\\"$now\\",\\"event\\":\\"ledger_shadow_error\\"}" >> "$AGENT_CHAT_HOME/broker.log\${FAKE_LOG_SUFFIX:-}"
@@ -449,6 +449,7 @@ describe('restart-window post-checks', () => {
   it.each([
     ['no broker_started line', { FAKE_STARTED: '0' }, 'exactly one broker_started'],
     ['two broker_started lines', { FAKE_STARTED: '2' }, 'exactly one broker_started'],
+    ['a broker a session auto-started', { FAKE_LAUNCHER: 'auto' }, 'the broker was started by this restart'],
     ['a ledger_shadow_error line', { FAKE_SHADOW_ERRORS: '1' }, 'no ledger_shadow_error'],
     [
       'agent ls exiting non-zero',
