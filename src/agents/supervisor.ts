@@ -14,6 +14,7 @@ import {
   type Parent,
   type Verdict,
 } from '../broker/integrity-ledger.js'
+import type { IntegrityCall, NoteWouldDeny } from '../broker/integrity-shadow.js'
 import {
   encode,
   HUMAN,
@@ -1013,6 +1014,8 @@ export interface SupervisorOptions {
   hosts?: LauncherSite
   /** TP-4256 A3: the broker's ledger. Absent, a launch is written `OFF_BROKER`, without `--integrity`. */
   integrity?: LaunchLedger
+  /** TP-4347: set only in `shadow`; every refusal the ledger would make is written here and none is made. */
+  wouldDeny?: NoteWouldDeny
   /** CC-892: the account checks and transcript move behind `account_move`. Faked in tests. */
   accountMoves?: AccountMoves
   /**
@@ -1370,6 +1373,7 @@ export class Supervisor implements TeleportHost {
   private readonly remoteSpawns: RemoteSpawns
   private readonly hosts: LauncherSite | undefined
   private readonly ledger: LaunchLedger | undefined
+  private readonly wouldDeny: NoteWouldDeny | undefined
   /** CC-1592: the one seam both a move and its dry run read, so they refuse alike. */
   private readonly accountMoves: AccountMoves
   /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
@@ -1408,6 +1412,7 @@ export class Supervisor implements TeleportHost {
     this.repoVisibility = options.repoVisibility
     this.hosts = options.hosts
     this.ledger = options.integrity
+    this.wouldDeny = options.wouldDeny
     this.profileBaseline = options.profileBaseline ?? new ProfileBaseline(profilesDir())
     this.profileDriftMode = options.profileDriftMode ?? resolveProfileDriftMode()
     this.remoteSpawns = new RemoteSpawns({
@@ -3179,7 +3184,7 @@ export class Supervisor implements TeleportHost {
 
     const reviewerTree = await this.reviewerTreeBefore(profile.name, req.name, allocation.cwd)
     const launchedAt = Date.now()
-    const handle = await this.launchOn(surface, plan, req.anchor)
+    const handle = await this.launchOn('spawn', surface, plan, req.anchor)
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor, reviewerTree)
     this.claimAtSpawn(req, allocation.cwd, ctx.baseCwd)
     this.bindExecution(agentId, resolved.executionId)
@@ -3705,7 +3710,9 @@ export class Supervisor implements TeleportHost {
   /** TP-4313: after a restart, resumes the child's unadmitted ancestors first, so its admit never latches `unknown parent`. */
   private async resumeAncestors(child: AgentIdentity, req: ResumeRequest): Promise<string | undefined> {
     const lineage = this.unadmittedLineage(child)
-    if ('refusal' in lineage) return lineage.refusal
+    if ('refusal' in lineage) return this.enforced(child.agentId, lineage.refusal, 'resume')
+    // TP-4347: shadow starts no launch `off` would not, so the child's own admit records the gap.
+    if (this.wouldDeny !== undefined) return undefined
     for (const parent of lineage.ancestors) {
       if (this.core.agents.byName(parent.name)?.agentId !== parent.agentId)
         return `integrity: ${child.name} is not resumed: its parent ${parent.agentId} is not the agent the name ${parent.name} resumes`
@@ -3717,18 +3724,27 @@ export class Supervisor implements TeleportHost {
   }
 
   /** TP-4256 A3: the ledger's refusal of this agent's launch; undefined to launch it. */
-  private launchRefusal(agentId: string): string | undefined {
+  private launchRefusal(agentId: string, call?: IntegrityCall): string | undefined {
     const verdict = this.ledger?.verdict(agentId)
-    return verdict === undefined || verdict.ok ? undefined : integrityRefusal(agentId, verdict)
+    if (verdict === undefined || verdict.ok) return undefined
+    return this.enforced(agentId, integrityRefusal(agentId, verdict), call)
+  }
+
+  /** TP-4347: the refusal to make; in shadow none, and the one at `call` is written as a would_deny row. */
+  private enforced(agentId: string, refusal: string, call?: IntegrityCall): string | undefined {
+    if (this.wouldDeny === undefined) return refusal
+    if (call !== undefined) this.wouldDeny({ agentId, reason: refusal, call })
+    return undefined
   }
 
   private async launchOn(
+    call: IntegrityCall,
     surface: SurfaceName,
     plan: LaunchPlan,
     anchor?: string,
     reuseAnchor = false,
   ): Promise<LaunchHandle> {
-    const refusal = this.launchRefusal(plan.agentId)
+    const refusal = this.launchRefusal(plan.agentId, call)
     if (refusal !== undefined) throw new Error(refusal)
     const columnAfter = anchor === undefined ? undefined : this.columnFor(anchor)
     return surfaceFor(surface, {
@@ -4795,7 +4811,7 @@ export class Supervisor implements TeleportHost {
       },
     })
     const reviewerTree = await this.reviewerTreeBefore(profile.name, agent.name, allocation.cwd)
-    const handle = await this.launchOn(surface, plan, req.anchor).catch((err: unknown) => {
+    const handle = await this.launchOn('resume', surface, plan, req.anchor).catch((err: unknown) => {
       this.resumeNeverStarted(agent, err)
       throw err
     })
@@ -4926,7 +4942,7 @@ export class Supervisor implements TeleportHost {
     const executionId = this.continueExecution(agent, entry)
     let handle: LaunchHandle
     try {
-      handle = await this.launchOn(surface, plan, req.anchor)
+      handle = await this.launchOn('mode switch', surface, plan, req.anchor)
     } catch (err) {
       this.resumeNeverStarted(agent, err)
       const said = err instanceof Error ? err.message : String(err)
@@ -5377,7 +5393,13 @@ export class Supervisor implements TeleportHost {
     if (refusal !== undefined) return this.refuseRetry(input, reason, refusal)
     let handle: LaunchHandle
     try {
-      handle = await this.launchOn(input.surface, launch.plan, input.anchor, input.reuseAnchor ?? false)
+      handle = await this.launchOn(
+        'teleport',
+        input.surface,
+        launch.plan,
+        input.anchor,
+        input.reuseAnchor ?? false,
+      )
     } catch (err) {
       return this.reportDeadSuccessor(input, (err as Error).message)
     }
@@ -5444,7 +5466,8 @@ export class Supervisor implements TeleportHost {
     executionId: string | undefined,
   ): Promise<{ handle: LaunchHandle; retried: boolean }> {
     const { input, plan } = launch
-    const attempt = () => this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+    const attempt = () =>
+      this.launchOn('teleport', input.surface, plan, input.anchor, input.reuseAnchor ?? false)
     let failure: string
     try {
       return { handle: await attempt(), retried: false }
@@ -5482,7 +5505,7 @@ export class Supervisor implements TeleportHost {
     if (machine !== undefined) return this.refusedHeadless(input, executionId, failure, machine)
     let handle: LaunchHandle
     try {
-      handle = await this.launchOn('headless', this.headlessPlan(launch))
+      handle = await this.launchOn('teleport', 'headless', this.headlessPlan(launch))
     } catch (err) {
       // The relaunch script the lost-teleport notice names must start the surface the human asked for.
       this.writeSuccessorFiles(launch, launch.plan)

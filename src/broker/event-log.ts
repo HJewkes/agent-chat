@@ -108,8 +108,10 @@ const QUEUE_KINDS = ["'message'", "'question'", "'notice'", "'approval_request'"
  */
 export const APPROVAL_TTL_MS = 10 * 60 * 1000
 
-/** The `meta.event` of the one row that marks the first broker start with `INTEGRITY_WIRED` on. */
+/** The `meta.event` of the one row that marks the first broker start that arms launches (`INTEGRITY_MODE` not `off`). */
 export const INTEGRITY_WIRED_SINCE = 'integrity_wired_since'
+/** TP-4347: the `meta.event` of the notice a `shadow` ledger writes where `enforce` would refuse. */
+export const INTEGRITY_WOULD_DENY = 'integrity_would_deny'
 /** The `meta.event` of the notice the broker writes when the integrity ledger latches a quarantine. */
 export const INTEGRITY_QUARANTINE = 'integrity_quarantine'
 /** The `agent_resumed` meta key, set to `human` on the human's own resume, the one that clears (TP-4341). */

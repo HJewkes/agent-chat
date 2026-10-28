@@ -30,7 +30,8 @@ import { logEvent, loggedCount } from './log.js'
 import { selfGrantFrameRefusal } from './self-grant-frame.js'
 import { integrityFrameRefusal } from './integrity-frame.js'
 import { IntegrityLedger } from './integrity-ledger.js'
-import { INTEGRITY_WIRED } from './integrity-wired.js'
+import { INTEGRITY_MODE } from './integrity-wired.js'
+import { verdictReason, wouldDenyWriter, type NoteWouldDeny } from './integrity-shadow.js'
 import { INTEGRITY_QUARANTINE, INTEGRITY_WIRED_SINCE } from './event-log.js'
 import { SettingsWatch } from './settings-watch.js'
 import { sendMeta, sendMetaRefusal } from './send-meta.js'
@@ -495,6 +496,8 @@ export class SocketServer {
   readonly integrity = new IntegrityLedger((agentId, mismatch) => this.noticeQuarantine(agentId, mismatch))
   /** TP-4256 A5: re-hashes the launch files the broker wrote, on every check and on a timer. */
   readonly settingsWatch: SettingsWatch = this.integrity.watch
+  /** TP-4347: set only in `shadow`, where every refusal the ledger would make is written here instead. */
+  private readonly wouldDeny: NoteWouldDeny | undefined
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -516,20 +519,30 @@ export class SocketServer {
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
+    this.wouldDeny =
+      INTEGRITY_MODE === 'shadow'
+        ? wouldDenyWriter(
+            input => core.append(input),
+            agentId => core.agents.get(agentId)?.name,
+          )
+        : undefined
     this.supervisor = new Supervisor(core, {
       ...supervisorOptions,
       hosts: this.hosts,
-      ...(INTEGRITY_WIRED ? { integrity: this.integrity } : {}),
+      ...(INTEGRITY_MODE === 'off' ? {} : { integrity: this.integrity }),
+      ...(this.wouldDeny === undefined ? {} : { wouldDeny: this.wouldDeny }),
     })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
-    if (INTEGRITY_WIRED) this.markIntegrityWired()
+    if (INTEGRITY_MODE !== 'off') this.markIntegrityWired()
     this.closeOrphanedHookRows()
     this.settingsWatch.start()
   }
 
   /**
-   * TP-4341: written once, at the first wired start. A launch unarmed before it was written by an
-   * unwired broker; one changed at or after it had its nonce stripped.
+   * TP-4341: written once, at the first start that arms launches, `shadow` included: a launch it
+   * armed and an agent later stripped of its nonce must not pass as unarmed at the `enforce` start.
+   * A launch unarmed before it was written by an unwired broker; one changed at or after it had its
+   * nonce stripped.
    */
   private markIntegrityWired(): void {
     if (this.core.events.integrityWiredSince() !== undefined) return
@@ -1937,7 +1950,13 @@ export class SocketServer {
     if (refusal !== undefined) return reply(conn, { t: 'integrity_result', ok: false, reason: refusal })
     this.settingsWatch.sweep()
     const result = this.integrity.check(msg.nonce, msg.session, msg.records)
-    if (result.ok) return reply(conn, { t: 'integrity_result', ok: true })
+    if (!result.ok && this.wouldDeny !== undefined)
+      this.wouldDeny({
+        agentId: this.integrity.agentOf(msg.nonce) ?? '',
+        reason: verdictReason(result),
+        call: 'hook',
+      })
+    if (result.ok || this.wouldDeny !== undefined) return reply(conn, { t: 'integrity_result', ok: true })
     if (result.reason === 'no baseline')
       return reply(conn, { t: 'integrity_result', ok: false, reason: result.reason })
     reply(conn, {
@@ -1962,7 +1981,9 @@ export class SocketServer {
     if (!this.integrity.knows(msg.agentId) && offBrokerDir(msg.agentId, msg.agentDir))
       return reply(conn, { t, ok: true, offBroker: true })
     const verdict = this.integrity.verdict(msg.agentId)
-    if (verdict.ok) return reply(conn, { t, ok: true })
+    if (!verdict.ok && this.wouldDeny !== undefined)
+      this.wouldDeny({ agentId: msg.agentId, reason: verdictReason(verdict), call: 'relaunch' })
+    if (verdict.ok || this.wouldDeny !== undefined) return reply(conn, { t, ok: true })
     if (verdict.reason === 'no baseline') return reply(conn, { t, ok: false, reason: verdict.reason })
     reply(conn, { t, ok: false, reason: verdict.reason, file: verdict.file, field: verdict.field })
   }
@@ -1973,6 +1994,9 @@ export class SocketServer {
    */
   private noticeQuarantine(agentId: string, mismatch: { file: string; field: string }): void {
     const agent = this.core.agents.get(agentId)?.name ?? agentId
+    logEvent('integrity_quarantine', { agent, agentId, file: mismatch.file, field: mismatch.field })
+    // TP-4347: a shadow latch files no owner notice; the refusal it leads to is the would_deny row.
+    if (INTEGRITY_MODE === 'shadow') return
     this.core.append({
       kind: 'notice',
       actor: 'agent-chat',
@@ -1990,7 +2014,6 @@ export class SocketServer {
         field: mismatch.field,
       },
     })
-    logEvent('integrity_quarantine', { agent, agentId, file: mismatch.file, field: mismatch.field })
   }
 
   /** CC-169: a pure read like `activity`; an unknown `after` is an error, never a replay from row 0. */
