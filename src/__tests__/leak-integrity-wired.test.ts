@@ -15,6 +15,9 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import {
   EventLog,
   INTEGRITY_QUARANTINE,
+  INTEGRITY_READMITTED,
+  INTEGRITY_READMIT_SKIPPED,
+  INTEGRITY_READMIT_SWEEP,
   INTEGRITY_WIRED_SINCE,
   INTEGRITY_WOULD_DENY,
 } from '../broker/event-log.js'
@@ -841,7 +844,14 @@ describe('TP-4341: an unarmed launch is accepted once, as the migration to a wir
 const ledgerRows = (core: BrokerCore, event: string) =>
   core.events.since(0, 500).filter(row => row.meta?.event === event)
 
-const INTEGRITY_EVENTS = [INTEGRITY_WIRED_SINCE, INTEGRITY_QUARANTINE, INTEGRITY_WOULD_DENY]
+const INTEGRITY_EVENTS = [
+  INTEGRITY_WIRED_SINCE,
+  INTEGRITY_QUARANTINE,
+  INTEGRITY_WOULD_DENY,
+  INTEGRITY_READMITTED,
+  INTEGRITY_READMIT_SKIPPED,
+  INTEGRITY_READMIT_SWEEP,
+]
 
 /** A lead the human spawned and a sibling, under a broker built in `next`. */
 function setupIn(next: IntegrityMode): Promise<Wired> {
@@ -944,5 +954,93 @@ describe('TP-4347: a shadow ledger refuses nothing and writes what enforce would
 
     expect(denial).toBeUndefined()
     await expect(runAgentVerb('agnoplan', down)).rejects.toThrow(/no launch plan for agent agnoplan/)
+  })
+})
+
+/** TP-4345 S2: the agent id and reason of every re-admit skip row, in order. */
+const skips = (core: BrokerCore) =>
+  ledgerRows(core, INTEGRITY_READMIT_SKIPPED).map(row => [row.meta?.agent_id, row.meta?.reason])
+
+const attach = (core: BrokerCore, agentId: string, actor = 'lead') =>
+  core.append({ kind: 'agent_attached', actor, ref: agentId })
+
+describe('TP-4345 S2: every re-admit outcome after a restart writes one row', () => {
+  it.each<IntegrityMode>(['shadow', 'enforce'])('%s: a survivor enrolled under the human', async current => {
+    const wired = await setupIn(current)
+    const after = restarted(wired)
+
+    attach(after.core, wired.lead)
+
+    expect(ledgerRows(after.core, INTEGRITY_READMITTED).map(row => row.meta)).toEqual([
+      expect.objectContaining({ agent_id: wired.lead, parent: 'human', armed: 'true' }),
+    ])
+    expect(skips(after.core)).toEqual([])
+  })
+
+  it('no launch dir', async () => {
+    const wired = await setup()
+    fs.rmSync(agentDir(wired.sibling), { recursive: true })
+    const after = restarted(wired)
+
+    attach(after.core, wired.sibling, 'sibling')
+    attach(after.core, wired.sibling, 'sibling')
+
+    expect(skips(after.core)).toEqual([[wired.sibling, 'no launch dir']])
+  })
+
+  it('departed, for an ended parent a spawn asks about', async () => {
+    const wired = await setup()
+    await ended(wired, wired.lead)
+    const after = restarted(wired)
+
+    await after.spawn('child', wired.lead)
+
+    expect(skips(after.core)).toEqual([[wired.lead, 'departed']])
+  })
+
+  it('unknown agent, for a parent with no identity', async () => {
+    const wired = await setup()
+
+    await wired.spawn('child', 'lead', { requestedBy: 'human', parentAgentId: 'agnoparent' })
+
+    expect(skips(wired.core)).toEqual([['agnoparent', 'unknown agent']])
+  })
+
+  it('lineage unresolved via a parent the ledger could not enrol', async () => {
+    const wired = await setup()
+    const child = await wired.spawn('child', 'lead', { requestedBy: 'coord', parentAgentId: wired.lead })
+    fs.rmSync(agentDir(wired.lead), { recursive: true })
+    const after = restarted(wired)
+
+    attach(after.core, child, 'child')
+
+    const state = after.core.agents.get(wired.lead)?.state
+    expect(skips(after.core)).toEqual([
+      [wired.lead, 'no launch dir'],
+      [child, `lineage unresolved via ${wired.lead} (${state})`],
+    ])
+    expect(after.server.integrity.knows(child)).toBe(false)
+  })
+
+  it('nonce in use', async () => {
+    const wired = await setup()
+    fs.copyFileSync(hookSettingsPath(wired.lead), hookSettingsPath(wired.sibling))
+    const after = restarted(wired)
+
+    attach(after.core, wired.lead)
+    attach(after.core, wired.sibling, 'sibling')
+
+    expect(skips(after.core)).toEqual([[wired.sibling, 'nonce in use']])
+  })
+
+  it('files, naming the launch file and field that is not as the broker wrote it', async () => {
+    const wired = await setup()
+    wired.bash(`printf '#!/bin/sh\\nexec claude\\n' > "$A/relaunch"`)
+    const after = restarted(wired)
+
+    attach(after.core, wired.lead)
+
+    expect(skips(after.core)).toEqual([[wired.lead, `files: ${agentDir(wired.lead)}/relaunch/sha256`]])
+    expect(ledgerRows(after.core, INTEGRITY_READMITTED)).toEqual([])
   })
 })

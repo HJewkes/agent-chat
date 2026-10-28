@@ -112,6 +112,10 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000
 export const INTEGRITY_WIRED_SINCE = 'integrity_wired_since'
 /** TP-4347: the `meta.event` of the notice a `shadow` ledger writes where `enforce` would refuse. */
 export const INTEGRITY_WOULD_DENY = 'integrity_would_deny'
+/** TP-4345 S2: the `meta.event` of the notices for one re-admit outcome and for the start's sweep. */
+export const INTEGRITY_READMITTED = 'integrity_readmitted'
+export const INTEGRITY_READMIT_SKIPPED = 'integrity_readmit_skipped'
+export const INTEGRITY_READMIT_SWEEP = 'integrity_readmit_sweep'
 /** The `meta.event` of the notice the broker writes when the integrity ledger latches a quarantine. */
 export const INTEGRITY_QUARANTINE = 'integrity_quarantine'
 /** The `agent_resumed` meta key, set to `human` on the human's own resume, the one that clears (TP-4341). */

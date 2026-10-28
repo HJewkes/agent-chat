@@ -16,6 +16,8 @@ export type Parent = string | typeof HUMAN_ROOT
 
 /** Mismatch `file` for a quarantine of the chain itself rather than of a file on disk. */
 export const LINEAGE = '<lineage>'
+/** A survivor's nonce another launch already holds. */
+export const NONCE_IN_USE: Mismatch = { file: LINEAGE, field: 'nonce in use' }
 
 interface Quarantine {
   readonly mismatch: Mismatch
@@ -131,17 +133,27 @@ export class IntegrityLedger {
    * asks with. The ledger is memory only, so a restart proves nothing; a launch file that is not
    * as a broker writes it does, and latches, as does a quarantine a previous broker `recorded`
    * that no human resume has cleared. It never clears, and leaves a known principal as is.
+   * Returns the mismatch it latched on, if any (TP-4345 S2), so the caller can say why.
    */
-  readmit(req: Omit<AdmitRequest, 'humanProof'>, survivor: Survivor, recorded?: Mismatch): void {
-    if (this.knows(req.agentId)) return
+  readmit(
+    req: Omit<AdmitRequest, 'humanProof'>,
+    survivor: Survivor,
+    recorded?: Mismatch,
+  ): Mismatch | undefined {
+    if (this.knows(req.agentId)) return undefined
     if (survivor.intact) this.watch.replace(req.agentId, survivor.files)
     this.enrol(req.agentId, req.parent)
     const mismatch = survivor.intact ? recorded : survivor.mismatch
-    if (mismatch !== undefined) return void this.latch(req.agentId, mismatch)
-    if (!survivor.intact || survivor.nonce === undefined) return
-    if (this.store.launch(survivor.nonce) !== undefined)
-      return void this.latch(req.agentId, { file: LINEAGE, field: 'nonce in use' })
+    if (mismatch !== undefined) return this.latched(req.agentId, mismatch)
+    if (!survivor.intact || survivor.nonce === undefined) return undefined
+    if (this.store.launch(survivor.nonce) !== undefined) return this.latched(req.agentId, NONCE_IN_USE)
     this.store.putLaunch(survivor.nonce, { agentId: req.agentId, startup: survivor.startup, sessions: {} })
+    return undefined
+  }
+
+  private latched(agentId: string, mismatch: Mismatch): Mismatch {
+    this.latch(agentId, mismatch)
+    return mismatch
   }
 
   /** Whether any admit enrolled `agentId`; a principal it knows is always answered by `verdict`. */
