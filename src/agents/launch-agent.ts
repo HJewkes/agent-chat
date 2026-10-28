@@ -34,7 +34,7 @@ import { readLaunchPlan } from './launch-files.js'
 import { holderOf } from './launch-guard.js'
 import { continueStarted } from './launch-plan.js'
 import { findTranscript } from './transcript.js'
-import { INTEGRITY_WIRED } from '../broker/integrity-wired.js'
+import { INTEGRITY_MODE } from '../broker/integrity-wired.js'
 import { askBroker, RELAUNCH_REFUSED_EXIT, relaunchRefusal, type AskRelaunch } from './relaunch-integrity.js'
 import { reviewerScratchDir, withScratchAddDir } from './reviewer-tree.js'
 
@@ -151,14 +151,15 @@ export function planConfigDir(plan: LaunchPlan, base: NodeJS.ProcessEnv = proces
 
 /**
  * `agent-chat run-agent <id>`: the verb every stored relaunch script calls. `ask` is the ledger
- * gate (TP-4256 A3), absent until `INTEGRITY_WIRED`; it runs before the plan is even read.
+ * gate (TP-4256 A3), absent while `INTEGRITY_MODE` is `off`; it runs before the plan is even read.
+ * In `shadow` it asks, so the broker writes what it would deny, and launches whatever the answer.
  */
 export async function runAgentVerb(
   agentId: string,
-  ask: AskRelaunch | undefined = INTEGRITY_WIRED ? askBroker : undefined,
+  ask: AskRelaunch | undefined = INTEGRITY_MODE === 'off' ? undefined : askBroker,
 ): Promise<void> {
   const refused = ask === undefined ? undefined : await relaunchRefusal(agentId, ask)
-  if (refused !== undefined) {
+  if (refused !== undefined && INTEGRITY_MODE !== 'shadow') {
     process.stderr.write(`${refused}\n`)
     process.exit(RELAUNCH_REFUSED_EXIT)
   }

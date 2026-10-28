@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads'
 import { BrokerClient } from '../../client/broker-client.js'
+import { INTEGRITY_MODE } from '../../broker/integrity-wired.js'
 import { decideWithin } from '../../leak-guard/failopen.js'
 import type { Records } from '../../leak-guard/integrity/record.js'
 import type { ClientMessage, ServerMessage } from '../../protocol.js'
@@ -7,7 +8,8 @@ import type { ClientMessage, ServerMessage } from '../../protocol.js'
 /**
  * TP-4256 A3: the hook half of the run-time check of the files a later shell sources. The hook
  * reads its records and asks the broker that minted `--integrity <nonce>`. Nothing here allows on
- * failure: an unreachable broker, a timeout, a crash and an unknown nonce all deny.
+ * failure: an unreachable broker, a timeout, a crash and an unknown nonce all deny. In `shadow`
+ * (TP-4347) it still asks, so the broker writes what it would deny, but never denies.
  */
 
 export const UNREACHABLE = 'leak-guard: integrity baseline unreachable'
@@ -84,5 +86,5 @@ export async function integrityDenial(
     denialOf(await ask({ t: 'integrity_check', nonce, session, records: await collect(session, env) }))
   const deny = (): string => UNREACHABLE
   const out = await decideWithin(decide, { ms: deadlineMs, denial: deny }, () => undefined, deny)
-  return out === '' ? undefined : out
+  return out === '' || INTEGRITY_MODE === 'shadow' ? undefined : out
 }

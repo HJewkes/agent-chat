@@ -5,15 +5,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { autoAttach } from './broker-harness.js'
+import { runAgentVerb } from '../agents/launch-agent.js'
 import { hookSettingsPath } from '../agents/launch-files.js'
 import { relaunchRefusal } from '../agents/relaunch-integrity.js'
 import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { AgentProfile } from '../agents/types.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
-import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
+import {
+  EventLog,
+  INTEGRITY_QUARANTINE,
+  INTEGRITY_WIRED_SINCE,
+  INTEGRITY_WOULD_DENY,
+} from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
+import type { IntegrityMode } from '../broker/integrity-wired.js'
 import { SocketServer } from '../broker/socket.js'
 import {
   integrityDenial,
@@ -26,14 +33,20 @@ import { currentRecords } from '../leak-guard/integrity/env-records.js'
 import { agentDir } from '../paths.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
-// The in-process broker runs wired whatever the shipped flag says, as A3a-A3d's suites injected the gate.
-vi.mock('../broker/integrity-wired.js', () => ({ INTEGRITY_WIRED: true }))
-const { INTEGRITY_WIRED: BUILT_WIRED } = await vi.importActual<typeof import('../broker/integrity-wired.js')>(
+// The in-process broker runs in `enforce` whatever the shipped mode says, as A3a-A3d's suites injected
+// the gate; TP-4347's rows set another mode before they build the broker. Every reader reads it late.
+const mode = vi.hoisted(() => ({ current: 'enforce' as IntegrityMode }))
+vi.mock('../broker/integrity-wired.js', () => ({
+  get INTEGRITY_MODE() {
+    return mode.current
+  },
+}))
+const { INTEGRITY_MODE: BUILT_MODE } = await vi.importActual<typeof import('../broker/integrity-wired.js')>(
   '../broker/integrity-wired.js',
 )
 
 /**
- * TP-4256 A3 acceptance rows, wired: `INTEGRITY_WIRED` on, a real `SocketServer` whose supervisor
+ * TP-4256 A3 acceptance rows, wired: `INTEGRITY_MODE` `enforce`, a real `SocketServer` whose supervisor
  * writes every launch through the ledger's `admit`, the hook's records and `integrity_check`, and
  * `run-agent`'s relaunch ask. Every write is a real `bash -c` under a synthetic HOME. The shapes are
  * S1-S17 of the A5 redesign, FIFO and /dev/zero swaps, and the three classes the A3 rounds missed.
@@ -45,6 +58,7 @@ const CLI = path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
 const cleanups: (() => void)[] = []
 
 afterEach(() => {
+  mode.current = 'enforce'
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
@@ -166,7 +180,8 @@ async function setup() {
   const sibling = await spawn('sibling', 'explorer', { requestedBy: 'human' })
   // Last, so `exits.latest` ends the lead.
   const lead = await spawn('lead', 'lead', { requestedBy: 'human' })
-  const leadNonce = nonceOf(lead)
+  // An `off` broker arms no launch, so there is no nonce to ask with.
+  const leadNonce = mode.current === 'off' ? '' : nonceOf(lead)
   const env = { HOME: home, CLAUDE_CONFIG_DIR: configDir }
   const ask: AskBroker = async frame => answer(server, frame, 'integrity_result')
   const check = (nonce: string, raw: string) =>
@@ -513,7 +528,7 @@ describe('FF2: a quarantine survives every new launch of the agent or its descen
 })
 
 // The built CLI reads the shipped flag, which no mock reaches.
-describe.skipIf(!BUILT_WIRED)('FF3/4: run-agent with no broker to ask', () => {
+describe.skipIf(BUILT_MODE !== 'enforce')('FF3/4: run-agent with no broker to ask', () => {
   it('refuses the relaunch with exit 77 and starts nothing', async () => {
     const wired = await setup()
     expect(fs.existsSync(CLI), 'run `npm run build` first').toBe(true)
@@ -819,5 +834,115 @@ describe('TP-4341: an unarmed launch is accepted once, as the migration to a wir
     expect(mark).toBeDefined()
     expect(after.core.events.integrityWiredSince()).toBe(mark)
     expect(wiredMarks(after.core)).toHaveLength(1)
+  })
+})
+
+/** TP-4347: the rows of one integrity `meta.event`. */
+const ledgerRows = (core: BrokerCore, event: string) =>
+  core.events.since(0, 500).filter(row => row.meta?.event === event)
+
+const INTEGRITY_EVENTS = [INTEGRITY_WIRED_SINCE, INTEGRITY_QUARANTINE, INTEGRITY_WOULD_DENY]
+
+/** A lead the human spawned and a sibling, under a broker built in `next`. */
+function setupIn(next: IntegrityMode): Promise<Wired> {
+  mode.current = next
+  return setup()
+}
+
+describe.each<IntegrityMode>(['off', 'shadow', 'enforce'])('TP-4347: INTEGRITY_MODE %s', current => {
+  it('arms a launch and marks the wiring only while the ledger runs', async () => {
+    const wired = await setupIn(current)
+
+    const settings = fs.readFileSync(hookSettingsPath(wired.lead), 'utf8')
+
+    expect(settings.includes('--integrity')).toBe(current !== 'off')
+    expect(ledgerRows(wired.core, INTEGRITY_WIRED_SINCE)).toHaveLength(current === 'off' ? 0 : 1)
+    expect(ledgerRows(wired.core, INTEGRITY_WOULD_DENY)).toEqual([])
+    expect(ledgerRows(wired.core, INTEGRITY_QUARANTINE)).toEqual([])
+  })
+
+  it('a spawn under a parent the ledger cannot vouch for', async () => {
+    const wired = await setupIn(current)
+
+    const child = await wired.spawn('child', 'lead', { requestedBy: 'human', parentAgentId: 'agnoparent' })
+
+    const denies = ledgerRows(wired.core, INTEGRITY_WOULD_DENY)
+    const quarantines = ledgerRows(wired.core, INTEGRITY_QUARANTINE)
+    if (current === 'enforce') {
+      expect(child).toMatch(/^refused: .*no baseline/)
+      expect(denies).toEqual([])
+      return
+    }
+    expect(child).not.toMatch(/^refused/)
+    expect(quarantines).toEqual([])
+    if (current === 'off')
+      return expect(INTEGRITY_EVENTS.flatMap(event => ledgerRows(wired.core, event))).toEqual([])
+    expect(denies).toHaveLength(1)
+    expect(denies[0]?.meta).toMatchObject({ agent_id: child, call: 'spawn' })
+    expect(denies[0]?.meta?.reason).toMatch(/has no baseline/)
+  })
+})
+
+describe('TP-4347: a shadow ledger refuses nothing and writes what enforce would refuse', () => {
+  const calls = (wired: Wired) =>
+    ledgerRows(wired.core, INTEGRITY_WOULD_DENY)
+      .map(row => row.meta?.call)
+      .sort()
+
+  // The latching call reports `changed`, the next one `quarantined`: two reasons, so two hook rows.
+  it('a quarantined lead keeps its tool calls, relaunch, child spawn and mode switch', async () => {
+    const wired = await setupIn('shadow')
+    wired.bash(`echo 'alias ls=rm' >> ~/.zshrc`)
+
+    const hooks = [await wired.hook(), await wired.hook(), await wired.hook()]
+    const relaunch = await wired.relaunch()
+    const child = await wired.spawn('child', 'lead', { requestedBy: 'coord', parentAgentId: wired.lead })
+    const switched = await wired.supervisor.switchSurface({
+      name: 'lead',
+      to: 'interactive',
+      requestedBy: 'human',
+    })
+
+    expect([hooks, relaunch, switched.ok]).toEqual([[undefined, undefined, undefined], undefined, true])
+    expect(child).not.toMatch(/^refused/)
+    expect(calls(wired)).toEqual(['hook', 'hook', 'mode switch', 'relaunch', 'spawn'])
+    expect(ledgerRows(wired.core, INTEGRITY_WOULD_DENY)[0]?.meta?.reason).toMatch(/\.zshrc/)
+    expect(wired.notices()).toEqual([])
+  })
+
+  it('a quarantined lead is woken and teleports', async () => {
+    const wired = await setupIn('shadow')
+    wired.bash(`echo x >> "$A/mcp.json"`)
+    await wired.hook()
+    finish(wired)
+    await settle()
+
+    const woken = await wired.supervisor.resume('lead', { requestedBy: 'human', source: 'watchdog' })
+    await succeed(wired.supervisor, wired, 'agsucc01')
+
+    expect(woken.ok).toBe(true)
+    expect(calls(wired)).toEqual(['hook', 'resume', 'teleport'])
+    expect(wired.notices()).toEqual([])
+    expect(wired.core.events.humanQueue().filter(item => item.text.includes('integrity'))).toEqual([])
+  })
+
+  it('the hook and run-agent allow when the broker cannot be asked', async () => {
+    const wired = await setupIn('shadow')
+    const down = () => Promise.reject(new Error('no broker is listening'))
+    vi.spyOn(process, 'exit').mockImplementation(code => {
+      throw new Error(`exit ${code}`)
+    })
+
+    const denial = await integrityDenial(
+      wired.leadNonce,
+      '{}',
+      wired.env,
+      down,
+      INTEGRITY_DEADLINE_MS,
+      inline,
+    )
+
+    expect(denial).toBeUndefined()
+    await expect(runAgentVerb('agnoplan', down)).rejects.toThrow(/no launch plan for agent agnoplan/)
   })
 })

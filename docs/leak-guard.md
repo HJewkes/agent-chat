@@ -1579,12 +1579,19 @@ it on the call that made it.
   with `integrity_cleared: human`. Other resumes do not clear. A change made while no broker
   watched is lost. The re-admit checks the shape of the guard, not every byte of `settings.json`
   and `mcp.json`, so an extra key added then passes. It cannot catch a startup file that changed
-  before the restart. An unarmed guard is a one-time migration. The first broker
-  start with `INTEGRITY_WIRED` on writes one `integrity_wired_since` notice to the event store, and
-  later starts never move it. An unarmed launch is re-admitted, with no nonce, only while all four
+  before the restart. An unarmed guard is a one-time migration. The first broker start with
+  `INTEGRITY_MODE` `shadow` or `enforce` writes one `integrity_wired_since` notice to the event
+  store, and later starts never move it. An unarmed launch is re-admitted, with no nonce, only while all four
   launch files have mtime and ctime before that mark. One changed at or after it had its nonce
   stripped, and latches `unarmed since wiring`. ctime is the half `touch -d` cannot set back. For
   the order to follow, see the restart notes in `docs/agent-teams.md` §4.5.
+- **The rollout mode** (TP-4347) is the compile-time `INTEGRITY_MODE` in
+  `src/broker/integrity-wired.ts`, never config. `off` writes launches unarmed and admits nothing.
+  `shadow` arms launches and runs the ledger in full, but refuses nothing: each refusal `enforce`
+  would make (spawn, resume, teleport, mode switch, relaunch, hook verdict) is one
+  `integrity_would_deny` notice as `agent-chat`, at most one per agent, call site and reason per
+  broker start. A shadow latch files no owner notice, and the hook and `run-agent` allow even
+  when the broker cannot be reached. `enforce` refuses.
 
 ### Config the guard cannot read (TP-630)
 
