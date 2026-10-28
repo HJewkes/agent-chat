@@ -3184,7 +3184,7 @@ export class Supervisor implements TeleportHost {
 
     const reviewerTree = await this.reviewerTreeBefore(profile.name, req.name, allocation.cwd)
     const launchedAt = Date.now()
-    const handle = await this.launchOn('spawn', surface, plan, req.anchor)
+    const handle = await this.launchOn(surface, plan, req.anchor, false, 'spawn')
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor, reviewerTree)
     this.claimAtSpawn(req, allocation.cwd, ctx.baseCwd)
     this.bindExecution(agentId, resolved.executionId)
@@ -3738,11 +3738,11 @@ export class Supervisor implements TeleportHost {
   }
 
   private async launchOn(
-    call: IntegrityCall,
     surface: SurfaceName,
     plan: LaunchPlan,
-    anchor?: string,
-    reuseAnchor = false,
+    anchor: string | undefined,
+    reuseAnchor: boolean,
+    call: IntegrityCall,
   ): Promise<LaunchHandle> {
     const refusal = this.launchRefusal(plan.agentId, call)
     if (refusal !== undefined) throw new Error(refusal)
@@ -4811,7 +4811,7 @@ export class Supervisor implements TeleportHost {
       },
     })
     const reviewerTree = await this.reviewerTreeBefore(profile.name, agent.name, allocation.cwd)
-    const handle = await this.launchOn('resume', surface, plan, req.anchor).catch((err: unknown) => {
+    const handle = await this.launchOn(surface, plan, req.anchor, false, 'resume').catch((err: unknown) => {
       this.resumeNeverStarted(agent, err)
       throw err
     })
@@ -4942,7 +4942,7 @@ export class Supervisor implements TeleportHost {
     const executionId = this.continueExecution(agent, entry)
     let handle: LaunchHandle
     try {
-      handle = await this.launchOn('mode switch', surface, plan, req.anchor)
+      handle = await this.launchOn(surface, plan, req.anchor, false, 'mode switch')
     } catch (err) {
       this.resumeNeverStarted(agent, err)
       const said = err instanceof Error ? err.message : String(err)
@@ -5394,11 +5394,11 @@ export class Supervisor implements TeleportHost {
     let handle: LaunchHandle
     try {
       handle = await this.launchOn(
-        'teleport',
         input.surface,
         launch.plan,
         input.anchor,
         input.reuseAnchor ?? false,
+        'teleport',
       )
     } catch (err) {
       return this.reportDeadSuccessor(input, (err as Error).message)
@@ -5467,7 +5467,7 @@ export class Supervisor implements TeleportHost {
   ): Promise<{ handle: LaunchHandle; retried: boolean }> {
     const { input, plan } = launch
     const attempt = () =>
-      this.launchOn('teleport', input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+      this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false, 'teleport')
     let failure: string
     try {
       return { handle: await attempt(), retried: false }
@@ -5505,7 +5505,7 @@ export class Supervisor implements TeleportHost {
     if (machine !== undefined) return this.refusedHeadless(input, executionId, failure, machine)
     let handle: LaunchHandle
     try {
-      handle = await this.launchOn('teleport', 'headless', this.headlessPlan(launch))
+      handle = await this.launchOn('headless', this.headlessPlan(launch), undefined, false, 'teleport')
     } catch (err) {
       // The relaunch script the lost-teleport notice names must start the surface the human asked for.
       this.writeSuccessorFiles(launch, launch.plan)
