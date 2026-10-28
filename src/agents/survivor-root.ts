@@ -38,7 +38,11 @@ export interface SurvivorRoot {
 }
 
 /** Walks `teleport_from`, then `parent`, from `meta` (the spawn row of `agentId`) to its root. */
-export function survivorRoot(agentId: string, meta: SpawnMeta | undefined, reads: LineageReads): SurvivorRoot {
+export function survivorRoot(
+  agentId: string,
+  meta: SpawnMeta | undefined,
+  reads: LineageReads,
+): SurvivorRoot {
   const recorded = ledgerParentOf(meta)
   const visited = new Set([agentId])
   let inherited: SurvivorRoot['inherited']
@@ -47,9 +51,10 @@ export function survivorRoot(agentId: string, meta: SpawnMeta | undefined, reads
     ...(inherited === undefined ? {} : { inherited }),
     ...(unresolved === undefined ? {} : { unresolved }),
   })
-  for (let next = recorded; next !== HUMAN_ROOT; ) {
+  for (let next = recorded; next !== HUMAN_ROOT;) {
     if (visited.has(next)) return root(recorded, `lineage unresolved: loops at ${next}`)
-    if (visited.size > LINEAGE_BOUND) return root(recorded, `lineage unresolved: over ${LINEAGE_BOUND} ancestors`)
+    if (visited.size > LINEAGE_BOUND)
+      return root(recorded, `lineage unresolved: over ${LINEAGE_BOUND} ancestors`)
     if (reads.knows(next) || reads.running(next)) return root(next)
     visited.add(next)
     const mismatch = inherited === undefined ? reads.onRecord(next) : undefined
@@ -65,11 +70,14 @@ export function survivorRoot(agentId: string, meta: SpawnMeta | undefined, reads
  * Spawn rows by agent id. A spawn row never changes and the first one wins, so a hit is kept; a
  * miss re-reads the log once, which costs one copy of it per walk rather than one per step.
  */
-export function spawnRowIndex(rows: () => readonly AgentEventRow[]): (agentId: string) => AgentEventRow | undefined {
+export function spawnRowIndex(
+  rows: () => readonly AgentEventRow[],
+): (agentId: string) => AgentEventRow | undefined {
   const index = new Map<string, AgentEventRow>()
   const refresh = () => {
     for (const row of rows())
-      if (row.kind === 'agent_spawned' && row.msgId !== null && !index.has(row.msgId)) index.set(row.msgId, row)
+      if (row.kind === 'agent_spawned' && row.msgId !== null && !index.has(row.msgId))
+        index.set(row.msgId, row)
   }
   return agentId => {
     if (!index.has(agentId)) refresh()
