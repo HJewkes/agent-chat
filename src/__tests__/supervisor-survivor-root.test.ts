@@ -24,6 +24,7 @@ import type { SessionRecord } from '../agents/claude-sessions.js'
  */
 
 const STALE = 'agstale01'
+const REMOTE = 'agremot01'
 const tmpDirs: string[] = []
 const closers: (() => void)[] = []
 let core: BrokerCore
@@ -78,6 +79,16 @@ beforeEach(() => {
       session_id: `session-${STALE}`,
     },
   })
+  core.append({
+    kind: 'agent_spawned',
+    actor: 'human',
+    target: 'remote',
+    msgId: REMOTE,
+    meta: {
+      ...{ origin: 'spawned', name: 'remote', cwd: home, parent: '', profile: 'coord' },
+      ...{ session_id: `session-${REMOTE}`, host: 'synthetic-remote-host' },
+    },
+  })
   fs.mkdirSync(path.join(home, 'profiles'))
   fs.writeFileSync(
     path.join(home, 'profiles', 'coord.json'),
@@ -97,8 +108,8 @@ afterEach(() => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-/** A lead an unwired broker spawned under `STALE` and left running, then the first wired start. */
-async function survivorUnderStale(): Promise<string> {
+/** A lead an unwired broker spawned under `parent` and left running, then the first wired start. */
+async function survivorUnderStale(parent = STALE): Promise<string> {
   const before = supervisor(probeHolding([]))
   const result = await before.spawn({
     name: 'lead',
@@ -107,8 +118,8 @@ async function survivorUnderStale(): Promise<string> {
     cwd: tmpDir(),
     isolation: 'none',
     surface: 'headless',
-    requestedBy: 'stale',
-    parentAgentId: STALE,
+    requestedBy: parent === REMOTE ? 'remote' : 'stale',
+    parentAgentId: parent,
   })
   if (!result.ok) throw new Error(`lead not spawned: ${result.reason}`)
   before.close()
@@ -197,5 +208,44 @@ describe('TP-4345 S3: the survivor root after a restart', () => {
       reason: 'quarantined',
       field: 'quarantined parent',
     })
+  })
+
+  it('keeps a not-ended ancestor on another host as the root, since no probe here can prove it gone', async () => {
+    const lead = await survivorUnderStale(REMOTE)
+    core.append({ kind: 'agent_detached', actor: 'remote', ref: REMOTE })
+    const ledger = new IntegrityLedger()
+    supervisor(probeHolding([OTHER_SESSION]), ledger)
+
+    attach(lead)
+
+    expect(ledger.knows(lead)).toBe(false)
+    expect(rows(INTEGRITY_READMIT_SKIPPED).map(row => row.meta?.reason)).toContain(
+      `lineage unresolved via ${REMOTE} (detached)`,
+    )
+  })
+
+  it('writes one skip row for a survivor whose lineage loops', async () => {
+    for (const [id, parent] of [
+      ['agloop001', 'agloop002'],
+      ['agloop002', 'agloop001'],
+    ] as const)
+      core.append({
+        kind: 'agent_spawned',
+        actor: 'human',
+        target: 'stale',
+        msgId: id,
+        meta: { origin: 'spawned', name: 'stale', parent, profile: 'coord', session_id: `session-${id}` },
+      })
+    const lead = await survivorUnderStale('agloop001')
+    for (const id of ['agloop001', 'agloop002'])
+      core.append({ kind: 'agent_exited', actor: 'stale', ref: id, body: '', meta: {} })
+    const ledger = new IntegrityLedger()
+    supervisor(probeHolding([OTHER_SESSION]), ledger)
+
+    attach(lead)
+
+    expect(rows(INTEGRITY_READMIT_SKIPPED).map(row => [row.meta?.agent_id, row.meta?.reason])).toEqual([
+      [lead, 'lineage unresolved: loops at agloop001'],
+    ])
   })
 })

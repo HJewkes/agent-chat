@@ -3657,19 +3657,18 @@ export class Supervisor implements TeleportHost {
     const ledger = this.ledger
     if (ledger === undefined) return { parent: ledgerParentOf(meta) }
     const probe = batchProbe(this.processProbe)
-    const root = survivorRoot(agentId, meta, {
+    return survivorRoot(agentId, meta, {
       spawnMeta: id => this.spawnRow(id)?.meta,
       knows: id => ledger.knows(id),
       running: id => this.running(id, probe),
       onRecord: id => this.core.events.quarantineOnRecord(id),
     })
-    if (root.unresolved !== undefined) this.readmits?.skipped(agentId, root.unresolved)
-    return root
   }
 
   /**
    * TP-4345 S3 (D3): held by this supervisor, connected under its own id, or with a process the
-   * probe cannot prove gone. A row that is merely not exited or retired is not enough.
+   * probe cannot prove gone. A row that is merely not exited or retired is not enough. An agent on
+   * another host cannot be probed from here, so until the reaper ends its row it counts as running.
    */
   private running(agentId: string, probe: ProcessProbe): boolean {
     if (this.live.has(agentId) || this.reattached.has(agentId)) return true
@@ -3677,6 +3676,7 @@ export class Supervisor implements TeleportHost {
     if (agent === undefined || DEPARTED.has(agent.state)) return false
     const conn = this.core.registry.connFor(agent.name)
     if (conn !== undefined && this.core.registry.entryFor(conn)?.agentId === agentId) return true
+    if (remoteHostOf(agent) !== undefined) return true
     return !agentLiveness(agent, probe).dead
   }
 
@@ -3712,6 +3712,7 @@ export class Supervisor implements TeleportHost {
     const survivor = survivingLaunch(agentId, this.core.events.integrityWiredSince())
     if (survivor === undefined) return 'no launch dir'
     const root = this.rootOf(agentId)
+    if (root.unresolved !== undefined) return root.unresolved
     const parent = this.ledgerParent(root.parent)
     if (parent !== HUMAN_ROOT && !ledger.knows(parent))
       return `lineage unresolved via ${parent} (${this.core.agents.get(parent)?.state ?? 'unknown'})`
