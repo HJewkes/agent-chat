@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
-import { EventLog, INTEGRITY_WIRED_SINCE } from '../broker/event-log.js'
+import { EventLog } from '../broker/event-log.js'
 import { HUMAN_ROOT } from '../broker/integrity-ledger.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
@@ -63,10 +63,7 @@ function setup() {
     } as ClientMessage)
     return frames.at(-1)
   }
-  const notices = () =>
-    core.events
-      .since(0, 500)
-      .filter(row => row.kind === 'notice' && row.meta?.event !== INTEGRITY_WIRED_SINCE)
+  const notices = () => core.events.since(0, 500).filter(row => row.kind === 'notice')
   return { settings, plan, check, notices, server }
 }
 
