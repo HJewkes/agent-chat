@@ -145,7 +145,7 @@ async function sessionNames(): Promise<string[]> {
 async function racerRegistered(): Promise<boolean> {
   const deadline = Date.now() + 10_000
   while (Date.now() < deadline) {
-    if ((await sessionNames().catch(() => [])).includes('racer')) return true
+    if ((await sessionNames().catch((): string[] => [])).includes('racer')) return true
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   return false
