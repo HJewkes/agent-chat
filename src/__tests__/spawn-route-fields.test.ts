@@ -146,3 +146,44 @@ describe('slice and routeOverride on the spawn row', () => {
     expect(row?.meta).not.toHaveProperty('route_override')
   })
 })
+
+describe('agent spawn --worktree', () => {
+  beforeEach(() => {
+    sent.length = 0
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  // Catches: the flag parsed but never copied onto the frame, so the broker cuts a fresh tree.
+  // Catches: cwd left at process.cwd(), which the broker lets beat the adopted worktree.
+  it('puts the path on the frame as worktree and as cwd', async () => {
+    const frame = await cli('spawn', 'impl', 'implementer', 'do it', '--worktree', '/trees/idea-1')
+
+    expect(frame).toMatchObject({ t: 'spawn', worktree: '/trees/idea-1', cwd: '/trees/idea-1' })
+  })
+
+  // Catches: an unconditional `worktree: undefined` or empty field on a spawn that adopts nothing.
+  it('leaves worktree off a frame that names none', async () => {
+    const frame = await cli('spawn', 'impl', 'implementer', 'do it')
+
+    expect(frame).not.toHaveProperty('worktree')
+    expect(frame).toMatchObject({ cwd: process.cwd() })
+  })
+})
+
+describe('the broker refusing a --worktree it cannot adopt', () => {
+  let sup: RestartHarness | undefined
+  afterEach(() => {
+    sup?.close()
+    sup = undefined
+  })
+
+  // Catches: the broker dropping its cwd check, so a bad adopted path launches an agent anyway.
+  it.each(['relative/tree', '/no/such/tree-for-test'])('refuses %s as the MCP path does', async path => {
+    sup = startSupervisor()
+
+    const outcome = await sup.spawnAgent('impl-1', { worktree: path, cwd: path })
+
+    expect(outcome.ok).toBe(false)
+  })
+})
