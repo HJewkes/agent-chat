@@ -126,8 +126,10 @@ The plan file must contain:
    smoke check that proved it. For each new piece of logic, the plan names its home: rule
    file (policy as data), recipe (control flow only), step (every effect and every read) or
    service (not item-keyed), per titan-platform's `site/guides/where-logic-goes.md`.
-   Old-path code (`products/factory/src/shepherd/**`, burndown code, `scripts/seat/**`) is a
-   home only for a carve-out tagged `superseded-at:<M>` or `survives:<area>`.
+   Each such row also carries an "old path?" column: whether its home is old-path code.
+   Old-path code (`products/factory/src/shepherd/**`, burndown code, `scripts/seat/**`,
+   agent-chat `src/**`) is a home only for a carve-out tagged `superseded-at:<M>` or
+   `survives:<area>`; a row homed there names the tag.
    A plan without this section is returned, not dispatched.
 1. **Goal and done-when**, restated from the task in one paragraph.
 2. **Touch points** as `file:line`, each with the change it needs in one line.
