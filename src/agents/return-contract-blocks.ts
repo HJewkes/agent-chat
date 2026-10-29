@@ -13,9 +13,9 @@ import type { ReturnContract } from './types.js'
  * A block is paid for on every contracted spawn, so it stays a paragraph. CC-1184 raised it from 2450
  * for `REVIEW_TREE_RULE`: concurrent reviewers each installing base, old and head trees filled /tmp.
  * CC-1384 raised it from 2600 for `GH_READS_RULE` and the filled visibility line, which replace reads
- * the profiles refused 1,700 times a week.
+ * the profiles refused 1,700 times a week. CC-1660 raised it from 2800 for `FRICTION_LINE`.
  */
-export const MAX_BLOCK_CHARS = 2800
+export const MAX_BLOCK_CHARS = 3000
 
 const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: headless, you exit at turn ' +
@@ -83,6 +83,11 @@ export const GH_READS_RULE =
   'Read a PR with `gh pr view <n> --repo <owner>/<repo> --json reviews,comments,headRefOid,state`, a ' +
   'failed job with `gh run view <run> --repo <owner>/<repo> --job <id> --log-failed`; never gh api.'
 
+/** CC-1660: optional, one line; the daily friction digest reads `^Friction: (.+)$`, at most 200 characters. */
+export const FRICTION_LINE =
+  'Optional last line: `Friction: <one line: the biggest thing that slowed you (waits, denials, flaky tests, ' +
+  'missing context), or none>`.'
+
 const IMPLEMENTER_HEAD = [
   `${VISIBILITY_PLACEHOLDER} If public, no real data in code, fixtures,`,
   'PR text, comments: task lists, charter or seat files, /Users paths, emails, private-repo IDs/text.',
@@ -130,6 +135,7 @@ const ciTail = (ciAt: string): string[] => [
   'the default branch. Then `Concerns:` (what <spawner> must act on, or none; DONE_WITH_CONCERNS needs',
   'one) and `Notes:`, each at most 3 one-line items. Keep the report to ~10 lines; detail goes in the',
   'PR body or the task note.',
+  FRICTION_LINE,
 ]
 
 const implementerBlock = (handoff: string[], ciAt: string): string =>
@@ -192,6 +198,7 @@ const reviewerBlock = (verdicts: string, ciRule: string[]): string =>
     GH_READS_RULE,
     "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
     FOLLOW_UPS_RULE,
+    FRICTION_LINE,
   ].join('\n')
 
 const REVIEWER = reviewerBlock('(or FIX_FIRST)', SHEPHERD_CI_RULE)

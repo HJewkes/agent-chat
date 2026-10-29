@@ -988,6 +988,22 @@ describe('the Concerns and Notes lines (CC-399)', () => {
   })
 })
 
+describe('the optional Friction line (CC-1660)', () => {
+  const FRICTION =
+    'Friction: <one line: the biggest thing that slowed you (waits, denials, flaky tests, missing context), or none>'
+
+  it.each([
+    ['implementer', RETURN_CONTRACT_BLOCKS.implementer],
+    ['implementer without Shepherd', IMPLEMENTER_WITHOUT_SHEPHERD],
+    ['reviewer', RETURN_CONTRACT_BLOCKS.reviewer],
+    ['reviewer without Shepherd', REVIEWER_WITHOUT_SHEPHERD],
+  ])('in the %s block names the Friction line as optional, within the cap', (_which, block) => {
+    expect(flat(block)).toContain(FRICTION)
+    expect(flat(block)).toContain('Optional last line:')
+    expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+})
+
 describe('PR body path (CC-444, CC-725)', () => {
   // Mutation caught: a shared `$TMPDIR/body.md` lets one agent publish another's stale body.
   it.each([

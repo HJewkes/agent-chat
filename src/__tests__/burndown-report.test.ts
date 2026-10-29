@@ -16,6 +16,22 @@ describe('burndown report parser', () => {
     )
   })
 
+  it('exposes the Friction line when a report carries one', () => {
+    const report = parseReport(
+      'Status: DONE\nPR: https://github.com/o/r/pull/9\nFriction: flaky widget test, reran twice',
+    )
+
+    expect(report.status).toBe('DONE')
+    expect(report.friction).toBe('flaky widget test, reran twice')
+  })
+
+  it('still parses a report with no Friction line', () => {
+    const report = parseReport('Status: DONE\nPR: https://github.com/o/r/pull/9')
+
+    expect(report.status).toBe('DONE')
+    expect(report.friction).toBeUndefined()
+  })
+
   it('reads a reviewer verdict from the first line', () => {
     expect(parseReport('Verdict: APPROVE\nLooks right.').verdict).toBe('APPROVE')
   })
