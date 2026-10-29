@@ -46,10 +46,19 @@ export const inboxSpoolDir = (agentId: string): string => path.join(agentDir(age
 export const codexInboxSpoolDir = (hostPid: number): string => path.join(codexHostDir(hostPid), 'inbox')
 
 /**
+ * CC-1669: set by the launcher on a host it starts with `-p`. Reading the host's argv
+ * is the fallback, since a prompt holding a bare `--` hides `-p` from a `ps` line.
+ */
+export const HOST_MODE_ENV = 'AGENT_CHAT_HOST_MODE'
+
+export const launchedInPrintMode = (env: NodeJS.ProcessEnv): boolean => env[HOST_MODE_ENV] === 'print'
+
+/**
  * The spool dir to write, or `undefined` when this server must not spool: a Codex
  * host always spools, since it drops every push; otherwise only a spawned agent
- * whose launch opted in and whose host is in print mode. The argv reader is the
- * broker's own, so the two never disagree on what "print" means.
+ * whose launch opted in and whose host is in print mode. Print mode is the
+ * launcher's word when it gave one, else the broker's own argv read, so an older
+ * launch and the broker never disagree on what "print" means.
  */
 export function resolveInboxSpool(opts: {
   agentId: string | undefined
@@ -61,7 +70,9 @@ export function resolveInboxSpool(opts: {
   if (opts.harness === 'codex')
     return opts.hostPid === undefined ? undefined : codexInboxSpoolDir(opts.hostPid)
   if (opts.agentId === undefined || !opts.env.AGENT_CHAT_INBOX_SPOOL) return undefined
-  if (hostChannelStatus(opts.hostPid, 'agent-chat', opts.read) !== 'print') return undefined
+  const print =
+    launchedInPrintMode(opts.env) || hostChannelStatus(opts.hostPid, 'agent-chat', opts.read) === 'print'
+  if (!print) return undefined
   return inboxSpoolDir(opts.agentId)
 }
 

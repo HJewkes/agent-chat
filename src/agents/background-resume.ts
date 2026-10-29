@@ -1,9 +1,12 @@
 import type { AgentEventRow } from '../broker/event-store.js'
 
 /**
- * CC-336: a headless agent that ends its turn on a background task exits with no
- * report, because nothing wakes it when the task finishes. The supervisor resumes
- * it once with this message; only a second unreported exit reaches the spawner.
+ * CC-336: a headless agent can end its turn on a background task with no report.
+ * Current `claude -p` builds stay alive while the task runs and turn its
+ * notification into a turn, so the exit comes only once the task and that turn
+ * are done (CC-1669); a channel message sent meanwhile starts no turn. On that
+ * exit, if the work is still unreported, the supervisor resumes the agent once
+ * with this message; only a second unreported exit reaches the spawner.
  * Denying `run_in_background` per profile is not possible: it is a Bash
  * parameter, not a tool name a `disallowedTools` pattern can match.
  */

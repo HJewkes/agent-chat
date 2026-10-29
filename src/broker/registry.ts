@@ -458,6 +458,7 @@ export class Registry<C> {
       host?: string
       provisional?: boolean
       inboxSpool?: true
+      hostMode?: 'print'
       termSessionId?: string
       tags?: string[]
       subscriptions?: Subscription[]
@@ -499,7 +500,8 @@ export class Registry<C> {
       // Resolved here rather than at send time: this is one `ps` per
       // registration instead of one per recipient per message, and the answer
       // cannot change without the host process changing, which is a re-register.
-      channels: this.channelStatus(input.hostPid),
+      // CC-1669: a launcher's `hostMode` wins, since a prompt can hide `-p` from that read.
+      channels: input.hostMode === 'print' ? 'print' : this.channelStatus(input.hostPid),
       ...(input.inboxSpool === true ? { inboxSpool: true as const } : {}),
       ...(input.termSessionId === undefined ? {} : { termSessionId: input.termSessionId }),
       // A re-register re-declares both, which is how a resumed agent gets its
