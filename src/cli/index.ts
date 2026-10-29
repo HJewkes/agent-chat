@@ -222,6 +222,10 @@ function addAgentCommands(program: Command): void {
     .option('--slice <id>', 'the plan slice of --task the agent runs, recorded on its spawn row')
     .option('--route-override <reason>', 'why it keeps the named profile unrouted, recorded on its spawn row')
     .option(
+      '--worktree <abs-path>',
+      'adopt this existing worktree: no new branch, no budget slot, and retire leaves it in place',
+    )
+    .option(
       '--surface <surface>',
       `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
       agents.parseSurface,

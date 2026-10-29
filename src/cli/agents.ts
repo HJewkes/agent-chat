@@ -461,6 +461,8 @@ export async function agentSpawn(
   // they think they are on actually lives.
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
   // CC-1666: `--slice` and `--route-override` land on the spawn row for the router to read.
+  // `--worktree` adopts an existing tree, as the MCP tool's `worktree` does. It is also the cwd the
+  // broker checks (absolute, existing directory), because the cwd this sends would beat it.
   // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
   // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
   // CC-1059: `--host` names the machine to launch on; absent, a remote broker hands the launch back here.
@@ -474,6 +476,7 @@ export async function agentSpawn(
     role?: string
     slice?: string
     routeOverride?: string
+    worktree?: string
     surface?: SurfaceName
     spawnedAs?: SpawnedAs
     remoteControl?: boolean
@@ -496,7 +499,8 @@ export async function agentSpawn(
       name,
       profile,
       brief,
-      cwd: process.cwd(),
+      cwd: options.worktree ?? process.cwd(),
+      ...(options.worktree === undefined ? {} : { worktree: options.worktree }),
       ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
       ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
       ...(options.account === undefined ? {} : { account: options.account }),
