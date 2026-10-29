@@ -161,19 +161,23 @@ and any plan assumption that turned out false.
 
 Plans give every slice two facts: an `estimate` in points (the same points scale
 active-work tasks use, not hours or t-shirt sizes) and `owns` globs naming the files
-the slice may touch. Spawns for a planned slice pass `task` and `slice` so those facts
-can be looked up.
+the slice may touch. A spawn for a planned slice passes `task` (the bare task ID, e.g.
+`"CC-915"`), the slice's `owns` globs, and the initiative slug as `briefing`.
 
-`profile: "auto"` and the `spawnRouting` config arrive with CC-1666 F14; until then
-pick the profile by hand.
+Not live yet; all of it arrives with CC-1666 F14: a `slice` argument on `agent_spawn`
+(it has none today, and an unknown key is dropped silently, so do not pass one),
+the lookup of a slice's `estimate` and `owns` from that argument, `profile: "auto"`,
+and the `spawnRouting` config. Until then pick the profile by hand and name the slice
+in the brief.
 
 ```
 agent_spawn({
   name: "<worker>",
   profile: "<pick by hand>",   // after F14: "auto"
-  task: "<initiative>/<ID>",
-  slice: "<N>",
-  brief: "<the brief above>"
+  briefing: "<initiative>",
+  task: "<ID>",
+  owns: ["<the slice's owns globs>"],
+  brief: "<the brief above, naming slice <N>>"
 })
 ```
 
