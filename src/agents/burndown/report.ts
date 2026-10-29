@@ -22,6 +22,8 @@ export interface Report {
   pr?: string
   /** A planner's plan file, from its `Plan: <absolute path>` line. */
   plan?: string
+  /** CC-1660: the optional `Friction:` line, what slowed the worker down, or `none`. */
+  friction?: string
   firstLine: string
   text: string
 }
@@ -45,6 +47,8 @@ export function parseReport(text: string): Report {
   if (pr !== undefined) report.pr = pr
   const plan = field(lines, 'Plan')
   if (plan !== undefined) report.plan = plan
+  const friction = field(lines, 'Friction')
+  if (friction !== undefined) report.friction = friction
   return report
 }
 

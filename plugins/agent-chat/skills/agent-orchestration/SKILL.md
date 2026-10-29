@@ -394,6 +394,11 @@ block implies the channel. Escalating rather than guessing is always fine — ba
 is worse than no work. The "under 15 lines, detail to a file" limit applies to
 implementer reports; reviewers follow the reviewer block.
 
+After Concerns and Notes, a report may end with one optional line,
+`Friction: <one line: the biggest thing that slowed you (waits, denials, flaky tests, missing
+context), or none>`, at most 200 characters after the colon. A report without it stays valid;
+the daily friction digest reads it as `^Friction: (.+)$`.
+
 ### The broker appends the contract
 
 `agent_spawn` appends the implementer or the reviewer block to the brief, with your registered
