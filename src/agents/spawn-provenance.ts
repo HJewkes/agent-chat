@@ -116,10 +116,7 @@ type AssignmentRequest = {
 }
 
 /** The task and role half, as row meta; `work_role_inferred` marks a role nobody stated. */
-export function assignmentMeta(
-  req: AssignmentRequest,
-  profile: string,
-): Record<string, string> {
+export function assignmentMeta(req: AssignmentRequest, profile: string): Record<string, string> {
   return {
     ...(req.task === undefined ? {} : { task: req.task }),
     ...(req.slice === undefined ? {} : { slice: req.slice }),

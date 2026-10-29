@@ -173,7 +173,7 @@ const args = z.object({
   slice: z
     .string()
     .describe(
-      "The plan slice of task this agent runs, e.g. \"b\". Recorded on its spawn row, so a router reads that " +
+      'The plan slice of task this agent runs, e.g. "b". Recorded on its spawn row, so a router reads that ' +
         "slice's owns and points rather than the whole task's.",
     )
     .optional(),
