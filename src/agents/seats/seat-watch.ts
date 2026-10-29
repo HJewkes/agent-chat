@@ -83,11 +83,10 @@ export type Decision = 'wake' | 'skip'
 export const firstLine = (body: string): string =>
   (body.split('\n').find(line => line.trim() !== '') ?? '').trim().slice(0, FIRST_LINE_CHARS)
 
-/** R5 is due on the first pass at or after the slot: the previous pass ran before today's slot, or there was none today. */
+/** R5 is due on the first pass at or after the slot. A seat's first pass ever has no slot to catch up on. */
 export function digestDue(now: Date, previousAt: number | undefined): boolean {
   const slot = new Date(now.getFullYear(), now.getMonth(), now.getDate(), DIGEST_HOUR).getTime()
-  if (now.getTime() < slot) return false
-  return previousAt === undefined || previousAt < slot
+  return previousAt !== undefined && previousAt < slot && now.getTime() >= slot
 }
 
 /** JSON with object keys sorted at every depth, so equal packets serialise to equal text. */
@@ -108,8 +107,8 @@ export const packetHash = (packet: Packet): string =>
 const shepherdKey = (item: ShepherdItem): string =>
   [item.ref, item.phase, item.pendingGate ?? '', item.stalled, item.held].join('|')
 
-const names = (items: readonly { name?: string; from?: string; ref?: string }[]): string =>
-  items.map(i => i.name ?? i.from ?? i.ref).join(', ')
+const names = (items: readonly { name?: string; from?: string }[]): string =>
+  [...new Set(items.map(i => i.name ?? i.from))].join(', ')
 
 function r1(p: Packet): Fired[] {
   const unread = p.inbox.filter(i => i.class !== 'other')

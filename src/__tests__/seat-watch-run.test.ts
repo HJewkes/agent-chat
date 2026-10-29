@@ -7,7 +7,7 @@ import type { AgentEventRow } from '../broker/event-store.js'
 import {
   lastWatchRow,
   parseSeatStatus,
-  readReports,
+  readLastWords,
   readSeatBook,
   readUnread,
 } from '../agents/seats/seat-watch-read.js'
@@ -33,7 +33,7 @@ const seatRows = (id: string, name: string): AgentEventRow[] => [
   row('agent_attached', id, name),
 ]
 
-/** Seats a and b are live; seat-c is in the charter but its coordinator was retired. */
+/** Seats a and b are live, b event-driven and not in the charter; seat-c is in the charter but retired. */
 const ROWS: AgentEventRow[] = [
   ...seatRows('a1', 'seat-a'),
   ...seatRows('b1', 'seat-b'),
@@ -41,7 +41,7 @@ const ROWS: AgentEventRow[] = [
   row('agent_retired', 'c1', 'seat-c'),
 ]
 
-const CHARTER = '---\nseats: [seat-a, seat-b, seat-c]\n---\n'
+const CHARTER = '---\nseats: [seat-a, seat-c]\n---\n'
 
 let root: string
 
@@ -59,14 +59,14 @@ function ports(over: Partial<WatchPorts> = {}): { ports: WatchPorts; written: Wa
   const written: WatchRow[] = []
   const ports: WatchPorts = {
     now: () => new Date(2026, 0, 5, 3),
-    book: rows => readSeatBook(root, CHARTER, 'operator-seat', rows),
+    book: rows => readSeatBook(root, CHARTER, rows),
     owners: () => new Set(['human']),
     operator: 'operator-seat',
     agentRows: () => ROWS,
     unread: seat =>
       seat === 'seat-a' ? [{ from: 'human', kind: 'message', msgId: 'm1', ts: 1, body: 'go' }] : [],
     activity: () => new Map(),
-    reports: () => new Map(),
+    lastWords: () => new Map(),
     flights: async () => [],
     budget: async () => ({ implementers: 0, cap: 0, stop: null }),
     queue: () => 0,
@@ -80,7 +80,7 @@ function ports(over: Partial<WatchPorts> = {}): { ports: WatchPorts; written: Wa
 
 describe('seats watch pass', () => {
   it('in shadow mode records a wake and never calls the sender', async () => {
-    const send = vi.fn(async () => true)
+    const send = vi.fn(async (_seat: string, _text: string) => true)
     const { ports: p, written } = ports({ send })
 
     const result = await runWatch(p, { shadow: true })
@@ -94,7 +94,7 @@ describe('seats watch pass', () => {
   })
 
   it('outside shadow mode sends only the wakes', async () => {
-    const send = vi.fn(async () => true)
+    const send = vi.fn(async (_seat: string, _text: string) => true)
     const { ports: p, written } = ports({ send })
 
     await runWatch(p, { shadow: false })
@@ -108,11 +108,11 @@ describe('seats watch pass', () => {
     await expect(runWatch(ports().ports, { shadow: false })).rejects.toThrow('needs a sender')
   })
 
-  it('skips a charter seat whose coordinator is retired, and the operator when it is not running', async () => {
+  it('skips a book seat whose coordinator is retired and watches a live seat the book omits', async () => {
     const result = await runWatch(ports().ports, { shadow: true })
 
     expect(result.rows.map(r => r.seat)).toEqual(['seat-a', 'seat-b'])
-    expect(result.retired).toEqual(['seat-c', 'operator-seat'])
+    expect(result.retired).toEqual(['seat-c'])
   })
 
   it('re-reads the book each pass, so a seat retired between passes gets no row', async () => {
@@ -151,7 +151,7 @@ describe('seats watch pass', () => {
   })
 
   it('reads the prefix from the seat file and leaves a seat with none to spawnedBy', () => {
-    const book = readSeatBook(root, CHARTER, 'operator-seat', ROWS)
+    const book = readSeatBook(root, CHARTER, ROWS)
 
     expect(book.live).toEqual([{ name: 'seat-a', prefix: 'sa' }, { name: 'seat-b' }])
   })
@@ -159,7 +159,7 @@ describe('seats watch pass', () => {
 
 describe('seats watch verb', () => {
   it('refuses to run without --shadow', async () => {
-    const report = await seatsWatchVerb.run({})
+    const report = await seatsWatchVerb.run({}, {} as never)
 
     expect(report.ok).toBe(false)
     expect(report.errors?.[0]).toContain('--shadow')
@@ -167,7 +167,7 @@ describe('seats watch verb', () => {
 })
 
 describe('seat-watch reads', () => {
-  it('reads unread messages since the seat last acted, and reports by the broker test', () => {
+  it("reads unread messages since the seat last acted, and each sender's last word to it", () => {
     const db = path.join(root, 'events.db')
     const log = new EventLog(db)
     log.append({ kind: 'message', actor: 'human', target: 'seat-a', body: 'old' })
@@ -179,7 +179,7 @@ describe('seat-watch reads', () => {
       ['sa-1', 'Status: DONE\nPR: x'],
       ['seat-b', 'fyi\nmore'],
     ])
-    expect([...readReports(db, 'seat-a', 0).keys()]).toEqual(['sa-1'])
+    expect([...readLastWords(db, 'seat-a', 0).keys()].sort()).toEqual(['human', 'sa-1', 'seat-b'])
   })
 
   it('takes caps and the stop from seats status --json, a machine stop first', () => {

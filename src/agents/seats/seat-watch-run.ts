@@ -23,7 +23,7 @@ export interface WatchPorts {
   agentRows: () => AgentEventRow[]
   unread: (seat: string) => RawMessage[]
   activity: (names: readonly string[]) => Map<string, number>
-  reports: (seat: string, sinceMs: number) => Map<string, number>
+  lastWords: (seat: string, sinceMs: number) => Map<string, number>
   flights: () => Promise<ShepherdFlight[]>
   budget: (seat: string) => Promise<BudgetItem>
   queue: (seat: string) => number | undefined
@@ -73,10 +73,10 @@ async function seatRow(
   const nowMs = now.getTime()
   const previous = ports.lastRow(seat.name)
   const mine = shared.roster.filter(a => ownsAgent(seat, a)).map(a => a.name)
-  const [unread, activity, reports, budget, queue] = await Promise.all([
+  const [unread, activity, lastWords, budget, queue] = await Promise.all([
     timed(() => ports.unread(seat.name)),
     timed(() => ports.activity(mine)),
-    timed(() => ports.reports(seat.name, nowMs - EXITED_LOOKBACK_MS * 2)),
+    timed(() => ports.lastWords(seat.name, nowMs - EXITED_LOOKBACK_MS * 2)),
     timed(() => ports.budget(seat.name)),
     timed(() => ports.queue(seat.name)),
   ])
@@ -87,7 +87,7 @@ async function seatRow(
     inbox: unread.value ?? [],
     roster: shared.roster,
     activityAt: activity.value ?? new Map(),
-    reportAt: reports.value ?? new Map(),
+    lastWordAt: lastWords.value ?? new Map(),
     flights: shared.flights.value ?? null,
     budget: budget.value ?? null,
     queue: queue.value ?? null,
@@ -100,7 +100,7 @@ async function seatRow(
     shepherd: shared.flights.note,
     inbox: unread.note,
     activity: activity.note,
-    reports: reports.note,
+    lastWords: lastWords.note,
     budget: budget.note,
     queue: queue.note,
   }

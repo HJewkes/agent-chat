@@ -42,8 +42,8 @@ export interface PacketInput {
   roster: readonly AgentIdentity[]
   /** Epoch ms of each agent's newest row as actor in events.db. */
   activityAt: ReadonlyMap<string, number>
-  /** Epoch ms of each agent's newest `Status:` report to the seat. */
-  reportAt: ReadonlyMap<string, number>
+  /** Epoch ms of each agent's newest message to the seat. */
+  lastWordAt: ReadonlyMap<string, number>
   flights: readonly ShepherdFlight[] | null
   budget: BudgetItem | null
   queue: number | null
@@ -86,13 +86,13 @@ function inPacket(agent: AgentIdentity, nowMs: number): boolean {
 
 function agentItem(agent: AgentIdentity, input: PacketInput): AgentItem {
   const flight = input.flights?.find(f => f.implementer === agent.name)
-  const reported = (input.reportAt.get(agent.name) ?? -1) >= agent.spawnedAt
+  const spoke = (input.lastWordAt.get(agent.name) ?? -1) >= agent.spawnedAt
   const lastSeen = Math.max(agent.lastEventAt, input.activityAt.get(agent.name) ?? 0)
   return {
     name: agent.name,
     state: agent.state,
     role: agent.workRole ?? agent.profile,
-    exitedWithoutReport: agent.state === 'exited' && !reported,
+    exitedWithoutReport: agent.state === 'exited' && !spoke,
     stale: RUNNING.has(agent.state) && input.nowMs - lastSeen > STALE_AGENT_MS,
     openPr: flight === undefined ? null : flightRef(flight),
   }

@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { isReport } from '../../broker/event-log.js'
 import type { AgentEventRow } from '../../broker/event-store.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { foldAgent, groupByAgent } from '../identity.js'
@@ -27,26 +26,23 @@ const seatFile = (root: string, name: string): string | undefined => {
   }
 }
 
+const watchSeat = (root: string, name: string): WatchSeat => {
+  const text = seatFile(root, name)
+  const prefix = text === undefined ? undefined : parseSeat(name, text)?.prefix
+  return prefix === undefined ? { name } : { name, prefix }
+}
+
 /**
- * The book is the charter's seats plus the operator; a name is live only while a coordinator
- * identity holds it in the event log, so the retired seats the charter still lists drop out.
+ * The seats are the names a coordinator identity holds in the event log. The charter's book still
+ * lists seats that retired, and the event-driven seats are not in it, so the book only names the
+ * retired ones and, through its seat files, a seat's prefix.
  */
-export function readSeatBook(
-  root: string,
-  charter: string,
-  operator: string,
-  rows: readonly AgentEventRow[],
-): SeatBook {
-  const book = [...new Set([...charterSeats(charter).filter(isSeatName), operator])]
-  const running = new Set(liveCoordinators(rows))
-  const live = book.filter(name => running.has(name))
+export function readSeatBook(root: string, charter: string, rows: readonly AgentEventRow[]): SeatBook {
+  const live = liveCoordinators(rows)
+  const running = new Set(live)
   return {
-    live: live.map(name => {
-      const text = seatFile(root, name)
-      const prefix = text === undefined ? undefined : parseSeat(name, text)?.prefix
-      return prefix === undefined ? { name } : { name, prefix }
-    }),
-    retired: book.filter(name => !running.has(name)),
+    live: live.map(name => watchSeat(root, name)),
+    retired: charterSeats(charter).filter(name => isSeatName(name) && !running.has(name)),
   }
 }
 
@@ -103,16 +99,19 @@ export function readActivity(dbPath: string, names: readonly string[]): Map<stri
   }
 }
 
-/** Epoch ms of each sender's newest return-contract report to the seat since `sinceMs`, by the broker's own test. */
-export function readReports(dbPath: string, seat: string, sinceMs: number): Map<string, number> {
+/**
+ * Epoch ms of each sender's newest message to the seat since `sinceMs`. Any message counts as the
+ * agent's last word: live, agents end on a `STOPPED` line as often as on the return contract.
+ */
+export function readLastWords(dbPath: string, seat: string, sinceMs: number): Map<string, number> {
   const db = openEvents(dbPath)
   try {
     const rows = db
       .prepare(
-        "SELECT actor, ts, body FROM events WHERE target = ? AND kind = 'message' AND ts >= ? ORDER BY id",
+        "SELECT actor, MAX(ts) AS ts FROM events WHERE target = ? AND kind = 'message' AND ts >= ? GROUP BY actor",
       )
-      .all(seat, sinceMs) as unknown as { actor: string; ts: number; body: string | null }[]
-    return new Map(rows.filter(r => isReport(r.body ?? '')).map(r => [r.actor, r.ts]))
+      .all(seat, sinceMs) as unknown as { actor: string; ts: number }[]
+    return new Map(rows.map(r => [r.actor, r.ts]))
   } finally {
     db.close()
   }

@@ -56,7 +56,7 @@ const input = (over: Partial<PacketInput> = {}): PacketInput => ({
   inbox: [],
   roster: [],
   activityAt: new Map(),
-  reportAt: new Map(),
+  lastWordAt: new Map(),
   flights: [],
   budget: { implementers: 2, cap: 2, stop: null },
   queue: 0,
@@ -96,16 +96,16 @@ describe('seat-watch R1: unread messages', () => {
 describe('seat-watch R2: silent or stalled agents', () => {
   it('wakes for an agent that exited with no report since it spawned', () => {
     const roster = [agent('sa-1', { state: 'exited', exitedAt: NOW - 10 * MIN })]
-    const reportAt = new Map([['sa-1', NOW - 120 * MIN]])
+    const lastWordAt = new Map([['sa-1', NOW - 120 * MIN]])
 
-    expect(rulesOf(buildPacket(input({ roster, reportAt })))).toEqual(['R2'])
+    expect(rulesOf(buildPacket(input({ roster, lastWordAt })))).toEqual(['R2'])
   })
 
   it('stays asleep for an exited agent that reported', () => {
     const roster = [agent('sa-1', { state: 'exited', exitedAt: NOW - 10 * MIN })]
-    const reportAt = new Map([['sa-1', NOW - 11 * MIN]])
+    const lastWordAt = new Map([['sa-1', NOW - 11 * MIN]])
 
-    expect(rulesOf(buildPacket(input({ roster, reportAt })))).toEqual([])
+    expect(rulesOf(buildPacket(input({ roster, lastWordAt })))).toEqual([])
   })
 
   it('wakes for an agent quiet over 30 minutes only while it has an open PR', () => {
@@ -174,14 +174,15 @@ describe('seat-watch R4: free cap and eligible work', () => {
 describe('seat-watch R5: daily digest slot', () => {
   const at = (h: number, m = 0): Date => new Date(2026, 0, 5, h, m)
 
-  it('is due on the first pass at or after 07:00 local', () => {
+  it('is due on the first pass at or after 07:00 local, including after a night with no pass', () => {
     expect(digestDue(at(7, 2), at(6, 47).getTime())).toBe(true)
-    expect(digestDue(at(9), undefined)).toBe(true)
+    expect(digestDue(at(9), new Date(2026, 0, 4, 22).getTime())).toBe(true)
   })
 
-  it('is not due before the slot, nor again once a pass ran after it', () => {
+  it("is not due before the slot, again once a pass ran after it, or on a seat's first pass", () => {
     expect(digestDue(at(6, 59), at(6, 44).getTime())).toBe(false)
     expect(digestDue(at(7, 17), at(7, 2).getTime())).toBe(false)
+    expect(digestDue(at(9), undefined)).toBe(false)
   })
 
   it('fires R5 from the packet', () => {

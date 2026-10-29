@@ -11,7 +11,7 @@ import {
   lastWatchRow,
   parseSeatStatus,
   readActivity,
-  readReports,
+  readLastWords,
   readSeatBook,
   readUnread,
 } from '../../agents/seats/seat-watch-read.js'
@@ -51,13 +51,13 @@ function livePorts(root: string, dbPath: string, dir: string): WatchPorts {
   const flights = shepherdPort()
   return {
     now: () => new Date(),
-    book: rows => readSeatBook(root, charterOf(root), BLOCK_PAGE_TO, rows),
+    book: rows => readSeatBook(root, charterOf(root), rows),
     owners: () => new Set([HUMAN, charterOwnerSeat(charterOf(root)) ?? HUMAN]),
     operator: BLOCK_PAGE_TO,
     agentRows: () => readAgentEvents(dbPath, Number.MAX_SAFE_INTEGER),
     unread: seat => readUnread(dbPath, seat),
     activity: names => readActivity(dbPath, names),
-    reports: (seat, sinceMs) => readReports(dbPath, seat, sinceMs),
+    lastWords: (seat, sinceMs) => readLastWords(dbPath, seat, sinceMs),
     flights,
     budget: seat => seatStatusBudget(root, seat),
     queue: seat => scorerEligible(root, seat)?.count,
@@ -70,8 +70,8 @@ function livePorts(root: string, dbPath: string, dir: string): WatchPorts {
 export const seatsWatchVerb = defineVerb({
   name: 'seats.watch',
   description:
-    'the seat-watch wake gate (CC-1661, workflows pilot P1), one pass: for each live seat in the book ' +
-    '(re-read each pass; seats with no live coordinator are skipped) build the state packet from ' +
+    'the seat-watch wake gate (CC-1661, workflows pilot P1), one pass: for each seat a live coordinator ' +
+    'holds in the event log (re-read each pass; book seats with none are skipped) build the state packet from ' +
     'events.db, Shepherd and seats status, apply rules R1-R5, and append one JSONL row per seat. ' +
     'Only --shadow runs: it sends nothing and wakes nothing',
   args: z.object({
