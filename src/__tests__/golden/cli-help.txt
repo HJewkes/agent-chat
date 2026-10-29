@@ -1350,6 +1350,8 @@ Options:
                                other
   --slice <id>                 the plan slice of --task the agent runs, recorded on its spawn row
   --route-override <reason>    why it keeps the named profile unrouted, recorded on its spawn row
+  --worktree <abs-path>        adopt this existing worktree: no new branch, no budget slot, and
+                               retire leaves it in place
   --surface <surface>          where it runs, overriding the profile's surface: headless,
                                iterm-pane, iterm-tab, iterm-window, tmux-window
   --spawned-as <who>           shepherd or burndown: the automation this spawn is on behalf of
