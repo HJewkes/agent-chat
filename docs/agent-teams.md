@@ -1552,7 +1552,10 @@ agent whose process the broker still tracks, an agent the broker did not spawn, 
 parked, one whose worktree a non-retired agent works in (CC-141), and one whose worktree or
 kept branch has uncommitted changes, commits not on its upstream (or on `origin/<branch>`
 when no upstream is set), commits not on the default branch when it has neither, or cannot
-be read. It also skips, with the reason `open PR (Shepherd wakes it)`, an agent whose branch
+be read. Commits that a live origin branch holds count as pushed: an `origin/*` tracking ref that
+contains them names the branch, and a fresh `ls-remote` head must still contain them. This covers
+a Shepherd `-s1` fixer that pushed to its parent's branch, and the retire's own release accepts
+the same proof (CC-1581). It also skips, with the reason `open PR (Shepherd wakes it)`, an agent whose branch
 has an open PR that no unfinished `titan-factory shepherd status --json` row names (CC-904).
 Once a run carries the agent's branch or implementer name, the PR is registered and the agent is retired
 and parked, its branch kept (CC-950). When Shepherd or `gh` cannot be read it skips too. Each remaining agent goes through
@@ -1573,7 +1576,9 @@ refuses a live or still-tracked one. For a detached agent it also lists process 
 directories with `lsof` and refuses, naming the pid, while any process sits inside the tree; if
 the listing fails it refuses too, since the agent's process may have outlived the broker. An
 `lsof` exit 1 that still printed parseable output counts as a listing. The tree must be clean, on
-its branch and pushed. Ignored files block the removal unless they are `node_modules`, `dist`,
+its branch and pushed. Pushed means under any origin branch name. If origin deleted that branch
+after a squash merge, park instead accepts a merged PR whose head holds HEAD. It looks for that PR
+on HEAD's own branch and on each origin branch whose tracking ref holds HEAD (CC-1581). Ignored files block the removal unless they are `node_modules`, `dist`,
 `coverage`, `.turbo`, `.api-extractor-temp` (CC-1258), an `.eslintcache` file, a `*.tsbuildinfo`
 file at any depth (a directory so named is searched, not trusted), or a top-level `.claude`
 (CC-334). A repo can add its own generated files in a committed `.agent-chat/generated`: one exact

@@ -260,6 +260,63 @@ describe('the skip rules', () => {
   })
 })
 
+describe('a Shepherd fixer whose commits went to its parent branch (CC-1581)', () => {
+  const parent = 'agent-chat/cc-parent'
+
+  /** Publishes the fixer's branch under the parent's name only, as a fixer's `git push origin HEAD:<parent>` does. */
+  async function fixerPushedToParent(): Promise<AgentIdentity> {
+    const agent = await spawnIn('cc-fixer-s1', repoWithOrigin())
+    commitIn(agent.cwd, 'fix.ts')
+    const origin = git(['remote', 'get-url', 'origin'], agent.cwd)
+    git(['fetch', '-q', agent.cwd, `agent-chat/cc-fixer-s1:${parent}`], origin)
+    git(['fetch', '-q', 'origin'], agent.cwd)
+    return agent
+  }
+
+  // Kills: dropping the origin-branch fallback from `unpushed` (skipped) or from the release (retire fails).
+  it('retires a fixer whose HEAD origin holds under the parent branch', async () => {
+    const agent = await fixerPushedToParent()
+    await exit(agent)
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan).toEqual([{ name: 'cc-fixer-s1', action: 'retire' }])
+    expect(out.results).toEqual([{ name: 'cc-fixer-s1', ok: true }])
+  })
+
+  // Kills: originBranchHolding ignoring ancestry (any live origin branch, without --contains or merge-base).
+  it('skips a fixer with a commit made after the push to the parent', async () => {
+    const agent = await fixerPushedToParent()
+    commitIn(agent.cwd, 'more.ts')
+    await exit(agent)
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan[0]).toMatchObject({
+      action: 'skip',
+      reason: `2 commit(s) in ${agent.cwd} are not on the default branch origin/HEAD (no upstream)`,
+    })
+  })
+
+  // Kills: trusting the stale local tracking ref without the fresh ls-remote.
+  it('skips a fixer whose parent branch origin deleted, even with a stale tracking ref', async () => {
+    const agent = await fixerPushedToParent()
+    git(['branch', '-q', '-D', parent], git(['remote', 'get-url', 'origin'], agent.cwd))
+    await exit(agent)
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan[0]).toMatchObject({
+      action: 'skip',
+      reason: expect.stringMatching(/not on the default branch/),
+    })
+    expect(stateOf('cc-fixer-s1')).toBe('exited')
+  })
+})
+
 describe('a mixed set', () => {
   it('retires the clean finished agents, skips the rest, and never touches another scope', async () => {
     const repo = makeRepo()

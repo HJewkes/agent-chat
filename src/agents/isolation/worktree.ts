@@ -21,6 +21,7 @@ import {
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
 import { unsavedWork } from './unsaved-work.js'
+import { originBranchHolding } from './origin-holds.js'
 import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
 import { isReviewerTreeName } from '../reviewer-tree.js'
 import { findGitRoot } from '../../git.js'
@@ -344,7 +345,10 @@ async function releaseInspected(stoppedAt: number | undefined, ref: TreeRef): Pr
     return `agent stopped less than ${RECLAIM_GRACE_MS / 1000}s ago; inside the reclaim grace window`
   const base = ref.base ?? 'HEAD'
   const safety = await inspectForRelease(ref.gitRoot, ref.worktree, ref.branch, base, 'git-or-merged-pr-tip')
-  if (safety.dirty || safety.unmerged) return describeRefusal(safety)
+  if (safety.dirty) return describeRefusal(safety)
+  // CC-1581: a fixer's commits sit on origin under its parent's branch, which the package does not look at.
+  if (safety.unmerged && (await originBranchHolding(ref.gitRoot, ref.branch)) === undefined)
+    return describeRefusal(safety)
   return removeTree(ref)
 }
 

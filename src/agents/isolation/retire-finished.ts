@@ -4,6 +4,7 @@ import { runGit, type GitRunner } from '../../git.js'
 import type { AgentIdentity, RetirePlanEntry, RetireResult } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { heldBranches, memoizeOpenPr, openPrHold } from './open-pr-hold.js'
+import { originBranchHolding } from './origin-holds.js'
 import { allocatedWorktree, type ParkTarget } from './park.js'
 import { shepherdSkip, type ShepherdRun, type ShepherdSkipPort } from './shepherd-skip.js'
 import { isLive } from './sweep.js'
@@ -250,7 +251,8 @@ async function unpushed(dir: string, ref: string, git: GitRunner): Promise<strin
   const ahead = await git(['rev-list', `${base.ref}..${ref}`], dir)
   if (ahead === null) return `could not compare ${ref} in ${dir} with ${base.ref}`
   const count = ahead.split('\n').filter(Boolean).length
-  return count === 0 ? undefined : `${count} commit(s) in ${dir} are not on ${base.label}`
+  if (count === 0 || (await originBranchHolding(dir, ref, git)) !== undefined) return undefined
+  return `${count} commit(s) in ${dir} are not on ${base.label}`
 }
 
 interface Base {

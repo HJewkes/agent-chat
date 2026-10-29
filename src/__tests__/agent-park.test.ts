@@ -1242,3 +1242,60 @@ describe('parking a squash-merged tree whose head branch origin deleted (CC-1064
     expect(fs.existsSync(tree)).toBe(true)
   })
 })
+
+describe('parking a Shepherd fixer whose commits went to its parent branch (CC-1581)', () => {
+  const fixer = 'agent-chat/worker-a'
+  const parent = 'agent-chat/parent'
+
+  /** A fixer that pushed HEAD to its parent's branch and never pushed its own branch name. */
+  async function fixerPushedToParent(): Promise<{ repo: string; tree: string; head: string }> {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    const head = commitIn(agent.cwd, 'fix.ts')
+    git(['push', '-q', 'origin', `HEAD:${parent}`], agent.cwd)
+    return { repo, tree: agent.cwd, head }
+  }
+
+  const targetOf = (repo: string, tree: string) => ({
+    gitRoot: repo,
+    worktree: tree,
+    branch: fixer,
+    assigned: false,
+  })
+  const parentPr = (head: string) => async (_root: string, b: string) =>
+    b === parent ? [{ number: 12, headSha: head }] : []
+
+  // Kills: parking without the package's any-origin-branch containment (allowOriginHeadAncestor off).
+  it('parks a fixer whose HEAD origin holds only under the parent branch', async () => {
+    const { repo, tree, head } = await fixerPushedToParent()
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined)
+
+    expect(parked).toEqual({ ok: true, head, branch: fixer, containedIn: parent })
+    expect(branchHead(repo, fixer)).toBe(head)
+  })
+
+  // Kills: mergedPrBacking asking GitHub only about the branch HEAD is on.
+  it('parks through the parent PR once it merged and origin deleted the parent branch', async () => {
+    const { repo, tree, head } = await fixerPushedToParent()
+    git(['branch', '-q', '-D', parent], git(['remote', 'get-url', 'origin'], repo))
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, parentPr(head))
+
+    expect(parked).toEqual({ ok: true, head, branch: fixer, mergedPr: 12 })
+    expect(fs.existsSync(tree)).toBe(false)
+  })
+
+  // Kills: mergedPrBacking offering the observed HEAD itself as backing.
+  it('refuses a fixer commit made after the push to the parent', async () => {
+    const { repo, tree, head } = await fixerPushedToParent()
+    git(['branch', '-q', '-D', parent], git(['remote', 'get-url', 'origin'], repo))
+    commitIn(tree, 'more.ts')
+    const anyBranchPr = async () => [{ number: 12, headSha: head }]
+
+    const parked = await parkWorktree(targetOf(repo, tree), () => undefined, undefined, anyBranchPr)
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin/) })
+    expect(fs.existsSync(tree)).toBe(true)
+  })
+})
