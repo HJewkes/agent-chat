@@ -96,7 +96,7 @@ describe('the launcher tells its child it runs in print mode', () => {
   it('sets the flag on a headless launch and not on a pane', () => {
     // Catches: setting it unconditionally, or keying it on something other than `-p`.
     const headless = buildLaunchPlan(input()).env
-    const pane = buildLaunchPlan(input({ surface: 'tmux' })).env
+    const pane = buildLaunchPlan(input({ surface: 'tmux-window' })).env
 
     expect(headless[HOST_MODE_ENV]).toBe('print')
     expect(pane[HOST_MODE_ENV]).toBeUndefined()
