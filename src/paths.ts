@@ -189,6 +189,9 @@ export const systemdUserUnitDir = (): string =>
 export const linuxJobLogDir = (name: string): string =>
   path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), name)
 
+/** CC-1661: seat-watch's one JSONL file per seat. */
+export const seatWatchDir = (): string => path.join(linuxJobLogDir('agent-chat'), 'seat-watch')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
