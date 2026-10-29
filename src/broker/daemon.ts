@@ -115,6 +115,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   const { core, socketServer } = openServices()
   listener.serve(socketServer)
   socketServer.startLifecycleVerifier()
+  socketServer.startIdlePrintWake()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
   const stopOrphanSweep = startOrphanSweep(
