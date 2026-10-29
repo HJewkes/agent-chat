@@ -116,8 +116,28 @@ frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","
   }
 ]
 
+=== agent_spawn: blank slice
+args: {"name":"scout","profile":"explorer","brief":"read the log","slice":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: blank route_override
+args: {"name":"scout","profile":"explorer","brief":"read the log","route_override":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
 === agent_spawn: every optional string blank
-args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"","briefing":"","worktree":"","config_dir":"","resume_session":"","predecessor":"","task":""}
+args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"","briefing":"","worktree":"","config_dir":"","resume_session":"","predecessor":"","task":"","slice":"","route_override":""}
 frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","launchesHere":true} (process fields omitted)
 [
   {
@@ -251,6 +271,16 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","return_contra
 === agent_spawn: task and role
 args: {"name":"scout","profile":"explorer","brief":"read the log","task":"CC-1","role":"reviewer"}
 frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","task":"CC-1","workRole":"reviewer","launchesHere":true} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: slice and route_override
+args: {"name":"scout","profile":"explorer","brief":"read the log","task":"CC-1","slice":"b","route_override":"touches auth"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","task":"CC-1","slice":"b","routeOverride":"touches auth","launchesHere":true} (process fields omitted)
 [
   {
     "type": "text",

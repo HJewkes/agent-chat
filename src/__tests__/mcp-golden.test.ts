@@ -572,7 +572,17 @@ function unregistered(c: CallCase): CallCase {
   return rest
 }
 
-const SPAWN_STRINGS = ['cwd', 'briefing', 'worktree', 'config_dir', 'resume_session', 'predecessor', 'task']
+const SPAWN_STRINGS = [
+  'cwd',
+  'briefing',
+  'worktree',
+  'config_dir',
+  'resume_session',
+  'predecessor',
+  'task',
+  'slice',
+  'route_override',
+]
 
 /** CC-106 S6: every optional string goes through `present()`, so a blank one leaves the frame as `optionalString` did. */
 const AGENT_SPAWN_CASES: CallCase[] = [
@@ -628,6 +638,11 @@ const AGENT_SPAWN_CASES: CallCase[] = [
   spawnCase('return_contract none', { ...SPAWN_ARGS, return_contract: 'none' }, { reply: spawned() }),
   spawnCase('return_contract misspelled', { ...SPAWN_ARGS, return_contract: 'off' }),
   spawnCase('task and role', { ...SPAWN_ARGS, task: 'CC-1', role: 'reviewer' }, { reply: spawned() }),
+  spawnCase(
+    'slice and route_override',
+    { ...SPAWN_ARGS, task: 'CC-1', slice: 'b', route_override: 'touches auth' },
+    { reply: spawned() },
+  ),
   spawnCase('host named', { ...SPAWN_ARGS, host: 'mac' }, { reply: spawned({ host: 'mac' }) }),
   spawnCase('host blank', { ...SPAWN_ARGS, host: '  ' }, { reply: spawned() }),
   spawnCase('role a numbered fix round', { ...SPAWN_ARGS, role: 'fix-round-2' }, { reply: spawned() }),

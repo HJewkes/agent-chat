@@ -1196,6 +1196,10 @@ export type ClientMessage =
       workRole?: string
       /** CC-932: `fix-round` states that a spawn on a claimed or brief-ready task is the seat's own fix round. */
       override?: 'fix-round'
+      /** CC-1666: the plan slice of `task` this spawn runs, recorded on its spawn row. */
+      slice?: string
+      /** CC-1666: the caller's stated reason to keep `profile` unrouted, recorded on its spawn row. */
+      routeOverride?: string
       /** CC-1059: the requester's own OS, sent by its process and never by the model; picks a remote surface. */
       hostPlatform?: string
       /** CC-1059: the requester can launch a spawn on its own host; absent is an older client, launched here. */

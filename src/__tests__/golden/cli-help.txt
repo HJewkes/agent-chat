@@ -1348,6 +1348,8 @@ Options:
   --task <id>                  the task id the agent works on, recorded on its agent record
   --role <role>                implementer, reviewer, fix-round-<n>, shepherd-review, planner or
                                other
+  --slice <id>                 the plan slice of --task the agent runs, recorded on its spawn row
+  --route-override <reason>    why it keeps the named profile unrouted, recorded on its spawn row
   --surface <surface>          where it runs, overriding the profile's surface: headless,
                                iterm-pane, iterm-tab, iterm-window, tmux-window
   --spawned-as <who>           shepherd or burndown: the automation this spawn is on behalf of
