@@ -172,17 +172,11 @@ const args = z.object({
     .optional(),
   slice: z
     .string()
-    .describe(
-      'The plan slice of task this agent runs, e.g. "b". Recorded on its spawn row, so a router reads that ' +
-        "slice's owns and points rather than the whole task's.",
-    )
+    .describe('The plan slice of task it runs, e.g. "b"; recorded on its spawn row.')
     .optional(),
   route_override: z
     .string()
-    .describe(
-      'Why this spawn must keep the profile you named rather than a routed one, e.g. "touches auth". ' +
-        'Recorded on its spawn row.',
-    )
+    .describe('Why it must keep the named profile unrouted; recorded on its spawn row.')
     .optional(),
   host: z.string().describe('Machine alias or hostname to launch on; default: yours.').optional(),
 })

@@ -640,11 +640,11 @@
           },
           "slice": {
             "type": "string",
-            "description": "The plan slice of task this agent runs, e.g. \"b\". Recorded on its spawn row, so a router reads that slice's owns and points rather than the whole task's."
+            "description": "The plan slice of task it runs, e.g. \"b\"; recorded on its spawn row."
           },
           "route_override": {
             "type": "string",
-            "description": "Why this spawn must keep the profile you named rather than a routed one, e.g. \"touches auth\". Recorded on its spawn row."
+            "description": "Why it must keep the named profile unrouted; recorded on its spawn row."
           },
           "host": {
             "type": "string",
