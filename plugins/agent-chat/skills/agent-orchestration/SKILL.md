@@ -157,6 +157,26 @@ Report via chat_send to <your name>: Status, PR number, the mutation its test ca
 and any plan assumption that turned out false.
 ```
 
+### Spawn-routing facts: estimate, owns, task, slice
+
+Plans give every slice two facts: an `estimate` in points (the same points scale
+active-work tasks use, not hours or t-shirt sizes) and `owns` globs naming the files
+the slice may touch. Spawns for a planned slice pass `task` and `slice` so those facts
+can be looked up.
+
+`profile: "auto"` and the `spawnRouting` config arrive with CC-1666 F14; until then
+pick the profile by hand.
+
+```
+agent_spawn({
+  name: "<worker>",
+  profile: "<pick by hand>",   // after F14: "auto"
+  task: "<initiative>/<ID>",
+  slice: "<N>",
+  brief: "<the brief above>"
+})
+```
+
 ## Roles: who may spawn, who may have Remote Control
 
 Every profile is a `coordinator` or a `worker` (CC-163). `agent_profiles` shows it on each row.
