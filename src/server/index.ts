@@ -31,7 +31,13 @@ import { logEvent } from '../broker/log.js'
 import { ContextHinter, withHint } from './context-hint.js'
 import { readWait } from './human-wait.js'
 import { ParkAdvisor, readParkBudget } from './park-advisor.js'
-import { resolveInboxSpool, retireCodexHostOnExit, spoolRecord, type SpoolDeps } from './inbox-spool.js'
+import {
+  launchedInPrintMode,
+  resolveInboxSpool,
+  retireCodexHostOnExit,
+  spoolRecord,
+  type SpoolDeps,
+} from './inbox-spool.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -167,6 +173,8 @@ export interface SpawnedIdentity {
   subscriptions?: Subscription[]
   /** Set when this server spools pushes for a print-mode host (CC-1455). */
   inboxSpool?: true
+  /** The launcher started this host with `-p` (CC-1669). */
+  hostMode?: 'print'
 }
 
 /**
@@ -198,6 +206,7 @@ export function spawnedIdentity(env: NodeJS.ProcessEnv = process.env): SpawnedId
     workingOn: env.AGENT_CHAT_WORKING_ON ?? 'spawned agent, awaiting its first turn',
     ...(tags?.length ? { tags } : {}),
     ...(subscriptions?.length ? { subscriptions } : {}),
+    ...(launchedInPrintMode(env) ? { hostMode: 'print' as const } : {}),
   }
 }
 
@@ -272,6 +281,7 @@ async function registerSpawned(broker: BrokerClient, spawned: SpawnedIdentity): 
         ...(spawned.tags ? { tags: spawned.tags } : {}),
         ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
         ...(spawned.inboxSpool ? { inboxSpool: true as const } : {}),
+        ...(spawned.hostMode ? { hostMode: spawned.hostMode } : {}),
         ...terminalAnchor(),
         build: cliEntry(),
       },

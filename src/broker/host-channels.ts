@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { EFFORT_LEVELS, type EffortLevel } from '../agents/types.js'
 
 /**
@@ -103,27 +104,53 @@ export const psArgvReader: ArgvReader = pid => {
   }
 }
 
+/** CC-1669: the argv in a `/proc/<pid>/cmdline` read, split on the NULs that keep each argument whole. */
+export function argvFromProcCmdline(raw: string): string[] | undefined {
+  const argv = raw.split('\0')
+  if (argv.at(-1) === '') argv.pop()
+  return argv.length === 0 ? undefined : argv
+}
+
+/** The argv of `pid` from `/proc`, where Linux has it; `undefined` elsewhere or when it cannot be read. */
+export function procArgv(
+  pid: number,
+  readFile: (file: string) => string = file => readFileSync(file, 'utf8'),
+): string[] | undefined {
+  try {
+    return argvFromProcCmdline(readFile(`/proc/${pid}/cmdline`))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The tokens of `pid`'s command line: an injected reader's line split on spaces, else
+ * `/proc` with argument boundaries intact (CC-1669), else the space-joined `ps` line.
+ */
+function argvTokens(pid: number, read: ArgvReader | undefined): string[] | undefined {
+  const tokens = read === undefined ? procArgv(pid) : undefined
+  if (tokens !== undefined) return tokens
+  return (read ?? psArgvReader)(pid)?.split(/\s+/)
+}
+
 /**
  * Whether the Claude Code process at `pid` can receive a push from `server`.
  *
- * KNOWN LIMIT, and it is a property of the platform rather than of this code:
- * `ps` reports a command line already joined by spaces, so the original argument
+ * KNOWN LIMIT where `/proc` is missing (macOS) or a reader is injected: `ps`
+ * reports a command line already joined by spaces, so the original argument
  * boundaries are gone and a prompt is indistinguishable from a run of separate
- * tokens. A session whose PROMPT contains the literal sequence
- * `--channels agent-chat`, launched without a `--` separator, therefore reads as
- * `yes` when it is really `no`. That is the pre-CC-73 behaviour for one rare
- * case, not a new failure — and the reverse error, reporting `no` for a session
- * that can in fact receive, is not reachable this way.
+ * tokens. A prompt holding `--channels agent-chat` then reads as `yes`, and one
+ * holding a bare `--` ahead of `-p` hides print mode (CC-1669), which is why a
+ * launched agent declares print mode at registration instead.
  */
 export function hostChannelStatus(
   pid: number | undefined,
   server = 'agent-chat',
-  read: ArgvReader = psArgvReader,
+  read?: ArgvReader,
 ): ChannelStatus {
   if (pid === undefined || !Number.isInteger(pid) || pid <= 1) return 'unknown'
-  const line = read(pid)
-  if (line === undefined) return 'unknown'
-  return channelStatusFromArgv(line.split(/\s+/), server)
+  const argv = argvTokens(pid, read)
+  return argv === undefined ? 'unknown' : channelStatusFromArgv(argv, server)
 }
 
 /** Whether an argv started Remote Control; stops at `--` so a prompt naming the flag grants nothing. */

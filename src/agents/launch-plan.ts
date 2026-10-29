@@ -1,7 +1,7 @@
 import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv, noRewriteHooksDir } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
-import { inboxSpoolDir } from '../server/inbox-spool.js'
+import { HOST_MODE_ENV, inboxSpoolDir } from '../server/inbox-spool.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
 import { roleOf } from './profiles.js'
 import { RESUMED_BRIEF } from './resume-session.js'
@@ -139,7 +139,7 @@ function guardEnv(input: LaunchPlanInput): Record<string, string> {
   return { ...gitHooksEnv(dir), [GIT_SHIM_DIR_ENV]: gitShimDirFor(dir) }
 }
 
-const envFor = (input: LaunchPlanInput): Record<string, string> => ({
+const envFor = (input: LaunchPlanInput, print: boolean): Record<string, string> => ({
   ...profileEnv(input.profile),
   // CC-1553: the typed field wins over a raw `env` entry, and the variable outranks Claude Code's own settings.
   ...(input.profile.cacheTtl === undefined ? {} : { CLAUDE_CODE_PROMPT_CACHE_TTL: input.profile.cacheTtl }),
@@ -156,6 +156,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
   // A print-mode host's MCP server spools pushes here for the inbox hook to show (CC-1455).
   AGENT_CHAT_INBOX_SPOOL: inboxSpoolDir(input.agentId),
+  // CC-1669: told outright, since a prompt holding a bare `--` hides `-p` from a read of the host's argv.
+  ...(print ? { [HOST_MODE_ENV]: 'print' } : {}),
   // Defaults chosen by whoever spawned it, applied on that first registration —
   // so an agent is already listening to the right things before its first turn,
   // rather than needing the model to remember to subscribe.
@@ -343,7 +345,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     bin: 'claude',
     args,
     cwd: input.cwd,
-    env: envFor(input),
+    env: envFor(input, print),
     ...unsetEnvFor(input, interactive),
     // Headless already delivers its turn on stdin, so a resume message needs no
     // extra flag here — it just displaces the brief, which on a resume would

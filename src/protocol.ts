@@ -840,6 +840,8 @@ export type ClientMessage =
       provisional?: boolean
       /** This print-mode host's server spools every push for a hook to drain, so a send reads `queued` (CC-1455). */
       inboxSpool?: true
+      /** CC-1669: the launcher started this host with `-p`; the broker takes it over its own argv read. */
+      hostMode?: 'print'
       /**
        * Which BUILD this client is running, so a mismatch with the broker's own
        * is reported rather than inferred (CC-36).
