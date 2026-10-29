@@ -219,6 +219,8 @@ function addAgentCommands(program: Command): void {
     )
     .option('--task <id>', 'the task id the agent works on, recorded on its agent record')
     .option('--role <role>', 'implementer, reviewer, fix-round-<n>, shepherd-review, planner or other')
+    .option('--slice <id>', 'the plan slice of --task the agent runs, recorded on its spawn row')
+    .option('--route-override <reason>', 'why it keeps the named profile unrouted, recorded on its spawn row')
     .option(
       '--surface <surface>',
       `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,

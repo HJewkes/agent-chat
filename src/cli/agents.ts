@@ -460,6 +460,7 @@ export async function agentSpawn(
   // entry for the human to read one from, and their shell is where the account
   // they think they are on actually lives.
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
+  // CC-1666: `--slice` and `--route-override` land on the spawn row for the router to read.
   // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
   // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
   // CC-1059: `--host` names the machine to launch on; absent, a remote broker hands the launch back here.
@@ -471,6 +472,8 @@ export async function agentSpawn(
     account?: string
     task?: string
     role?: string
+    slice?: string
+    routeOverride?: string
     surface?: SurfaceName
     spawnedAs?: SpawnedAs
     remoteControl?: boolean
@@ -499,6 +502,8 @@ export async function agentSpawn(
       ...(options.account === undefined ? {} : { account: options.account }),
       ...(options.task === undefined ? {} : { task: options.task }),
       ...(options.role === undefined ? {} : { workRole: options.role }),
+      ...(options.slice === undefined ? {} : { slice: options.slice }),
+      ...(options.routeOverride === undefined ? {} : { routeOverride: options.routeOverride }),
       ...(options.surface === undefined ? {} : { surface: options.surface }),
       ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
       ...(options.launchedBy === undefined ? {} : { launchedBy: options.launchedBy }),

@@ -170,6 +170,14 @@ const args = z.object({
         'brief-ready; it passes the seat spawn gate, which otherwise warns or refuses.',
     )
     .optional(),
+  slice: z
+    .string()
+    .describe('The plan slice of task it runs, e.g. "b"; recorded on its spawn row.')
+    .optional(),
+  route_override: z
+    .string()
+    .describe('Why it must keep the named profile unrouted; recorded on its spawn row.')
+    .optional(),
   host: z.string().describe('Machine alias or hostname to launch on; default: yours.').optional(),
 })
 
@@ -187,6 +195,8 @@ function spawnFrame(input: SpawnArgs): Extract<ClientMessage, { t: 'spawn' }> {
   const resumeSession = present(input.resume_session)
   const predecessor = present(input.predecessor)
   const task = present(input.task)
+  const slice = present(input.slice)
+  const routeOverride = present(input.route_override)
   const host = present(input.host)
   return {
     t: 'spawn',
@@ -210,6 +220,8 @@ function spawnFrame(input: SpawnArgs): Extract<ClientMessage, { t: 'spawn' }> {
     ...(task === undefined ? {} : { task }),
     ...(input.role === undefined ? {} : { workRole: input.role }),
     ...(input.override === undefined ? {} : { override: input.override }),
+    ...(slice === undefined ? {} : { slice }),
+    ...(routeOverride === undefined ? {} : { routeOverride }),
     ...(host === undefined ? {} : { host }),
     // CC-1059: this process can launch here, so a broker on another host hands it the launch.
     ...launchHereFields(),

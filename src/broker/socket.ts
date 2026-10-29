@@ -398,6 +398,19 @@ const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlat
 const nonBlank = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 
+/** CC-1666: the router's inputs, trimmed; a blank one is no input, as the MCP tool's `present()` reads it. */
+function routeFields(msg: { slice?: unknown; routeOverride?: unknown }): {
+  slice?: string
+  routeOverride?: string
+} {
+  const slice = nonBlank(msg.slice)
+  const routeOverride = nonBlank(msg.routeOverride)
+  return {
+    ...(slice === undefined ? {} : { slice }),
+    ...(routeOverride === undefined ? {} : { routeOverride }),
+  }
+}
+
 /** CC-1206: a real agent name or id is far shorter; the cap keeps a claim from bloating the row. */
 export const CALLER_AGENT_MAX = 64
 
@@ -668,6 +681,7 @@ export class SocketServer {
       ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
       ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
       ...(msg.override === 'fix-round' ? { override: msg.override } : {}),
+      ...routeFields(msg),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       // CC-100. The explicit ask is the request's to make; the spawner's own
