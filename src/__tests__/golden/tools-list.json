@@ -638,6 +638,14 @@
             "const": "fix-round",
             "description": "Set to \"fix-round\" when this spawn is a fix round on a task burndown has claimed or that is brief-ready; it passes the seat spawn gate, which otherwise warns or refuses."
           },
+          "slice": {
+            "type": "string",
+            "description": "The plan slice of task this agent runs, e.g. \"b\". Recorded on its spawn row, so a router reads that slice's owns and points rather than the whole task's."
+          },
+          "route_override": {
+            "type": "string",
+            "description": "Why this spawn must keep the profile you named rather than a routed one, e.g. \"touches auth\". Recorded on its spawn row."
+          },
           "host": {
             "type": "string",
             "description": "Machine alias or hostname to launch on; default: yours."

@@ -106,13 +106,24 @@ export const isExperimentArm = (value: unknown): value is ExperimentArm => {
   return typeof id === 'string' && id.trim() !== '' && typeof arm === 'string' && arm.trim() !== ''
 }
 
+type AssignmentRequest = {
+  task?: string
+  workRole?: string
+  name: string
+  experiment?: ExperimentArm
+  slice?: string
+  routeOverride?: string
+}
+
 /** The task and role half, as row meta; `work_role_inferred` marks a role nobody stated. */
 export function assignmentMeta(
-  req: { task?: string; workRole?: string; name: string; experiment?: ExperimentArm },
+  req: AssignmentRequest,
   profile: string,
 ): Record<string, string> {
   return {
     ...(req.task === undefined ? {} : { task: req.task }),
+    ...(req.slice === undefined ? {} : { slice: req.slice }),
+    ...(req.routeOverride === undefined ? {} : { route_override: req.routeOverride }),
     ...(req.experiment === undefined
       ? {}
       : { experiment_id: req.experiment.id.trim(), experiment_arm: req.experiment.arm.trim() }),
@@ -125,7 +136,7 @@ export function assignmentMeta(
 /** Everything a spawn row carries: the worktree half from the allocation, the assignment half from the request. */
 export async function spawnProvenance(
   allocation: Allocation,
-  req: { task?: string; workRole?: string; name: string; experiment?: ExperimentArm },
+  req: AssignmentRequest,
   profile: string,
   git: GitRunner = runGit,
 ): Promise<Record<string, string>> {

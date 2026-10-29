@@ -754,6 +754,10 @@ export interface SpawnRequest {
   workRole?: string
   /** CC-932: `fix-round` passes the seat spawn gate on a claimed or brief-ready task. */
   override?: 'fix-round'
+  /** CC-1666: the plan slice of `task` this agent runs; written on the spawn row as `slice`. */
+  slice?: string
+  /** CC-1666: why the caller keeps `profile` unrouted; written on the spawn row as `route_override`. */
+  routeOverride?: string
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   /** CC-1614: how `parentAgentId` was bound to the requester's connection. */
