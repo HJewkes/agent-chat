@@ -161,14 +161,25 @@ and any plan assumption that turned out false.
 
 Plans give every slice two facts: an `estimate` in points (the same points scale
 active-work tasks use, not hours or t-shirt sizes) and `owns` globs naming the files
-the slice may touch. A spawn for a planned slice passes `task` (the bare task ID, e.g.
-`"CC-915"`), the slice's `owns` globs, and the initiative slug as `briefing`.
+the slice may touch.
 
-Not live yet; all of it arrives with CC-1666 F14: a `slice` argument on `agent_spawn`
-(it has none today, and an unknown key is dropped silently, so do not pass one),
-the lookup of a slice's `estimate` and `owns` from that argument, `profile: "auto"`,
-and the `spawnRouting` config. Until then pick the profile by hand and name the slice
-in the brief.
+The `agent_spawn` arguments below are read from its zod schema in
+`src/server/commands/agent-spawn.ts`; that schema is the authority, so check it there
+before relying on this list. A spawn for a planned slice passes:
+
+- `task`: the bare task ID, e.g. `"CC-915"`, recorded on the agent.
+- `slice`: the plan slice it runs, e.g. `"b"`, recorded on its spawn row.
+- `route_override`: only when the named profile must stay unrouted, giving the reason;
+  recorded on its spawn row.
+- `owns`: the slice's globs. It is refused when the agent would get its own worktree,
+  which most implementer profiles do, unless you also pass `worktree`, a worktree the
+  task system already assigned. With no assigned worktree, leave `owns` out and name the
+  globs in the brief.
+- `briefing`: the initiative slug.
+
+Nothing routes on these yet. The lookup of a slice's `estimate` and `owns` from `task`
+and `slice`, `profile: "auto"` and the `spawnRouting` config arrive with CC-1666 F14
+(S4b). Until then pick the profile by hand.
 
 ```
 agent_spawn({
@@ -176,8 +187,10 @@ agent_spawn({
   profile: "<pick by hand>",   // after F14: "auto"
   briefing: "<initiative>",
   task: "<ID>",
+  slice: "<N>",
+  worktree: "<assigned worktree path>",   // required with owns when the profile isolates
   owns: ["<the slice's owns globs>"],
-  brief: "<the brief above, naming slice <N>>"
+  brief: "<the brief above>"
 })
 ```
 

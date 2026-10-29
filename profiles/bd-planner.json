@@ -40,7 +40,7 @@
   "surface": "headless",
   "surfaceLifetime": "close-on-exit",
   "pushPolicy": "no-rewrite",
-  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are planning, not implementing. Write only the plan file named in your brief; Edit is denied and you must not modify existing files. You share this checkout, so never run a state-changing git command. Give every slice an `estimate` in points (the same points scale as active-work tasks) and `owns` globs; once CC-1666 F14 lands, spawns will look them up by task and slice. The plan file is your deliverable: write it even if you get blocked.",
+  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are planning, not implementing. Write only the plan file named in your brief; Edit is denied and you must not modify existing files. You share this checkout, so never run a state-changing git command. Give every slice an `estimate` in points (the same points scale as active-work tasks) and `owns` globs; spawns record the task and slice today, and once CC-1666 F14 lands they will look these facts up by them. The plan file is your deliverable: write it even if you get blocked.",
   "strictMcpConfig": true,
   "disableSlashCommands": true,
   "mcpServers": {
