@@ -251,6 +251,17 @@ import {
   backgroundResumeDecision,
   resumedForBackground,
 } from './background-resume.js'
+import {
+  IDLE_PRINT_WAKE,
+  IDLE_PRINT_WAKE_EVERY_MS,
+  idlePrintWakeDue,
+  idlePrintWakePrompt,
+  oldestSpooledAt,
+  readTurnEnded,
+} from './idle-print-wake.js'
+import { drainInbox, releaseClaims } from '../inbox-spool/drain.js'
+import { inboxSpoolDir } from '../server/inbox-spool.js'
+import { returnClaims } from '../codex/supervisor.js'
 import { loadResolvedConfig } from './burndown/settings-store.js'
 import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
@@ -952,8 +963,8 @@ export interface ResumeRequest {
   anchor?: string
   /** CC-883: `--remote-control` for a coordinator; a worker resumes without it and is told so. */
   remoteControl?: boolean
-  /** CC-336: the supervisor's own resume of an agent that exited on a background task. */
-  cause?: typeof BACKGROUND_RESUME
+  /** CC-336: the supervisor's own resume of an agent that exited on a background task; CC-1669: of an idle print host. */
+  cause?: typeof BACKGROUND_RESUME | typeof IDLE_PRINT_WAKE
   /** CC-1466: as on {@link SpawnRequest}. */
   launchedBy?: Launcher
   launchReason?: string
@@ -1359,6 +1370,8 @@ export class Supervisor implements TeleportHost {
   /** TP-4345 S2: survivors that reattached inside the start's settle window, for its sweep row. */
   private readonly reattachedAtStart = new Set<string>()
   private readmitSweep: NodeJS.Timeout | undefined
+  /** CC-1669 S2: the idle print host check, armed by the broker once it serves. */
+  private idlePrintTimer: NodeJS.Timeout | undefined
   private readonly readmits: ReadmitRecord | undefined
   private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
@@ -1730,7 +1743,8 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
-    if (entry.cancelReason !== MODE_SWITCH) await this.reportReviewerTree(entry)
+    if (entry.cancelReason !== MODE_SWITCH && entry.cancelReason !== IDLE_PRINT_WAKE)
+      await this.reportReviewerTree(entry)
     const resumeOn =
       failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless'
         ? this.reportIfUnreported(agentId, entry.name)
@@ -1762,6 +1776,7 @@ export class Supervisor implements TeleportHost {
       if (resumeOn === undefined) await this.parkImplementerIfExited(agentId)
     }
     if (resumeOn !== undefined) await this.resumeForBackground(agentId, entry.name, resumeOn)
+    if (entry.cancelReason === IDLE_PRINT_WAKE) await this.resumeIdlePrint(agentId, entry.name)
   }
 
   /** CC-763: never rejects; anything that goes wrong gathering the facts leaves the legacy fields. */
@@ -1864,6 +1879,93 @@ export class Supervisor implements TeleportHost {
     })
     logEvent(BACKGROUND_RESUME, { agentId, name, spawner, ok: outcome.ok })
     if (!outcome.ok) this.notifyUnreported(agentId, name, spawner, tail)
+  }
+
+  /** CC-1669 S2: checks for idle print hosts with waiting mail on an unref'd interval. */
+  startIdlePrintWake(everyMs = IDLE_PRINT_WAKE_EVERY_MS): void {
+    clearInterval(this.idlePrintTimer)
+    this.idlePrintTimer = setInterval(() => this.wakeIdlePrintHosts(), everyMs)
+    this.idlePrintTimer.unref?.()
+  }
+
+  /**
+   * CC-1669 S2: ends each headless print host whose turn has ended and whose oldest spooled
+   * message has waited past the threshold. Its exit resumes it with that mail as the prompt
+   * ({@link resumeIdlePrint}). Returns the names it ended.
+   */
+  wakeIdlePrintHosts(now = Date.now()): string[] {
+    const woken: string[] = []
+    for (const entry of this.live.values())
+      if (this.idlePrintWakeIsDue(entry, now) && this.endIdlePrintHost(entry)) woken.push(entry.name)
+    return woken
+  }
+
+  /** A pane, an interactive host, a process already being stopped or a turn in flight is left alone. */
+  private idlePrintWakeIsDue(entry: Live, now: number): boolean {
+    if (entry.handle.surface !== 'headless' || entry.cancelReason !== undefined) return false
+    if (this.resuming.has(entry.agentId)) return false
+    if (this.core.registry.printVerdict(entry.name) === undefined) return false
+    const spooledAt = oldestSpooledAt(inboxSpoolDir(entry.agentId))
+    if (spooledAt === undefined) return false
+    const identity = this.core.agents.get(entry.agentId)
+    const transcript = identity?.sessionId ? identityTranscript(identity).path : undefined
+    return idlePrintWakeDue({ spooledAt, turnEnded: readTurnEnded(transcript), now })
+  }
+
+  /** Ended the way a mode switch ends a process: the tree stays and nothing is retired. */
+  private endIdlePrintHost(entry: Live): boolean {
+    const hostPid = this.core.registry.hostPidFor(entry.name)
+    if (hostPid === undefined) return false
+    const ended = this.endSession(entry.name, hostPid, this.core.registry.hostFor(entry.name))
+    logEvent(IDLE_PRINT_WAKE, { agentId: entry.agentId, name: entry.name, hostPid, ended: ended.ok })
+    if (ended.ok) entry.cancelReason = IDLE_PRINT_WAKE
+    return ended.ok
+  }
+
+  /**
+   * CC-1669 S2: the ended host's spool is drained into the resumed turn's prompt. The claims
+   * are deleted once the resume launched and returned to the spool if it did not, so each
+   * message is shown once: here, or by the resumed run's own hooks if it did not fit.
+   */
+  private async resumeIdlePrint(agentId: string, name: string): Promise<void> {
+    await this.waitForNameFree(name)
+    const dir = inboxSpoolDir(agentId)
+    const drained = drainInbox(dir)
+    const spawner = this.core.agents.get(agentId)?.spawnedBy ?? HUMAN
+    const outcome = await this.resume(name, {
+      message: idlePrintWakePrompt(drained.blocks),
+      requestedBy: spawner,
+      cause: IDLE_PRINT_WAKE,
+    })
+    logEvent('idle_print_wake_resumed', { agentId, name, ok: outcome.ok, messages: drained.msgIds.length })
+    if (!outcome.ok) {
+      returnClaims(dir, drained.claimed)
+      return this.notifyIdlePrintRefused(name, spawner, outcome.reason)
+    }
+    releaseClaims(drained.claimed)
+    if (drained.msgIds.length > 0)
+      this.core.append({ kind: 'inbox_shown', actor: name, meta: { msgIds: drained.msgIds.join(',') } })
+  }
+
+  /** The waiting mail stays in the spool; the spawner learns the agent is down and why. */
+  private notifyIdlePrintRefused(name: string, spawner: string, reason: string | undefined): void {
+    const body =
+      `${name} was idle on a background task with messages waiting, so it was ended to deliver them, ` +
+      `but its resume was refused: ${reason ?? 'no reason given'}. Resume it with agent_resume.`
+    const { msgId } = this.core.append({
+      kind: spawner === HUMAN ? 'notice' : 'message',
+      actor: 'agent-chat',
+      target: spawner,
+      body,
+      meta: { event: IDLE_PRINT_WAKE, agent: name },
+    })
+    this.core.deliverTo(spawner, {
+      msgId,
+      from: 'agent-chat',
+      text: body,
+      at: Date.now(),
+      event: IDLE_PRINT_WAKE,
+    })
   }
 
   /** CC-1182: to the human it is a plain notice, so it leaves the queue on the notice TTL, not the 7-day sweep. */
@@ -5741,6 +5843,7 @@ export class Supervisor implements TeleportHost {
     this.remoteSpawns.close()
     for (const timer of this.reattached.values()) clearTimeout(timer)
     clearTimeout(this.readmitSweep)
+    clearInterval(this.idlePrintTimer)
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
       if (entry.attachCeiling) clearTimeout(entry.attachCeiling)

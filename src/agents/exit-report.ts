@@ -75,7 +75,8 @@ export function readExitTail(file: string | undefined, maxBytes = EXIT_TAIL_BYTE
   }
 }
 
-function readTail(file: string, maxBytes: number): string {
+/** The last `maxBytes` of a transcript, starting at a whole record. Throws when the file cannot be read. */
+export function readTail(file: string, maxBytes: number): string {
   const fd = fs.openSync(file, 'r')
   try {
     const size = fs.fstatSync(fd).size
