@@ -753,6 +753,12 @@ Commands:
                                   coordinator-role agent the event log shows spawning, live or
                                   detached, on one space-separated line. Exits non-zero when
                                   events.db is unreadable or no coordinator is live
+  watch [options]                 the seat-watch wake gate (CC-1661, workflows pilot P1), one pass:
+                                  for each seat a live coordinator holds in the event log (re-read
+                                  each pass; book seats with none are skipped) build the state
+                                  packet from events.db, Shepherd and seats status, apply rules
+                                  R1-R5, and append one JSONL row per seat. Only --shadow runs: it
+                                  sends nothing and wakes nothing
   help [command]                  display help for command
 
 === agent-chat seats watchdog
@@ -948,6 +954,21 @@ unreadable or no coordinator is live
 Options:
   --db <value>  events.db to read (default: the broker home)
   -h, --help    display help for command
+
+=== agent-chat seats watch
+Usage: agent-chat seats watch [options]
+
+the seat-watch wake gate (CC-1661, workflows pilot P1), one pass: for each seat a live coordinator
+holds in the event log (re-read each pass; book seats with none are skipped) build the state packet
+from events.db, Shepherd and seats status, apply rules R1-R5, and append one JSONL row per seat.
+Only --shadow runs: it sends nothing and wakes nothing
+
+Options:
+  --shadow        record decisions only; required until delivery lands
+  --root <value>  autonomy directory holding charter.md and seats/
+  --dir <value>   where the <seat>.jsonl rows go (default: the XDG state dir)
+  --db <value>    events.db to read (default: the broker home)
+  -h, --help      display help for command
 
 === agent-chat port
 Usage: agent-chat port [options] [command]

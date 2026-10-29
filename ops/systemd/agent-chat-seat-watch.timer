@@ -1,0 +1,9 @@
+[Unit]
+Description=Schedule for agent-chat-seat-watch.service
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

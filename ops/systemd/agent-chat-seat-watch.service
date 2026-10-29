@@ -1,0 +1,8 @@
+[Unit]
+Description=agent-chat seat-watch wake gate, shadow pass (CC-1661)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env agent-chat seats watch --shadow
+StandardOutput=append:%h/.local/state/agent-chat/seat-watch/watch.log
+StandardError=append:%h/.local/state/agent-chat/seat-watch/watch.log
