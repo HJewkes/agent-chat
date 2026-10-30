@@ -35,6 +35,7 @@ function deps(agents: StatusDeps['agents']): StatusDeps {
     machine: roster => ({
       headlessAgents: { live: roster.length, limit: 10 },
       memoryFree: { percent: 50, limit: 15 },
+      cpuPressure: { someAvg60: null, limit: 40, skipped: true },
       swap: { usedPercent: 10 },
       fullSuiteSlots: { inUse: 0, total: 4 },
     }),

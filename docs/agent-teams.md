@@ -1753,17 +1753,33 @@ Therefore:
   per seat, so neither sees the machine. `agent_spawn` also refuses a headless
   spawn while `machineHeadlessAgents` (default 10) headless agents are live
   (spawning, live or detached, from every seat). It refuses any spawn while free
-  memory is below `machineMemoryFreePercent` (default 15) percent. Both keys
-  live in `~/.agent-chat/config.json` and are read per spawn. The refusal names
-  the reading, the limit and the config key. Free memory is
-  `sysctl -n kern.memorystatus_level`, read on macOS only. Swap is not a gate:
+  memory is below `machineMemoryFreePercent` (default 15) percent. CC-1670: it
+  also refuses any spawn, with the retryable code `machine_cpu_pressure`, while
+  CPU PSI "some avg60" from `/proc/pressure/cpu` is at or above
+  `machineCpuPressurePercent` (default 40; `null` turns it off). The load
+  average is not a spawn gate: it counts runnable tasks, so a many-core host
+  reads a high load while no task waits for a CPU. macOS has no PSI, so the
+  check is skipped there. These keys live in `~/.agent-chat/config.json` and are
+  read per spawn. The refusal names the reading, the limit and the config key.
+  Free memory is `sysctl -n kern.memorystatus_level` on macOS and MemAvailable
+  from `/proc/meminfo` on Linux. Swap is not a gate:
   macOS keeps swap allocated long after memory pressure ends, so swap used reads
   high on a machine with plenty free. A reader that fails, or another platform,
   never refuses, and the failure is logged as `machine_guard_reader_failed`. A
   broken reader would otherwise stop every seat. `seats status --json` reports
-  the readings in its `machine` block: `headlessAgents`, `memoryFree`, `swap`
-  (used percent, no limit) and the full-suite slots in use (`fullSuiteSlots`,
-  README "Tests"). `agent_resume` is not guarded yet.
+  the readings in its `machine` block: `headlessAgents`, `memoryFree`,
+  `cpuPressure` (`skipped` on macOS), `swap` (used percent, no limit) and the
+  full-suite slots in use (`fullSuiteSlots`, README "Tests"). `agent_resume` is
+  not guarded yet.
+- **Seat machine stop (CC-431, CC-492, CC-1670):** every seat stops dispatch
+  while free memory is below `machineStopMemoryFreePercent` (default 20), swap
+  used is above `machineStopSwapUsedPercent` (default 60), the memory pressure
+  level is at or above `machineStopPressureLevel` (default 2), or CPU PSI "some
+  avg60" is at or above `machineStopCpuPressurePercent` (default 40). Load5
+  above `machineStopLoad5` (default 28) stays as a backstop for hosts without
+  PSI; `null` turns it off, as it does the swap and CPU pressure triggers. A
+  reading that fails never stops a seat. `agent-chat machine status` prints
+  each reading.
 - **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
   worker (any profile without `"role": "coordinator"`) is refused. The cap
   counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped
@@ -1818,6 +1834,20 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   broadcast budget already in `registry.ts:63-64`. Checked in
   `Supervisor.preflight`, exempting the human at the CLI for the same reason
   `checkCwd` does (CC-25, closed 2026-07-30 — this was prose-only until then).
+- **Footprint (CC-1671):** the broker samples each live local agent's process
+  tree every 10s (`agents/agent-footprint.ts`, Linux only): CPU seconds, peak
+  RSS, peak child count and, every sixth sample, peak files under its own
+  `ac-*` TMPDIR. Reads are async and bounded (2,000 pids a tick, 512 an agent,
+  10,000 files a count). Each run's footprint is the `footprint` JSON in its
+  `agent_exited` row's meta. An agent that exits before its first sample has
+  none, CPU after the last sample is not counted, and RSS is an upper bound
+  because shared pages count once per process.
+- **Cost estimate (CC-1671):** `agents/agent-cost.ts` reads those exit rows
+  into the median and p90 of each measure per profile and role, over the last
+  50 exits. Fewer than 3 exits of a role falls back to the profile's exits
+  across roles, then to a rough cold-start default per profile; `source` on
+  each estimate says which answered. Failed starts are left out.
+  `agent-chat machine costs` shows what is running and these estimates.
 - Every refusal appends `agent_spawn_refused` and returns a `reason` the model
   can act on — the `send_result.reason` pattern (`broker/index.ts:81-82`), which
   exists because a refusal a model cannot understand is a refusal it will retry.

@@ -422,8 +422,10 @@ evidence across sessions of different vintages. Presence is unaffected.
 **Spawns stop when the machine is full.** `agent_spawn` refuses a headless spawn
 while `machineHeadlessAgents` (default 10) headless agents are live machine-wide,
 and any spawn while free memory (`kern.memorystatus_level`) is below
-`machineMemoryFreePercent` (default 15) percent. Both keys live in
-`~/.agent-chat/config.json`. Swap used is reported by `seats status` but never
+`machineMemoryFreePercent` (default 15) percent. On Linux it also refuses any
+spawn while CPU pressure (`/proc/pressure/cpu` "some avg60") is at or above
+`machineCpuPressurePercent` (default 40), code `machine_cpu_pressure`. These keys
+live in `~/.agent-chat/config.json`. Swap used is reported by `seats status` but never
 refuses, because macOS keeps swap allocated after memory pressure ends. A reader
 that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 

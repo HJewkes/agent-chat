@@ -9,6 +9,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
+import { FootprintSampler, parseFootprintMeta } from '../agents/agent-footprint.js'
 import {
   coordinatorExemption,
   MAX_COORDINATOR_DEPTH,
@@ -158,6 +159,7 @@ function withStubbedSurface(
     attachMs?: number
     semaphore?: Semaphore
     spawnRateBudget?: SpawnRateBudget
+    footprint?: FootprintSampler
     hookSpawn?: HookSpawnFn
     launcherRunning?: LauncherProbe
     processProbe?: ProcessProbe
@@ -680,6 +682,51 @@ describe('inferring the exit of a visible agent', () => {
 
     expect(kindsFor('a1')).toContain('agent_exited')
     expect(core.agents.get('a1')?.state).toBe('exited')
+  })
+
+  it('records the run measured so far on its exit row', async () => {
+    const footprint = new FootprintSampler({
+      stat: async () => ({ ppid: 1, cpuTicks: 250, rssKb: 2048, startTicks: 1 }),
+      children: async () => [],
+      tmpDir: async () => undefined,
+      countFiles: async () => undefined,
+    })
+    const sup = withStubbedSurface({ settleMs: 1000, footprint })
+    liveAgent(sup, 'a1', 'scout')
+    await footprint.sample([{ agentId: 'a1', rootPids: [10] }])
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    vi.advanceTimersByTime(1000)
+
+    const exit = core.events.agentEvents().find(r => r.kind === 'agent_exited')
+    expect(parseFootprintMeta(exit?.meta ?? {})).toEqual({
+      samples: 1,
+      cpuSeconds: 2.5,
+      rssPeakKb: 2048,
+      childrenPeak: 0,
+    })
+    expect(footprint.peek('a1')).toBeUndefined()
+  })
+
+  it('reports a sampled live agent and the exits behind each estimate', async () => {
+    const footprint = new FootprintSampler({
+      stat: async () => ({ ppid: 1, cpuTicks: 100, rssKb: 512, startTicks: 1 }),
+      children: async () => [],
+      tmpDir: async () => undefined,
+      countFiles: async () => undefined,
+    })
+    const sup = withStubbedSurface({ settleMs: 1000, footprint })
+    liveAgent(sup, 'a1', 'scout')
+    await footprint.sample([{ agentId: 'a1', rootPids: [10] }])
+
+    expect(sup.agentCosts().running).toEqual([
+      expect.objectContaining({ name: 'scout', cpuSeconds: 1, rssPeakKb: 512 }),
+    ])
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    vi.advanceTimersByTime(1000)
+
+    expect(sup.agentCosts().estimates).toEqual([expect.objectContaining({ exits: 1, source: 'default' })])
   })
 
   it('says the exit was inferred rather than reporting an exit code it never saw', () => {

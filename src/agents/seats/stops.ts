@@ -332,16 +332,19 @@ export const DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT = 20
 export const DEFAULT_MACHINE_STOP_LOAD5 = 28
 export const DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT = 60
 export const DEFAULT_MACHINE_STOP_PRESSURE_LEVEL = 2
+export const DEFAULT_MACHINE_STOP_CPU_PRESSURE_PERCENT = 40
 
 export interface MachineStopLimits {
   /** Stop below this share of memory free. */
   memoryFreePercent: number
-  /** Stop above this five-minute load average. */
-  load5: number
+  /** Stop above this five-minute load average; a backstop behind CPU pressure, and null disables it (CC-1670). */
+  load5: number | null
   /** Stop above this share of swap used; null disables the swap trigger. */
   swapUsedPercent: number | null
   /** Stop at or above this kernel memory pressure level (1 normal, 2 warn, 4 critical). */
   pressureLevel: number
+  /** CC-1670: stop at or above this CPU PSI "some avg60"; null disables the trigger. */
+  cpuPressurePercent: number | null
 }
 
 /** A reading that could not be taken is null, and a null reading never stops a seat. */
@@ -350,6 +353,8 @@ export interface MachineStopReadings {
   load5: number | null
   swapUsedPercent: number | null
   pressureLevel: number | null
+  /** CPU PSI "some avg60"; null on macOS, which has no PSI. */
+  cpuPressurePercent: number | null
 }
 
 export interface MachineStop extends MachineStopReadings {
@@ -357,29 +362,39 @@ export interface MachineStop extends MachineStopReadings {
   reason: string
 }
 
-/** CC-431, CC-492: a machine under memory, swap, pressure level or load holds every seat; each breach names its reading. */
-export function machineStop(readings: MachineStopReadings, limits: MachineStopLimits): MachineStop | null {
-  const { memoryFreePercent, load5, swapUsedPercent, pressureLevel } = readings
-  const breaches = [
-    ...(memoryFreePercent !== null && memoryFreePercent < limits.memoryFreePercent
-      ? [`memory ${memoryFreePercent}% free (floor ${limits.memoryFreePercent}%)`]
-      : []),
-    ...(swapUsedPercent !== null &&
-    limits.swapUsedPercent !== null &&
-    swapUsedPercent > limits.swapUsedPercent
-      ? [`swap ${swapUsedPercent}% used (limit ${limits.swapUsedPercent}%)`]
-      : []),
-    ...(pressureLevel !== null && pressureLevel >= limits.pressureLevel
-      ? [`pressure level ${pressureLevel} (limit ${limits.pressureLevel})`]
-      : []),
-    ...(load5 !== null && load5 > limits.load5 ? [`load5 ${load5} (limit ${limits.load5})`] : []),
+const breachIf = (breached: boolean, text: string): string[] => (breached ? [text] : [])
+
+function machineStopBreaches(readings: MachineStopReadings, limits: MachineStopLimits): string[] {
+  const { memoryFreePercent, load5, swapUsedPercent, pressureLevel, cpuPressurePercent } = readings
+  return [
+    ...breachIf(
+      memoryFreePercent !== null && memoryFreePercent < limits.memoryFreePercent,
+      `memory ${memoryFreePercent}% free (floor ${limits.memoryFreePercent}%)`,
+    ),
+    ...breachIf(
+      swapUsedPercent !== null && limits.swapUsedPercent !== null && swapUsedPercent > limits.swapUsedPercent,
+      `swap ${swapUsedPercent}% used (limit ${limits.swapUsedPercent}%)`,
+    ),
+    ...breachIf(
+      pressureLevel !== null && pressureLevel >= limits.pressureLevel,
+      `pressure level ${pressureLevel} (limit ${limits.pressureLevel})`,
+    ),
+    ...breachIf(
+      cpuPressurePercent !== null &&
+        limits.cpuPressurePercent !== null &&
+        cpuPressurePercent >= limits.cpuPressurePercent,
+      `CPU pressure ${cpuPressurePercent}% (limit ${limits.cpuPressurePercent}%)`,
+    ),
+    ...breachIf(
+      load5 !== null && limits.load5 !== null && load5 > limits.load5,
+      `load5 ${load5} (limit ${limits.load5})`,
+    ),
   ]
+}
+
+/** CC-431, CC-492, CC-1670: a machine under memory, swap, pressure level, CPU pressure or load holds every seat; each breach names its reading. */
+export function machineStop(readings: MachineStopReadings, limits: MachineStopLimits): MachineStop | null {
+  const breaches = machineStopBreaches(readings, limits)
   if (breaches.length === 0) return null
-  return {
-    memoryFreePercent,
-    load5,
-    swapUsedPercent,
-    pressureLevel,
-    reason: `machine under pressure: ${breaches.join(', ')}`,
-  }
+  return { ...readings, reason: `machine under pressure: ${breaches.join(', ')}` }
 }
