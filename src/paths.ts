@@ -70,6 +70,9 @@ export const agentDir = (agentId: string): string => path.join(agentsDir(), agen
 /** Per-Codex-process state, keyed by the Codex pid that its MCP children and hooks share (CC-1509). */
 export const codexHostDir = (hostPid: number): string => path.join(home(), 'codex-hosts', String(hostPid))
 
+/** What a supervised Codex left undelivered, kept for the next `codex run` under that name (CC-1683). */
+export const codexPendingDir = (name: string): string => path.join(home(), 'codex-pending', name)
+
 /** User-defined agent profiles, layered over the four builtins. */
 export const profilesDir = (): string => path.join(home(), 'profiles')
 
