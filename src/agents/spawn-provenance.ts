@@ -24,6 +24,9 @@ export const WORK_ROLE_CHOICES = `${WORK_ROLES.join(', ')}, fix-round-<n>`
 /** Shepherd names each fix-round successor by appending `-s<N>` to its predecessor's name. */
 const FIX_ROUND_SUFFIX = /(?:-s\d+)+$/
 
+/** TP-4560: the agent a chain of fix rounds started from, `<name>` for `<name>-s1-s2`; any other name is its own. */
+export const fixRoundRoot = (name: string): string => name.replace(FIX_ROUND_SUFFIX, '')
+
 /** Shepherd's own reviewers are named `rv-<owner>-<repo>-<pr>`. */
 const SHEPHERD_REVIEW = /^rv-/
 
