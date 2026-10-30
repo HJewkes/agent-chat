@@ -8,12 +8,13 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
-import { SpawnRateBudget } from '../agents/spawn-rate.js'
+import { SpawnSlots } from '../agents/spawn-admission.js'
 import { FootprintSampler, parseFootprintMeta } from '../agents/agent-footprint.js'
 import {
   coordinatorExemption,
   MAX_COORDINATOR_DEPTH,
   Supervisor,
+  type PredictedCostReaders,
   type SpawnOutcome,
   type SupervisorOptions,
 } from '../agents/supervisor.js'
@@ -158,7 +159,8 @@ function withStubbedSurface(
     settleMs?: number
     attachMs?: number
     semaphore?: Semaphore
-    spawnRateBudget?: SpawnRateBudget
+    spawnSlots?: SpawnSlots
+    predictedCost?: PredictedCostReaders
     footprint?: FootprintSampler
     hookSpawn?: HookSpawnFn
     launcherRunning?: LauncherProbe
@@ -556,103 +558,163 @@ describe('the concurrency budget', () => {
 })
 
 /**
- * CC-25 — §11.3 promised "a spawn budget per requester per window" and it did
- * not exist. The semaphore bounds standing population; this bounds churn, which
- * the semaphore cannot see because each spawn in a loop is legal on its own.
+ * CC-1671 S3: replaced CC-25's fixed window. The semaphore bounds standing population;
+ * this bounds how many launches one requester has in flight.
  */
-describe('the spawn rate budget', () => {
+describe('the spawn burst guard', () => {
   /** A requester needs a registered session at `cwd` or checkCwd refuses first. */
   const registerPeer = (name: string, cwd: string): void => {
     core.register(fakeConn(), { t: 'register', name, workingOn: '', cwd, pid: 1 })
   }
+  const peerSpawn = (sup: Supervisor, name: string, cwd: string, requestedBy = 'peer') =>
+    sup.spawn(spawnReq({ name, requestedBy, cwd }))
 
-  it('refuses once a requester exceeds the per-window limit, naming the limit', async () => {
-    const spawnRateBudget = new SpawnRateBudget(60_000, 2)
-    const sup = withStubbedSurface({ spawnRateBudget })
+  /** The stubbed launch registers at once, so a slot still in flight is held by hand. */
+  const inFlight = (limit: number): SpawnSlots => {
+    const spawnSlots = new SpawnSlots(limit)
+    for (let i = 0; i < limit; i += 1) spawnSlots.hold('peer', `held-${i}`)
+    return spawnSlots
+  }
+
+  it('refuses past the in-flight limit with a retryable spawn_rate_limit naming it', async () => {
+    const sup = withStubbedSurface({ spawnSlots: inFlight(2) })
     const shared = workspace()
     registerPeer('peer', shared)
 
-    const first = await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
-    const second = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
-    const third = await sup.spawn(spawnReq({ name: 'scout-3', requestedBy: 'peer', cwd: shared }))
-
-    expect(first.ok).toBe(true)
-    expect(second.ok).toBe(true)
-    expect(third.ok).toBe(false)
-    expect(third.reason).toMatch(/peer has attempted 2 spawns in the last 60s \(limit 2\)/)
-  })
-
-  it('types a spawn past the rate budget as a retryable spawn_rate_limit, reason text unchanged', async () => {
-    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
-    const sup = withStubbedSurface({ spawnRateBudget })
-    const shared = workspace()
-    registerPeer('peer', shared)
-
-    await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
-    const refused = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
+    const refused = await peerSpawn(sup, 'scout-3', shared)
 
     expect(refused).toEqual({
       ok: false,
       code: 'spawn_rate_limit',
       retryable: true,
-      reason: 'peer has attempted 1 spawns in the last 60s (limit 1); wait before spawning again',
+      reason: 'peer has 2 launches in flight (limit 2); retry when one registers or exits',
     })
   })
 
   it('records the refusal as an event, not just a reply string', async () => {
-    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
-    const sup = withStubbedSurface({ spawnRateBudget })
+    const sup = withStubbedSurface({ spawnSlots: inFlight(1) })
     const shared = workspace()
     registerPeer('peer', shared)
 
-    await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
-    await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
+    await peerSpawn(sup, 'scout-2', shared)
 
     const refusal = core.events.history(10).find(r => r.kind === 'agent_spawn_refused')
     expect(refusal?.from).toBe('peer')
-    expect(refusal?.text).toMatch(/attempted 1 spawns/)
+    expect(refusal?.text).toMatch(/1 launches in flight/)
   })
 
-  it('tracks requesters independently, so a busy peer does not throttle another', async () => {
-    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
-    const sup = withStubbedSurface({ spawnRateBudget })
-    const sharedA = workspace()
-    const sharedB = workspace()
-    registerPeer('alice', sharedA)
-    registerPeer('bob', sharedB)
+  it('counts each requester separately', async () => {
+    const sup = withStubbedSurface({ spawnSlots: inFlight(1) })
+    const shared = workspace()
+    registerPeer('bob', shared)
 
-    const peerA = await sup.spawn(spawnReq({ name: 'scout-a', requestedBy: 'alice', cwd: sharedA }))
-    const peerB = await sup.spawn(spawnReq({ name: 'scout-b', requestedBy: 'bob', cwd: sharedB }))
-
-    expect(peerA.ok).toBe(true)
-    expect(peerB.ok).toBe(true)
+    expect((await peerSpawn(sup, 'scout-b', shared, 'bob')).ok).toBe(true)
   })
 
-  it('lets a spent budget free up once the window has passed', async () => {
-    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
-    const sup = withStubbedSurface({ spawnRateBudget })
+  it('takes a slot for a launch and gives it back when the agent registers', async () => {
+    const spawnSlots = new SpawnSlots(1)
+    const hold = vi.spyOn(spawnSlots, 'hold')
+    const sup = withStubbedSurface({ spawnSlots })
     const shared = workspace()
     registerPeer('peer', shared)
 
-    await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
-    const blocked = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
-    expect(blocked.ok).toBe(false)
+    const first = await peerSpawn(sup, 'scout-1', shared)
+    const second = await peerSpawn(sup, 'scout-2', shared)
 
-    vi.advanceTimersByTime(60_001)
+    expect(hold).toHaveBeenCalledWith('peer', first.agentId)
+    expect(second.ok).toBe(true)
+  })
 
-    const after = await sup.spawn(spawnReq({ name: 'scout-3', requestedBy: 'peer', cwd: shared }))
-    expect(after.ok).toBe(true)
+  it('frees the slot at once when the agent registers', async () => {
+    const sup = withStubbedSurface({ spawnSlots: inFlight(1) })
+    const shared = workspace()
+    registerPeer('peer', shared)
+    expect((await peerSpawn(sup, 'scout-1', shared)).ok).toBe(false)
+
+    core.append({ kind: 'agent_attached', actor: 'scout-0', ref: 'held-0' })
+
+    expect((await peerSpawn(sup, 'scout-2', shared)).ok).toBe(true)
+  })
+
+  it('frees the slot at once when the agent exits, with no time passing', async () => {
+    const sup = withStubbedSurface({ spawnSlots: inFlight(1) })
+    const shared = workspace()
+    registerPeer('peer', shared)
+
+    core.append({ kind: 'agent_exited', actor: 'scout-0', ref: 'held-0' })
+
+    expect((await peerSpawn(sup, 'scout-2', shared)).ok).toBe(true)
+  })
+
+  it('refuses at the last step too, so concurrent spawns cannot overshoot', async () => {
+    const spawnSlots = new SpawnSlots(1)
+    const sup = withStubbedSurface({ spawnSlots })
+    const shared = workspace()
+    registerPeer('peer', shared)
+    vi.spyOn(sup as unknown as { lintBrief: () => Promise<unknown> }, 'lintBrief').mockImplementation(
+      async () => {
+        spawnSlots.hold('peer', 'raced')
+        return { warnings: [] }
+      },
+    )
+
+    const refused = await peerSpawn(sup, 'scout-1', shared)
+
+    expect(refused).toMatchObject({ ok: false, code: 'spawn_rate_limit' })
   })
 
   it('exempts the human at the CLI, same reasoning as checkCwd', async () => {
-    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
-    const sup = withStubbedSurface({ spawnRateBudget })
+    const sup = withStubbedSurface({ spawnSlots: new SpawnSlots(1) })
 
     const first = await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'human' }))
     const second = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'human' }))
 
     expect(first.ok).toBe(true)
     expect(second.ok).toBe(true)
+  })
+})
+
+describe('predicted-cost admission', () => {
+  const GIB_KB = 1024 ** 2
+  const readers = (over: Partial<PredictedCostReaders> = {}): PredictedCostReaders => ({
+    readMemoryFree: () => ({ freePercent: 20 }),
+    totalMemoryKb: () => 100 * GIB_KB,
+    cpuCount: () => 10,
+    limits: () => ({ memoryFreePercent: 15 }),
+    ...over,
+  })
+
+  it('refuses when the p90 would cross the floor, naming the resource', async () => {
+    const sup = withStubbedSurface({
+      predictedCost: readers({ readMemoryFree: () => ({ freePercent: 16 }) }),
+    })
+
+    const refused = await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'human' }))
+
+    expect(refused).toMatchObject({ ok: false, code: 'machine_predicted_memory', retryable: true })
+    expect(refused.reason).toMatch(/predicted memory: 16% free now/)
+  })
+
+  it('counts a launch in flight against the next until it ends', async () => {
+    const spawnSlots = new SpawnSlots()
+    spawnSlots.hold('human', 'held', { rssKb: 4 * GIB_KB, cpuCores: 0 })
+    const sup = withStubbedSurface({
+      spawnSlots,
+      predictedCost: readers({ readMemoryFree: () => ({ freePercent: 18 }) }),
+    })
+
+    expect((await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'human' }))).ok).toBe(false)
+
+    core.append({ kind: 'agent_exited', actor: 'held', ref: 'held' })
+    expect((await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'human' }))).ok).toBe(true)
+  })
+
+  it('admits when the reading failed', async () => {
+    const sup = withStubbedSurface({
+      predictedCost: readers({ readMemoryFree: () => ({ error: 'no reader' }) }),
+    })
+
+    expect((await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'human' }))).ok).toBe(true)
   })
 })
 
