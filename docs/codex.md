@@ -8,8 +8,7 @@ push. What has shipped:
   make no `<channel>` claim.
 - **S2.** Every push to a Codex host is also written to a spool keyed on the Codex pid,
   `<state>/codex-hosts/<hostPid>/inbox`. `chat_inbox` clears what it returns, and the
-  directory goes when the server exits (under `codex run --name`, its records move first;
-  see S4).
+  directory goes when the server exits (under `codex run`, its records move first; see S4).
 - **S3.** A hook that tells the model what waits in that spool (below).
 - **S4.** `agent-chat codex run`, a supervisor that delivers that spool into the thread,
   waking an idle session (below).
@@ -66,7 +65,7 @@ Limits:
 
 ## S4: `agent-chat codex run`
 
-`agent-chat codex run [--name <name>] [--resume <thread>] [--wake-cap <n>] [--codex <path>]
+`agent-chat codex run --name <name> [--resume <thread>] [--wake-cap <n>] [--codex <path>]
 [codexArgs...]` starts `codex app-server` and owns one thread on it. Arguments after the
 options go to `codex app-server`.
 
@@ -76,8 +75,10 @@ options go to `codex app-server`.
 - **`--name`.** The name goes into that server's env as `AGENT_CHAT_NAME`, and the server
   registers under it at startup, before any turn, so peers can address the session by
   name. The name follows the agent-name rule (lowercase letters, digits, `-` and `_`). If
-  another session holds it, the server registers under a name derived from the directory,
-  as it does without `--name`.
+  another session holds it, the server registers under a name derived from the directory.
+  `--name` is required: it is what undelivered records are kept under, and a name derived
+  from the directory would hand one session's peer messages to whichever session next ran
+  there.
 - **`AGENT_CHAT_HOME`.** Codex passes MCP children only a short allowlist of variables, so
   the supervisor sets this one in that server's env. Without it the server would join the
   default broker while the supervisor watched another home's spool.
@@ -87,6 +88,12 @@ options go to `codex app-server`.
   the session is idle they start a new turn. If the turn ended before the steer arrived,
   they start a new turn instead. A record leaves the spool only after the RPC succeeded;
   on any other error it goes back for the next drain.
+- **Delivery is at-least-once.** A supervisor that dies after the RPC succeeded and before
+  it released the claim leaves a record the next drain delivers again. The bound is one
+  extra delivery per such crash: the repeat releases the claim, so the record does not keep
+  going round. A repeat usually lands in the next run's thread, and it carries the same
+  `msg_id`, so a reader can tell it from a new message. A marker cannot remove this: written
+  before the RPC, the same crash loses the record; written after, it leaves the same gap.
 - **Idle wake is uncapped by default** (decision 511). Every record that arrives while the
   session is idle starts a turn, and each such turn costs one model turn.
 - **`--wake-cap <n>`** allows at most `n` idle wakes per rolling hour. Over the cap,
@@ -98,13 +105,15 @@ options go to `codex app-server`.
 - **Approval policy `never`.** The thread is started or resumed with
   `approvalPolicy: "never"`. The supervisor declines every request the app-server sends
   it, so an approval prompt would fail the tool call it gates.
-- **A dead app-server loses nothing under `--name`.** Whatever is undelivered when the
-  app-server dies moves to `<state>/codex-pending/<name>`, and the next `codex run --name
-<name>` delivers it once, into its own thread. The pid dir always goes, so a later Codex
-  on that pid inherits nothing. A run without `--name` has no identity to come back as: its
-  records go with the pid dir, and only `chat_inbox` still reads them. A crash between the
-  RPC succeeding and the claim being released repeats that delivery, and nothing expires
-  the pending dir of a name that never runs again.
+- **A dead app-server loses nothing.** Whatever is undelivered when the app-server dies
+  moves to `<state>/codex-pending/<name>`, and the next `codex run --name <name>` delivers
+  it into its own thread. The pid dir always goes, so a later Codex on that pid inherits
+  nothing.
+- **Pending dirs expire.** At start, each `codex run` removes the pending dir of any other
+  name unused for `codexPendingTtlHours` (in `config.json`, default 336, which is 14 days;
+  `null` keeps them). Each removal logs a line to stderr and a `codex_pending_swept` row to
+  the broker log. Those records no longer reach a thread, and `chat_inbox` still returns
+  the messages.
 - **Exit.** The supervisor exits with the app-server's exit code, or 128 plus the signal
   number when a signal ended it. SIGINT and SIGTERM are forwarded to the app-server.
 

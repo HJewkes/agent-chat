@@ -13,6 +13,7 @@ import {
   readCodexHostStamp,
   resolveInboxSpool,
   spoolRecord,
+  sweepCodexPending,
   type SpoolRecord,
 } from '../server/inbox-spool.js'
 
@@ -234,5 +235,69 @@ describe('parking a named Codex host (CC-1683)', () => {
     expect(codexKeepName({ [CODEX_KEEP_ENV]: 'scout' })).toBe('scout')
     expect(codexKeepName({ [CODEX_KEEP_ENV]: '../escape' })).toBeUndefined()
     expect(codexKeepName({})).toBeUndefined()
+  })
+})
+
+describe('sweeping pending dirs (CC-1684)', () => {
+  const HOUR_MS = 3_600_000
+  const NOW = 1_800_000_000_000
+  const TTL = 10 * HOUR_MS
+  const OLD = 'cc1684-old'
+  const FRESH = 'cc1684-fresh'
+  const root = path.dirname(codexPendingDir(OLD))
+  const sweep = (keep = 'cc1684-keep') => sweepCodexPending(TTL, keep, { now: () => NOW })
+
+  const aged = (name: string, ageMs: number): string => {
+    const dir = codexPendingDir(name)
+    spoolRecord(dir, record('msg-1'))
+    const at = new Date(NOW - ageMs)
+    fs.utimesSync(dir, at, at)
+    return dir
+  }
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('removes a dir past the age and keeps one inside it, naming what went', () => {
+    // Catches: a sweep with the comparison reversed, or one that loses count of what it dropped.
+    aged(OLD, TTL + 1000)
+    aged(FRESH, TTL - 1000)
+
+    expect(sweep()).toEqual([{ name: OLD, records: 1 }])
+    expect(fs.existsSync(codexPendingDir(OLD))).toBe(false)
+    expect(fs.existsSync(codexPendingDir(FRESH))).toBe(true)
+  })
+
+  it('counts a record a dead run left claimed', () => {
+    // Catches: a log line that understates what the sweep dropped.
+    const dir = aged(OLD, TTL + 1000)
+    fs.mkdirSync(path.join(dir, '.claimed'))
+    fs.writeFileSync(path.join(dir, '.claimed', '70999-claimed.json'), '{}')
+    const at = new Date(NOW - TTL - 1000)
+    fs.utimesSync(dir, at, at)
+
+    expect(sweep()).toEqual([{ name: OLD, records: 2 }])
+  })
+
+  it('never sweeps the name about to run', () => {
+    // Catches: a returning name losing the records it came back for.
+    aged(OLD, TTL + 1000)
+
+    expect(sweep(OLD)).toEqual([])
+    expect(fs.existsSync(codexPendingDir(OLD))).toBe(true)
+  })
+
+  it('leaves what is not a pending dir, and survives there being no root', () => {
+    // Catches: a sweep that removes stray files, or walks something no name could own.
+    expect(sweep()).toEqual([])
+    fs.mkdirSync(root, { recursive: true })
+    const stray = path.join(root, 'NOT.A.NAME')
+    fs.mkdirSync(stray)
+    const at = new Date(NOW - TTL - 1000)
+    fs.utimesSync(stray, at, at)
+
+    expect(sweep()).toEqual([])
+    expect(fs.existsSync(stray)).toBe(true)
   })
 })

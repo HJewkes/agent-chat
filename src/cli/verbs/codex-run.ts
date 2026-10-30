@@ -4,6 +4,7 @@ import { startCodexAppServer } from '../../codex/app-server-client.js'
 import { superviseCodex, type ThreadDelivery } from '../../codex/supervisor.js'
 import { AGENT_NAME_PATTERN } from '../../launch-identity.js'
 import { EventLog } from '../../broker/event-log.js'
+import { resolveCodexPendingTtlMs } from '../../config.js'
 import { cliEntry } from '../../paths.js'
 import type { AppendInput } from '../../broker/event-store.js'
 import type { ClientMessage, ServerMessage } from '../../protocol.js'
@@ -28,14 +29,14 @@ export function mcpOverrides(nodePath: string, entry: string, name?: string, hom
   ].flatMap(override => ['-c', override])
 }
 
-export const appServerArgs = (codexArgs: readonly string[], name?: string): string[] => [
+export const appServerArgs = (codexArgs: readonly string[], name: string): string[] => [
   'app-server',
   ...mcpOverrides(process.execPath, cliEntry(), name, process.env.AGENT_CHAT_HOME),
   ...codexArgs,
 ]
 
 interface RunOptions {
-  name?: string
+  name: string
   resume?: string
   wakeCap?: string
   codex?: string
@@ -43,8 +44,8 @@ interface RunOptions {
 
 const NAME = new RegExp(`^${AGENT_NAME_PATTERN}$`)
 
-export function parseName(raw: string | undefined): string | undefined {
-  if (raw === undefined || NAME.test(raw)) return raw
+export function parseName(raw: string): string {
+  if (NAME.test(raw)) return raw
   throw new Error(
     `--name wants lowercase letters, digits, - and _, starting with a letter or digit; got ${raw}`,
   )
@@ -129,8 +130,9 @@ async function runCodex(codexArgs: string[], options: RunOptions): Promise<void>
     cwd: process.cwd(),
     wakeCap,
     keepAs: name,
+    pendingTtlMs: resolveCodexPendingTtlMs(),
     onWakeCapped: (hostPids, cap) => void reportWakeCapped(hostPids, cap),
-    onDelivered: delivery => writeDelivered(options.name ?? 'codex', delivery),
+    onDelivered: delivery => writeDelivered(name, delivery),
   })
 }
 
@@ -145,7 +147,11 @@ export function addCodexCommands(program: Command, helpGroup: string): void {
       'run `codex app-server` and deliver agent-chat messages to its thread: a steer while a turn runs, ' +
         'a new turn when idle; exits with the app-server exit code (CC-1523)',
     )
-    .option('--name <name>', 'register the session under this name, so peers can address it')
+    .requiredOption(
+      '--name <name>',
+      'register the session under this name, so peers can address it and the next run under it gets ' +
+        'what this one left undelivered; a run without a name would lose that, so one is refused (CC-1684)',
+    )
     .option('--resume <thread>', 'resume this Codex thread instead of starting one')
     .option('--wake-cap <n>', 'at most n idle wakes per hour; uncapped by default')
     .option('--codex <path>', 'the codex executable', 'codex')

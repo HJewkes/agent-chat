@@ -199,6 +199,46 @@ export function adoptCodexHost(
   proc.once('exit', () => parkCodexHost(hostPid, keepAs, deps))
 }
 
+export interface SweptPending {
+  name: string
+  records: number
+}
+
+export interface SweepDeps {
+  fs?: typeof nodeFs
+  now?: () => number
+}
+
+const recordsIn = (dir: string, fs: typeof nodeFs): number =>
+  [...listing(dir, fs), ...listing(path.join(dir, '.claimed'), fs)].filter(n => n.endsWith('.json')).length
+
+/**
+ * CC-1684: remove the pending dirs of names that have not run for `ttlMs`, and say what went.
+ * A dir's mtime moves on every park and drain, so it dates the name's last use. `keep` is the
+ * name about to run, whose records are due now however old they are. The broker still holds
+ * each message for `chat_inbox`.
+ */
+export function sweepCodexPending(ttlMs: number, keep: string, deps: SweepDeps = {}): SweptPending[] {
+  const fs = deps.fs ?? nodeFs
+  const root = path.dirname(codexPendingDir(keep))
+  const cutoff = (deps.now ?? Date.now)() - ttlMs
+  const swept: SweptPending[] = []
+  for (const name of listing(root, fs)) {
+    if (name === keep || !KEEP_NAME.test(name)) continue
+    const dir = path.join(root, name)
+    try {
+      const stat = fs.lstatSync(dir)
+      if (!stat.isDirectory() || stat.mtimeMs >= cutoff) continue
+      const records = recordsIn(dir, fs)
+      fs.rmSync(dir, { recursive: true, force: true })
+      swept.push({ name, records })
+    } catch {
+      // Gone already, or not ours to remove: the next run looks again.
+    }
+  }
+  return swept
+}
+
 /** Write one record;`false` when the fs refused, which must never cost the push itself. */
 export function spoolRecord(dir: string, record: SpoolRecord, deps: SpoolDeps = {}): boolean {
   const fs = deps.fs ?? nodeFs
