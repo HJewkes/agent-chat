@@ -1842,6 +1842,20 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   broadcast budget already in `registry.ts:63-64`. Checked in
   `Supervisor.preflight`, exempting the human at the CLI for the same reason
   `checkCwd` does (CC-25, closed 2026-07-30 — this was prose-only until then).
+- **Footprint (CC-1671):** the broker samples each live local agent's process
+  tree every 10s (`agents/agent-footprint.ts`, Linux only): CPU seconds, peak
+  RSS, peak child count and, every sixth sample, peak files under its own
+  `ac-*` TMPDIR. Reads are async and bounded (2,000 pids a tick, 512 an agent,
+  10,000 files a count). Each run's footprint is the `footprint` JSON in its
+  `agent_exited` row's meta. An agent that exits before its first sample has
+  none, CPU after the last sample is not counted, and RSS is an upper bound
+  because shared pages count once per process.
+- **Cost estimate (CC-1671):** `agents/agent-cost.ts` reads those exit rows
+  into the median and p90 of each measure per profile and role, over the last
+  50 exits. Fewer than 3 exits of a role falls back to the profile's exits
+  across roles, then to a rough cold-start default per profile; `source` on
+  each estimate says which answered. Failed starts are left out.
+  `agent-chat machine costs` shows what is running and these estimates.
 - Every refusal appends `agent_spawn_refused` and returns a `reason` the model
   can act on — the `send_result.reason` pattern (`broker/index.ts:81-82`), which
   exists because a refusal a model cannot understand is a refusal it will retry.

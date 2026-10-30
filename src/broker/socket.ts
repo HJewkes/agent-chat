@@ -621,6 +621,11 @@ export class SocketServer {
     this.supervisor.startIdlePrintWake()
   }
 
+  /** CC-1671 S1: called once the socket is listening; `close` stops it with the supervisor. */
+  startFootprintSampling(): void {
+    this.supervisor.startFootprintSampling()
+  }
+
   /** `/health` and `/api/lifecycle` readings, absent while the ledger shadow is off. */
   lifecycle(): HttpAppOptions['lifecycle'] {
     const verifier = this.verifier
@@ -2405,6 +2410,7 @@ export class SocketServer {
             ? { agents: core.agents.roster({ includeRetired: msg.includeRetired ?? false }) }
             : viewRoster(core.agents.roster({ includeRetired: true }), msg.view)),
           slots: this.supervisor.slotUsage(),
+          ...(msg.costs === true ? { costs: this.supervisor.agentCosts() } : {}),
         })
       case 'teleport':
         void this.handleTeleport(conn, msg)
