@@ -708,6 +708,27 @@ describe('inferring the exit of a visible agent', () => {
     expect(footprint.peek('a1')).toBeUndefined()
   })
 
+  it('reports a sampled live agent and the exits behind each estimate', async () => {
+    const footprint = new FootprintSampler({
+      stat: async () => ({ ppid: 1, cpuTicks: 100, rssKb: 512, startTicks: 1 }),
+      children: async () => [],
+      tmpDir: async () => undefined,
+      countFiles: async () => undefined,
+    })
+    const sup = withStubbedSurface({ settleMs: 1000, footprint })
+    liveAgent(sup, 'a1', 'scout')
+    await footprint.sample([{ agentId: 'a1', rootPids: [10] }])
+
+    expect(sup.agentCosts().running).toEqual([
+      expect.objectContaining({ name: 'scout', cpuSeconds: 1, rssPeakKb: 512 }),
+    ])
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    vi.advanceTimersByTime(1000)
+
+    expect(sup.agentCosts().estimates).toEqual([expect.objectContaining({ exits: 1, source: 'default' })])
+  })
+
   it('says the exit was inferred rather than reporting an exit code it never saw', () => {
     const sup = withStubbedSurface({ settleMs: 1000 })
     liveAgent(sup, 'a1', 'scout')

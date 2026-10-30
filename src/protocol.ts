@@ -1224,7 +1224,8 @@ export type ClientMessage =
    * and to count what it dropped in `hidden`. An older broker ignores it and sends
    * the whole roster, so a client applies the same view again on receipt.
    */
-  | { t: 'agents'; includeRetired?: boolean; view?: RosterView }
+  /** CC-1671 S2: `costs` asks for what is running and what each profile has cost. */
+  | { t: 'agents'; includeRetired?: boolean; view?: RosterView; costs?: boolean }
   /**
    * CC-1059: the requester checked and wrote a remote spawn's `launch` on its host (`ok`), or refused
    * it there. Accepted only from the connection that received the launch; an ok ack lets it open the
@@ -1548,6 +1549,8 @@ export type ServerMessage =
       slots?: { held: number; cap: number }
       /** CC-1464: present only when the frame carried a `view` and the broker applied it. */
       hidden?: RosterHidden
+      /** CC-1671 S2: present only when the frame asked; an older broker leaves it out. */
+      costs?: AgentCosts
     }
   /** CC-323: `plan` holds every agent in scope; `results` one per planned retire, empty on a dry run. */
   | {
@@ -1617,6 +1620,41 @@ export type ServerMessage =
  * the event log, so it survives a broker restart in a way presence cannot.
  */
 /** CC-1464: what an `agents` frame's `view` asks the broker to cut before it replies. */
+/** CC-1671 S2: one measure of an agent's cost across its exits. */
+export interface CostMetric {
+  median: number
+  p90: number
+}
+
+export interface AgentCostEstimate {
+  profile: string
+  role: string
+  /** Exits behind the numbers. */
+  exits: number
+  /** `measured` is this profile and role, `profile` its exits across roles, `default` the cold start. */
+  source: 'measured' | 'profile' | 'default'
+  rssKb: CostMetric
+  cpuCores: CostMetric
+  children: CostMetric
+  tmpFiles: CostMetric
+}
+
+/** A live agent's run so far; the numbers are absent until its first sample. */
+export interface RunningAgentCost {
+  name: string
+  profile: string
+  role: string
+  cpuSeconds?: number
+  rssPeakKb?: number
+  childrenPeak?: number
+  tmpFilesPeak?: number
+}
+
+export interface AgentCosts {
+  running: RunningAgentCost[]
+  estimates: AgentCostEstimate[]
+}
+
 export interface RosterView {
   /** Only agents spawned by this name. */
   spawner?: string

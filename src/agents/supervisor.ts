@@ -20,6 +20,7 @@ import {
   encode,
   HUMAN,
   RESERVED_NAMES,
+  type AgentCosts,
   type AgentIdentity,
   type ExperimentArm,
   type IsolationName,
@@ -192,6 +193,7 @@ import {
   footprintTargets,
   startFootprintSampling,
 } from './agent-footprint.js'
+import { CostTable, exitFootprints } from './agent-cost.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { launchedByBroker, stoppedAt } from './identity.js'
 import { inheritedProfile } from './teleport-config.js'
@@ -1897,6 +1899,24 @@ export class Supervisor implements TeleportHost {
     })
     logEvent(BACKGROUND_RESUME, { agentId, name, spawner, ok: outcome.ok })
     if (!outcome.ok) this.notifyUnreported(agentId, name, spawner, tail)
+  }
+
+  /** CC-1671 S2: what is running now and what each profile has cost. */
+  agentCosts(): AgentCosts {
+    const running = this.core.agents
+      .roster()
+      .filter(agent => agent.state !== 'exited')
+      .map(agent => ({
+        name: agent.name,
+        profile: agent.profile,
+        role: agent.workRole ?? 'other',
+        ...this.footprint.peek(agent.agentId),
+      }))
+    return { running, estimates: this.costTable().rows() }
+  }
+
+  private costTable(): CostTable {
+    return new CostTable(exitFootprints(this.core.events.agentEvents()))
   }
 
   /** CC-1671 S1: samples each live local agent's process tree on an unref'd interval. Linux reads /proc. */
