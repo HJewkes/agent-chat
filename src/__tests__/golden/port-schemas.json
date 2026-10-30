@@ -133,7 +133,8 @@
         "enum": [
           "watchdog",
           "shepherd",
-          "console"
+          "console",
+          "burndown"
         ]
       },
       "provenance": {
