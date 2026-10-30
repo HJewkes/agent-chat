@@ -12,8 +12,9 @@ export const readProcFile: ReadFile = path => fs.readFileSync(path, 'utf8')
 
 export const PROC_MEMINFO = '/proc/meminfo'
 export const PROC_PRESSURE_MEMORY = '/proc/pressure/memory'
+export const PROC_PRESSURE_CPU = '/proc/pressure/cpu'
 
-/** The share of the last minute some task stalled on memory, from PSI "some avg60". */
+/** The share of the last minute some task stalled on the resource, from PSI "some avg60". */
 export type PsiReading = { someAvg60: number } | { error: string }
 
 // Spec health line for the concurrency ramp: PSI memory "some" avg60 under 10% is healthy.
@@ -51,13 +52,18 @@ export function parseMeminfoSwap(text: string): SwapReading {
   return { usedBytes: (total - free) * KIB, totalBytes: total * KIB }
 }
 
-/** Parses the "some" line of /proc/pressure/memory: `some avg10=0.00 avg60=1.25 avg300=0.40 total=123`. */
-export function parsePsiMemory(text: string): PsiReading {
+function parsePsiSome(path: string, text: string): PsiReading {
   const match = /^some avg10=[\d.]+ avg60=(\d+(?:\.\d+)?) /m.exec(text)
   const avg60 = match === null ? NaN : Number(match[1])
-  if (!(avg60 >= 0 && avg60 <= 100)) return { error: `unparsed ${PROC_PRESSURE_MEMORY}: no some avg60` }
+  if (!(avg60 >= 0 && avg60 <= 100)) return { error: `unparsed ${path}: no some avg60` }
   return { someAvg60: avg60 }
 }
+
+/** Parses the "some" line of /proc/pressure/memory: `some avg10=0.00 avg60=1.25 avg300=0.40 total=123`. */
+export const parsePsiMemory = (text: string): PsiReading => parsePsiSome(PROC_PRESSURE_MEMORY, text)
+
+/** CC-1670: the same "some" line of /proc/pressure/cpu, the share of the last minute a runnable task waited for a CPU. */
+export const parsePsiCpu = (text: string): PsiReading => parsePsiSome(PROC_PRESSURE_CPU, text)
 
 /** Maps PSI some avg60 onto darwin's 1 normal, 2 warn, 4 critical pressure levels. */
 export function psiPressureLevel(psi: { someAvg60: number }): number {

@@ -100,6 +100,7 @@ import {
   machineDecision,
   type MachineDecision,
   type MachineRefusalCode,
+  type CpuPressureReading,
   type MachineLimits,
   type MemoryReading,
 } from './machine-guard.js'
@@ -1344,6 +1345,7 @@ const reviewerRewriteWarning = (root: string): string =>
 
 export interface MachineGuardReaders {
   readMemoryFree: () => MemoryReading
+  readCpuPressure: () => CpuPressureReading
   limits: () => MachineLimits
 }
 
@@ -2112,14 +2114,17 @@ export class Supervisor implements TeleportHost {
     return this.refuse(req, rate.reason, { code: 'spawn_rate_limit', retryable: true })
   }
 
-  /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
+  /** CC-406, CC-1670: refuses at the headless-agent total, below the memory-free floor or under CPU pressure. */
   private machineRefusal(surface: SurfaceName): Extract<MachineDecision, { ok: false }> | undefined {
     if (this.machineGuard === undefined) return undefined
     const memory = this.machineGuard.readMemoryFree()
     if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
+    const cpuPressure = this.machineGuard.readCpuPressure()
+    if (cpuPressure !== null && 'error' in cpuPressure)
+      logEvent('machine_guard_reader_failed', { reader: 'cpu_pressure', error: cpuPressure.error })
     const liveHeadless = countLiveHeadless(this.core.agents.roster())
     const decision = machineDecision(
-      { liveHeadless, memory },
+      { liveHeadless, memory, cpuPressure },
       this.machineGuard.limits(),
       surface === 'headless',
     )
