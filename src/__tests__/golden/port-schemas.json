@@ -198,7 +198,9 @@
                 "seat_unblocked",
                 "seat_activity",
                 "seat_ask_denied",
-                "inbox_shown"
+                "inbox_shown",
+                "inbox_read",
+                "delivered_to_thread"
               ]
             },
             "from": {

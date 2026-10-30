@@ -22,6 +22,8 @@ export interface SpoolRecord {
   kind: 'message' | 'system'
   /** The broker's id; a lifecycle record has none, since nobody sent it. */
   msgId?: string
+  /** CC-1680: when the broker delivered the message, so a reader can tell how long it waited. */
+  at?: number
   /** The channel tag's attributes exactly as pushed, provenance and batch lists included. */
   meta: Record<string, string>
   /** The pushed content, context hint and all. */

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -140,5 +140,39 @@ describe('chat_inbox tool', () => {
   it('describes the parameter so agents find it', () => {
     expect(JSON.stringify(z.toJSONSchema(chatInbox.args).properties?.after)).toMatch(/msg_id/)
     expect(chatInbox.description).toMatch(/after: <msg_id>/)
+  })
+})
+
+describe('inbox_read receipt (CC-1680)', () => {
+  const reads = () =>
+    (
+      log.ledgerHandle().prepare("SELECT actor, meta FROM events WHERE kind = 'inbox_read'").all() as {
+        actor: string
+        meta: string
+      }[]
+    ).map(row => ({ actor: row.actor, meta: JSON.parse(row.meta) as Record<string, string> }))
+
+  it('logs the reader, the msgIds and the oldest message wait', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000_000)
+      say('one')
+      vi.setSystemTime(1_000_400)
+      say('two')
+      vi.setSystemTime(1_005_000)
+
+      inbox({ limit: 10 })
+
+      expect(reads()).toHaveLength(1)
+      expect(reads()[0]).toMatchObject({ actor: 'alice', meta: { msgIds: 'm-one,m-two', waitMs: '5000' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('logs nothing for an empty inbox', () => {
+    inbox({ limit: 10 })
+
+    expect(reads()).toEqual([])
   })
 })

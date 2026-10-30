@@ -499,13 +499,19 @@ export function channelDelivery(
   spoolDir?: string,
   deps?: SpoolDeps,
 ): { deliver: (message: DeliveredMessage) => void; deliverSystemEvents: (events: SystemEvent[]) => void } {
-  const send = (params: ChannelParams, msgId?: string): void => {
+  const send = (params: ChannelParams, msgId?: string, at?: number): void => {
     notify(params)
     if (spoolDir === undefined) return
     const kind = msgId === undefined ? 'system' : 'message'
     spoolRecord(
       spoolDir,
-      { kind, ...(msgId ? { msgId } : {}), meta: params.meta, text: params.content },
+      {
+        kind,
+        ...(msgId ? { msgId } : {}),
+        ...(at === undefined ? {} : { at }),
+        meta: params.meta,
+        text: params.content,
+      },
       deps,
     )
   }
@@ -515,7 +521,11 @@ export function channelDelivery(
     // figure on a schedule is the one shape the broadcast budget exists to
     // prevent. Silent unless the threshold was newly crossed — see `context-hint.ts`.
     deliver: message =>
-      send({ content: withHint(message.text, hint()), meta: channelMeta(message) }, message.msgId),
+      send(
+        { content: withHint(message.text, hint()), meta: channelMeta(message) },
+        message.msgId,
+        message.at,
+      ),
     // `from: agent-chat` and no `msg_id`, so a lifecycle event can never be read
     // as a peer speaking. Nothing here is addressed BY anyone — the broker is
     // reporting what the log recorded, and there is no one to reply to.
