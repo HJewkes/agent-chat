@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentIdentity } from '../protocol.js'
-import { callerName, filterRoster } from '../agents/roster-filter.js'
+import { callerName, filterRoster, isTransientSession, viewRoster } from '../agents/roster-filter.js'
 
 const roster = vi.hoisted(() => ({ agents: [] as unknown[] }))
 
@@ -209,5 +209,57 @@ describe('agent_list tool filters', () => {
 
   it('mine refuses when the session holds no name', async () => {
     await expect(agentList.run({ mine: true }, ctx(null))).rejects.toThrow(/--mine needs AGENT_CHAT_NAME/)
+  })
+})
+
+describe('CC-1678: sessions a cache directory left behind', () => {
+  const transient = (state: AgentIdentity['state']): AgentIdentity => ({
+    ...agent('claude-usage-renew', 'human'),
+    state,
+    origin: 'adopted',
+    provisionalName: true,
+    cwd: '/srv/u/Library/Caches/claude-usage-renew',
+  })
+  const kept = { ...agent('kept', 'human'), state: 'live' as const }
+
+  beforeEach(() => {
+    roster.agents = [transient('exited'), kept]
+  })
+
+  const lsNames = async (...args: string[]): Promise<string[]> => {
+    const out = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    await buildProgram().parseAsync(['agent', 'ls', '--format', 'line', ...args], { from: 'user' })
+    const lines = out.mock.calls.map(([line]) => String(line).split(' ')[0] as string)
+    out.mockRestore()
+    return lines
+  }
+
+  it('leaves them out of a plain agent ls', async () => {
+    expect(await lsNames()).toEqual(['kept'])
+  })
+
+  it('lists them with --all or by exact name', async () => {
+    expect(await lsNames('--all')).toEqual(['claude-usage-renew', 'kept'])
+    expect(await lsNames('--name', 'claude-usage-renew')).toEqual(['claude-usage-renew'])
+  })
+
+  it('hides a live one from the default agent_list view and shows it with include_finished', () => {
+    const rows = [transient('live'), transient('exited'), kept]
+
+    const plain = viewRoster(rows, {})
+    const finished = viewRoster(rows, { includeFinished: true })
+
+    expect(names(plain.agents)).toEqual(['kept'])
+    expect(plain.hidden.finished).toBe(2)
+    expect(finished.agents).toHaveLength(3)
+  })
+
+  it('keeps a session that chose its name, and one outside a cache directory', () => {
+    const { provisionalName: _derived, ...named } = transient('live')
+    const elsewhere = { ...transient('live'), cwd: '/srv/u/projects/relay' }
+
+    expect(isTransientSession(transient('live'))).toBe(true)
+    expect(isTransientSession(named)).toBe(false)
+    expect(isTransientSession(elsewhere)).toBe(false)
   })
 })

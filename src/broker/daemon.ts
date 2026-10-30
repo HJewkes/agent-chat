@@ -118,6 +118,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   socketServer.startLifecycleVerifier()
   socketServer.startIdlePrintWake()
   if (!isEphemeralHome(home())) socketServer.startFootprintSampling()
+  if (!isEphemeralHome(home())) socketServer.startMergedRetire()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
   const stopOrphanSweep = startOrphanSweep(

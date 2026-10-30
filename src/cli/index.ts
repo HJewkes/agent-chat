@@ -201,6 +201,7 @@ function addAgentCommands(program: Command): void {
     .option('--name <name>', 'only the agent with exactly this name')
     .option('--format <format>', 'line: one line per agent (name state profile id cwd)')
     .option('--include-retired', 'also list retired agents, which carry retired: true in --json')
+    .option('--all', 'also list headless sessions a cache directory left behind')
     .action(agents.agentLs)
   agent
     // The brief is OPTIONAL in argv only because `--brief-stdin` is the other
