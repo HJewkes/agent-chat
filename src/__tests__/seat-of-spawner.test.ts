@@ -103,7 +103,13 @@ describe("a CLI-spawned successor is charged as its predecessor's spawner was (T
   }
 
   const recordSpawn = (harness: RestartHarness, name: string, spawner: string): void => {
-    harness.core.append({ kind: 'agent_spawned', actor: spawner, target: name, msgId: `id-${name}`, body: 'work' })
+    harness.core.append({
+      kind: 'agent_spawned',
+      actor: spawner,
+      target: name,
+      msgId: `id-${name}`,
+      body: 'work',
+    })
   }
 
   it('does not charge the prefix seat for the successor of an agent another session spawned', async () => {

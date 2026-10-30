@@ -2199,7 +2199,12 @@ export class Supervisor implements TeleportHost {
     if (this.seatBudget === undefined) return undefined
     let read: SeatSpawnRead
     try {
-      read = this.seatBudget.read({ name: req.name, spawner: this.seatSpawner(req), configDir, now: new Date() })
+      read = this.seatBudget.read({
+        name: req.name,
+        spawner: this.seatSpawner(req),
+        configDir,
+        now: new Date(),
+      })
     } catch (err) {
       logEvent('seat_spawn_gate_failed', {
         name: req.name,
