@@ -29,9 +29,11 @@ import type { IsolationName, ServerMessage } from '../protocol.js'
 import {
   countLiveHeadless,
   machineStatus,
+  type CpuPressureReading,
   type MemoryReading,
   type SwapReading,
 } from '../agents/machine-guard.js'
+import { CLEAR_HEADROOM, SPAWN_HEADROOM_LIMITS } from './helpers/headroom.js'
 import { machineStop } from '../agents/seats/stops.js'
 import { readPoolPicks } from '../agents/seats/pool-pick-log.js'
 
@@ -183,11 +185,13 @@ interface AgentSeed {
 const GIB = 1024 ** 3
 let swap: SwapReading
 let memory: MemoryReading
+let cpu: CpuPressureReading
 let pressure: {
   memoryFreePercent: number | null
   load5: number | null
   swapUsedPercent: number | null
   pressureLevel: number | null
+  cpuPressurePercent: number | null
 }
 
 /** A checkout of its own per agent, so two agents never share one tree. */
@@ -241,12 +245,23 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
       }),
     machine: agents =>
       machineStatus(
-        { liveHeadless: countLiveHeadless(agents), memory, swap },
-        { headlessAgents: 10, memoryFreePercent: 15 },
+        { liveHeadless: countLiveHeadless(agents), memory, cpuPressure: cpu, headroom: CLEAR_HEADROOM, swap },
+        {
+          headlessAgents: 10,
+          memoryFreePercent: 15,
+          cpuPressurePercent: 40,
+          headroom: SPAWN_HEADROOM_LIMITS,
+        },
         { inUse: 1, total: 4 },
       ),
     machineStop: () =>
-      machineStop(pressure, { memoryFreePercent: 20, load5: 28, swapUsedPercent: 60, pressureLevel: 2 }),
+      machineStop(pressure, {
+        memoryFreePercent: 20,
+        load5: 28,
+        swapUsedPercent: 60,
+        pressureLevel: 2,
+        cpuPressurePercent: 40,
+      }),
     ...over,
   }
 }
@@ -261,7 +276,8 @@ const scorerExplodes = (): never => {
 }
 
 beforeEach(() => {
-  pressure = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1 }
+  pressure = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1, cpuPressurePercent: 1 }
+  cpu = null
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-status-')))
   autonomy = path.join(tmp, 'autonomy')
   activeWork = path.join(tmp, 'active-work')
@@ -1392,6 +1408,22 @@ describe('the machine-wide guard readings', () => {
       'machine       headless 0/10, memory unread (no level), swap unread (sysctl failed), suite slots 1/4',
     )
   })
+
+  it('shows CPU pressure against its limit on Linux and leaves it off where there is no PSI (CC-1670)', async () => {
+    memory = { freePercent: 60 }
+    swap = { usedBytes: 0, totalBytes: 8 * GIB }
+    cpu = { someAvg60: 41.5 }
+    const high = await statusReport(deps(), SEAT, false)
+    cpu = { error: 'no psi' }
+    const unreadCpu = await statusReport(deps(), SEAT, false)
+
+    expect(high.lines).toContain(
+      'machine       headless 0/10, memory 60% free/15% floor, CPU pressure 41.5%/40% HIGH, swap 0% used, suite slots 1/4',
+    )
+    expect(unreadCpu.lines).toContain(
+      'machine       headless 0/10, memory 60% free/15% floor, CPU pressure unread (no psi), swap 0% used, suite slots 1/4',
+    )
+  })
 })
 
 describe('the machine stop (CC-431)', () => {
@@ -1409,6 +1441,7 @@ describe('the machine stop (CC-431)', () => {
       load5: 4,
       swapUsedPercent: 10,
       pressureLevel: 1,
+      cpuPressurePercent: 1,
       reason: 'machine under pressure: memory 19% free (floor 20%)',
     })
   })
@@ -1448,7 +1481,13 @@ describe('the machine stop (CC-431)', () => {
 
   it('takes the stop line before the budget stop in the table', async () => {
     const report = await (async () => {
-      pressure = { memoryFreePercent: 5, load5: 40, swapUsedPercent: 10, pressureLevel: 1 }
+      pressure = {
+        memoryFreePercent: 5,
+        load5: 40,
+        swapUsedPercent: 10,
+        pressureLevel: 1,
+        cpuPressurePercent: 1,
+      }
       return statusReport(deps(), SEAT, false)
     })()
 

@@ -1,15 +1,14 @@
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { EXIT_WITH_PID_VAR } from '../broker/parent-watch.js'
+import { createRunRoot, LEGACY_BASE, removeRunRoot, runBase, sweepDeadRuns } from './helpers/run-root.js'
 
 const ROOT_VAR = 'TEST_HOME_ROOT'
 
-/** `/tmp` over a long darwin `$TMPDIR`, which would push a unix socket path past its length limit. */
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
-
 export default function setup(): () => void {
-  const root = fs.mkdtempSync(path.join(shortTmp(), 'agent-chat-test-run-'))
+  const base = runBase()
+  // A run killed before its teardown leaves its root; runs before CC-1673 left theirs in /tmp.
+  sweepDeadRuns([base, LEGACY_BASE])
+  const root = createRunRoot(base)
   process.env[ROOT_VAR] = root
   // The workers inherit these, so every os.tmpdir() mkdtemp in a spec lands under the one dir removed below (CC-900).
   for (const key of ['TMPDIR', 'TMP', 'TEMP']) process.env[key] = root
@@ -21,5 +20,7 @@ export default function setup(): () => void {
   process.env.TITAN_CONSOLE_INBOX_DIR = path.join(consoleState, 'inbox', 'deposits')
   // Every broker a test starts exits within seconds of this run dying, not reparented to launchd (CC-435).
   process.env[EXIT_WITH_PID_VAR] = String(process.pid)
-  return () => fs.rmSync(root, { recursive: true, force: true })
+  return () => {
+    removeRunRoot(root)
+  }
 }

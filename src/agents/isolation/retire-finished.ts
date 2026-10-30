@@ -132,7 +132,7 @@ const staleExit = (agent: AgentIdentity, nowMs: number): boolean =>
   agent.state === 'exited' && agent.exitedAt !== undefined && nowMs - agent.exitedAt >= STALE_AFTER_MS
 
 /** One Shepherd read for the whole plan, and one `gh` read per repo and branch, shared by the CC-904 and CC-1325 rules. */
-function memoizedSkip(skip: ShepherdSkipPort): ShepherdSkipPort {
+export function memoizedSkip(skip: ShepherdSkipPort): ShepherdSkipPort {
   let runs: Promise<ShepherdRun[]> | undefined
   return {
     // CC-1491: each read spawns `shepherd status`; one per candidate crashed its server on a large drain.
@@ -205,7 +205,10 @@ export function liveBlocker(agent: AgentIdentity, tracked: boolean): string | un
   return undefined
 }
 
-function connectedBlocker(port: FinishedRetirePort, agent: AgentIdentity): string | undefined {
+export function connectedBlocker(
+  port: Pick<FinishedRetirePort, 'presence'>,
+  agent: AgentIdentity,
+): string | undefined {
   return port.presence(agent) === 'self' ? `${agent.state}, but its process is still connected` : undefined
 }
 

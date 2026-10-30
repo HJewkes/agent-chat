@@ -1,7 +1,13 @@
 import os from 'node:os'
 import { accountReader, budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
-import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
+import {
+  callerName,
+  filterRoster,
+  isTransientSession,
+  newestByName,
+  type RosterFilter,
+} from '../agents/roster-filter.js'
 import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
 import { porcelain, reclaim, sweepWorktrees, type SweptWorktree } from '../agents/isolation/sweep.js'
 import {
@@ -70,6 +76,7 @@ export async function agentLs(
     name?: string
     format?: string
     includeRetired?: boolean
+    all?: boolean
   } = {},
 ): Promise<void> {
   const filter = rosterFilter(options)
@@ -88,6 +95,7 @@ export async function agentLs(
   const agents = filterRoster(all, filter).filter(
     a =>
       (options.name === undefined || a.name === options.name) &&
+      (options.all === true || options.name !== undefined || !isTransientSession(a)) &&
       (states === undefined || states.has(pairPresence(a, { connected: connectedNames.has(a.name) }).status)),
   )
   const index = createProfileIndex()

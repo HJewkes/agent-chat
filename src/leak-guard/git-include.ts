@@ -1,7 +1,6 @@
-import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ALIAS_TIMEOUT_MS, withOverrides, type Overrides } from './git-alias.js'
+import { spawnGitBounded, withOverrides, type Overrides } from './git-alias.js'
 
 /**
  * Reads the config files a git command pulls in with `-c include.path` or `includeIf.*.path`
@@ -63,13 +62,7 @@ function includeFiles(params: readonly string[], env: NodeJS.ProcessEnv): string
 
 /** Exit 1 with no output is a clean read; a timeout, a failure or a command-scope value is not. */
 function readsHooksPath(args: readonly string[], dir: string, env: NodeJS.ProcessEnv): boolean {
-  const run = spawnSync('git', args, {
-    cwd: dir,
-    env,
-    encoding: 'utf8',
-    timeout: ALIAS_TIMEOUT_MS,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  })
+  const run = spawnGitBounded(args, dir, env)
   if (run.status === 1 && run.stdout === '') return false
   return run.status !== 0 || run.stdout.split('\n').some(line => line.startsWith('command\t'))
 }

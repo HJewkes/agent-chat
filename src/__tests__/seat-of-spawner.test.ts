@@ -3,7 +3,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HUMAN } from '../protocol.js'
-import { readSeatSpawn, type SeatSpawnRead, type SeatSpawnReadDeps } from '../agents/seats/spawn-gate-read.js'
+import {
+  readSeatSpawn,
+  type SeatSpawnRead,
+  type SeatSpawnReadDeps,
+  type SeatSpawnRequest,
+} from '../agents/seats/spawn-gate-read.js'
+import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
 
 /**
  * CC-1606: which seat the budget stop charges a seat-prefixed spawn to. The name prefix finds the seat, and the
@@ -74,5 +80,57 @@ describe('the seat budget stop charges a prefixed spawn to its seat (CC-1606)', 
     const root = autonomyRoot()
 
     expect(seatOfRead(read(root, 'od-task', 'owner-session-2'))).toBe('owner-desk')
+  })
+})
+
+describe("a CLI-spawned successor is charged as its predecessor's spawner was (TP-4560)", () => {
+  let h: RestartHarness | undefined
+  afterEach(() => {
+    h?.close()
+    h = undefined
+  })
+
+  /** The seats the gate charged, one per read, with a real seat lookup under the reader. */
+  function supervisorOver(root: string): { sup: RestartHarness; charged: (string | undefined)[] } {
+    const charged: (string | undefined)[] = []
+    const gate = (spawn: SeatSpawnRequest): SeatSpawnRead => {
+      const result = readSeatSpawn(root, { ...spawn, configDir: '/synthetic/agents' }, deps)
+      charged.push(seatOfRead(result))
+      return result
+    }
+    h = startSupervisor({ seatBudget: { read: gate } })
+    return { sup: h, charged }
+  }
+
+  const recordSpawn = (harness: RestartHarness, name: string, spawner: string): void => {
+    harness.core.append({
+      kind: 'agent_spawned',
+      actor: spawner,
+      target: name,
+      msgId: `id-${name}`,
+      body: 'work',
+    })
+  }
+
+  it('does not charge the prefix seat for the successor of an agent another session spawned', async () => {
+    const { sup, charged } = supervisorOver(autonomyRoot())
+    recordSpawn(sup, 'ac-task', 'other-coord')
+
+    const outcome = await sup.spawnAgent('ac-task-s1', { requestedBy: HUMAN })
+
+    expect(outcome.ok).toBe(true)
+    expect(charged.filter(seat => seat !== undefined)).toEqual([])
+  })
+
+  it.each([
+    { how: 'by its name', extra: {} },
+    { how: 'as the named predecessor', extra: { predecessor: 'ac-task' } },
+  ])("charges the seat for the successor of the seat's own agent, found $how", async ({ extra }) => {
+    const { sup, charged } = supervisorOver(autonomyRoot())
+    recordSpawn(sup, 'ac-task', 'alpha-coord')
+
+    await sup.spawnAgent('ac-task-s1', { requestedBy: HUMAN, ...extra })
+
+    expect(charged).toContain('alpha-coord')
   })
 })

@@ -41,7 +41,13 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
  * CC-1363: readings under every machine-stop limit, so `stopped` comes from the fixtures and never
  * from the host's load, memory, swap or pressure. Memory reads 100% free so it clears `TRIPWIRE` too.
  */
-const CALM: MachineStopReadings = { memoryFreePercent: 100, load5: 0, swapUsedPercent: 0, pressureLevel: 1 }
+const CALM: MachineStopReadings = {
+  memoryFreePercent: 100,
+  load5: 0,
+  swapUsedPercent: 0,
+  pressureLevel: 1,
+  cpuPressurePercent: 0,
+}
 const liveInputs = (now: Date): StopInputs => liveStopInputs(now, CALM)
 
 /** A memory-stop limit every real host breaches, so a call that reads the host's readings stops everywhere. */
@@ -733,19 +739,44 @@ describe('machine stop readings and output', () => {
     seatNames: () => {
       throw new Error('no seats/')
     },
-    readings: { memoryFreePercent: 80, load5: 4, swapUsedPercent: 10, pressureLevel: 1 },
+    readings: {
+      memoryFreePercent: 80,
+      load5: 4,
+      swapUsedPercent: 10,
+      pressureLevel: 1,
+      cpuPressurePercent: 0,
+    },
     machineStop: null,
     ...over,
   })
 
   it('reports the machine stop reason beside the readings', () => {
-    const readings = { memoryFreePercent: 80, load5: 40, swapUsedPercent: 10, pressureLevel: 1 }
+    const readings = {
+      memoryFreePercent: 80,
+      load5: 40,
+      swapUsedPercent: 10,
+      pressureLevel: 1,
+      cpuPressurePercent: 0,
+    }
     const machineStop = { ...readings, reason: 'machine under pressure: load5 40 (limit 28)' }
 
     const stopped = machineStopStatus(inputs({ readings, machineStop }))
 
     expect(stopped.stopped).toBe(true)
     expect(stopped.machine).toEqual({ ...readings, stop: 'machine under pressure: load5 40 (limit 28)' })
+  })
+
+  it('prints CPU pressure on the readings line, and ? when it is unread (CC-1670)', () => {
+    const readings = { memoryFreePercent: 80, load5: 4, swapUsedPercent: 10, pressureLevel: 1 }
+    const read = machineStatusReport(inputs({ readings: { ...readings, cpuPressurePercent: 2.4 } }), false)
+    const unread = machineStatusReport(inputs({ readings: { ...readings, cpuPressurePercent: null } }), false)
+
+    expect(read.lines).toContain(
+      'readings: memory 80% free, load5 4, swap 10% used, pressure level 1, CPU pressure 2.4%',
+    )
+    expect(unread.lines).toContain(
+      'readings: memory 80% free, load5 4, swap 10% used, pressure level 1, CPU pressure ?%',
+    )
   })
 
   it('reports a clear machine with every list empty and the readings', () => {
@@ -756,7 +787,14 @@ describe('machine stop readings and output', () => {
       stopped: false,
       holds: [],
       ownerStops: [],
-      machine: { memoryFreePercent: 80, load5: 4, swapUsedPercent: 10, pressureLevel: 1, stop: null },
+      machine: {
+        memoryFreePercent: 80,
+        load5: 4,
+        swapUsedPercent: 10,
+        pressureLevel: 1,
+        cpuPressurePercent: 0,
+        stop: null,
+      },
       errors: [],
     })
   })

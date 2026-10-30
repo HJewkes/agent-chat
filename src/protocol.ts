@@ -86,6 +86,8 @@ export interface SpawnResultFields {
     | 'machine_predicted_memory'
     | 'machine_predicted_cpu'
     | 'crash_looping'
+    | 'machine_cpu_pressure'
+    | 'machine_resource_headroom'
     | 'seat_budget_stop'
     | 'seat_spawn_overlap'
     | 'seat_hand_reserve'

@@ -247,6 +247,91 @@ describe('a teleported seat', () => {
   })
 })
 
+describe('a seat several teleport generations on (CC-1675)', () => {
+  async function teleportOnce(holder: Requester): Promise<Requester> {
+    const result = await sup.teleport({
+      subject: {
+        agentId: holder.agentId,
+        name: SEAT,
+        cwd: tmp('seat-root-cwd-'),
+        hostPid: 9999,
+        host: os.hostname(),
+        tags: [],
+        subscriptions: [],
+      },
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    expect(result.ok, result.reason).toBe(true)
+    return { agentId: successorOf(holder.agentId)?.msgId as string, name: SEAT, binding: 'launch' }
+  }
+
+  async function generation(count: number): Promise<Requester> {
+    let holder = await seatAtDepth3()
+    for (let step = 1; step < count; step++) holder = await teleportOnce(holder)
+    return holder
+  }
+
+  // Catches: reading the depth every generation carries (3) instead of the seat root's 0.
+  it('spawns an opus-coordinator at depth 1', async () => {
+    const seat = await generation(4)
+    expect(spawnRow(seat.agentId)?.meta).toMatchObject({ generation: '4', coordinator_depth: '3' })
+
+    const child = await launched('seat-coord', 'opus-coordinator', seat)
+
+    expect(spawnRow(child.agentId)?.meta).toMatchObject({ coordinator_depth: '1', seat_ceiling: SEAT })
+  })
+
+  // Catches: a policy cache, or a root depth written onto the row, outliving a revoke.
+  it('is refused on the next request once the seat is revoked', async () => {
+    const seat = await generation(3)
+    expect((await spawn('seat-coord', 'opus-coordinator', seat)).ok).toBe(true)
+    writePolicy({ version: 1, seats: {} })
+
+    const outcome = await spawn('seat-coord-2', 'opus-coordinator', seat)
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.reason).toMatch(/coordinator depth 4 exceeds the cap of 3/)
+    expect(outcome.reason).toContain(`"${SEAT}" is not a seat in`)
+  })
+})
+
+describe('the depth refusal (CC-1675)', () => {
+  // Catches: a refusal that does not say which seat-policy entry would have made the requester root.
+  it('refuses a non-seat coordinator at depth 3, naming the seat policy', async () => {
+    const coordinator = await coordinatorAt(3)
+
+    const outcome = await spawn('coord-d', 'opus-coordinator', coordinator)
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.reason).toMatch(/coordinator depth 4 exceeds the cap of 3/)
+    expect(outcome.reason).toMatch(/"coord-3" is not a seat in \S*seat-policy\.json/)
+  })
+
+  it('names the launch profile the seat entry is missing', async () => {
+    const seat = await launched(SEAT, 'peer', await coordinatorAt(2))
+
+    const outcome = await spawn('seat-coord', 'opus-coordinator', seat)
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.reason).toMatch(/seat "seat-root" in \S*seat-policy\.json does not list profile "peer"/)
+  })
+
+  // Catches: a lineage carry that lowers a relaunched coordinator's depth below its earlier identity's.
+  it('keeps a relaunched non-seat coordinator at its earlier depth', async () => {
+    const earlier = await coordinatorAt(3)
+    core.append({ kind: 'agent_retired', actor: 'human', target: 'coord-3', ref: earlier.agentId })
+    const relaunch = await spawn('coord-3', 'opus-coordinator', undefined, { lineageFrom: earlier.agentId })
+    expect(relaunch.ok, relaunch.reason).toBe(true)
+    const coordinator: Requester = { agentId: relaunch.agentId as string, name: 'coord-3', binding: 'launch' }
+
+    const outcome = await spawn('coord-d', 'opus-coordinator', coordinator)
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.reason).toMatch(/coordinator depth 4 exceeds the cap of 3/)
+  })
+})
+
 describe('a seat on a different account', () => {
   // Catches: requiring the seat row's config dir to match its launcher's.
   it('is root whatever account it was launched on', async () => {

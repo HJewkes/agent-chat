@@ -15,6 +15,15 @@ import type { Conn } from '../broker/core.js'
 const conn = (): Conn => ({}) as unknown as Conn
 
 describe('deriving a name for a session that never chose one', () => {
+  /** CC-1678: a scheduled job's cache dir, where each run would mint a durable row nothing retires. */
+  it.each(['/srv/u/Library/Caches/claude-usage-renew', '/srv/u/.cache/job', '/srv/u/.cache'])(
+    'derives none in the cache directory %s',
+    cwd => expect(provisionalName({ cwd })).toBeUndefined(),
+  )
+
+  it('still derives one for a directory that only sounds like a cache', () =>
+    expect(provisionalName({ cwd: '/srv/u/projects/cache' })).toBe('cache'))
+
   /**
    * The best source, and the one that would have covered three of the four
    * measured cases: a session bootstrapped on an initiative sits in that

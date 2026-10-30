@@ -626,6 +626,11 @@ export class SocketServer {
     this.supervisor.startFootprintSampling()
   }
 
+  /** CC-1678: called once the socket is listening; `close` stops it with the supervisor. */
+  startMergedRetire(): void {
+    this.supervisor.startMergedRetire()
+  }
+
   /** `/health` and `/api/lifecycle` readings, absent while the ledger shadow is off. */
   lifecycle(): HttpAppOptions['lifecycle'] {
     const verifier = this.verifier

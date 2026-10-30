@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { isCacheDir } from '../agents/roster-filter.js'
 import { RESERVED_NAMES } from '../protocol.js'
 
 /**
@@ -67,11 +68,16 @@ const fromWorktree = (worktreePath: string | undefined): string | undefined =>
  * `human`, `system` and friends carry authority in every peer's reading of
  * `from`, and a directory that happens to be called `system` must not be able to
  * mint that by accident.
+ *
+ * CC-1678: none for a session in a cache directory. A scheduled headless job
+ * there lives seconds and has nobody to talk to, yet each run minted a durable
+ * identity that nothing ever retired: 994 rows from one job in 20 days.
  */
 export function provisionalName(input: {
   cwd: string
   worktreePath?: string | undefined
 }): string | undefined {
+  if (isCacheDir(input.cwd)) return undefined
   const candidates = [
     activeWorkSlug(input.cwd),
     fromWorktree(input.worktreePath),

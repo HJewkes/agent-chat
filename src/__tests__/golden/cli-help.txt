@@ -1347,6 +1347,7 @@ Options:
   --name <name>      only the agent with exactly this name
   --format <format>  line: one line per agent (name state profile id cwd)
   --include-retired  also list retired agents, which carry retired: true in --json
+  --all              also list headless sessions a cache directory left behind
   -h, --help         display help for command
 
 === agent-chat agent spawn
