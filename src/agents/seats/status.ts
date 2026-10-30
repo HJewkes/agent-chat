@@ -740,7 +740,21 @@ function eligibleLines(eligible: EligibleStatus): string[] {
 const unread = (what: string, error: string | undefined): string =>
   `${what} unread${error === undefined ? '' : ` (${error})`}`
 
-function machineLine({ headlessAgents, memoryFree, swap, fullSuiteSlots }: MachineStatus): string {
+/** CC-1670: omitted where the platform has no PSI, so a macOS line reads as it did before. */
+function cpuPressureText({ someAvg60, limit, skipped, error }: MachineStatus['cpuPressure']): string[] {
+  if (skipped === true) return []
+  if (someAvg60 === null) return [unread('CPU pressure', error)]
+  const high = limit !== null && someAvg60 >= limit ? ' HIGH' : ''
+  return [`CPU pressure ${someAvg60}%/${limit ?? 'off'}${limit === null ? '' : '%'}${high}`]
+}
+
+function machineLine({
+  headlessAgents,
+  memoryFree,
+  cpuPressure,
+  swap,
+  fullSuiteSlots,
+}: MachineStatus): string {
   const atCap = headlessAgents.live !== null && headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
   const memory =
     memoryFree.percent === null
@@ -750,6 +764,7 @@ function machineLine({ headlessAgents, memoryFree, swap, fullSuiteSlots }: Machi
   const parts = [
     `headless ${headlessAgents.live ?? 'unknown'}/${headlessAgents.limit}${atCap}`,
     memory,
+    ...cpuPressureText(cpuPressure),
     swapText,
     `suite slots ${fullSuiteSlots.inUse}/${fullSuiteSlots.total}`,
   ]

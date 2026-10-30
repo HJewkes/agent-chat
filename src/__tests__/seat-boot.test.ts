@@ -83,6 +83,7 @@ const STATUS: SeatStatus = {
   machine: {
     headlessAgents: { live: 3, limit: 10 },
     memoryFree: { percent: 35, limit: 15 },
+    cpuPressure: { someAvg60: null, limit: 40, skipped: true },
     swap: { usedPercent: 40 },
     fullSuiteSlots: { inUse: 0, total: 4 },
   },

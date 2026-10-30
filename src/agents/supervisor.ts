@@ -75,6 +75,7 @@ import {
   ceilingDriftRefusal,
   ceilingRefusal,
   policySeat,
+  seatRootGap,
   seatRootOf,
   startsSeatRoot,
   type SeatClaim,
@@ -102,6 +103,7 @@ import {
   machineDecision,
   type MachineDecision,
   type MachineRefusalCode,
+  type CpuPressureReading,
   type MachineLimits,
   type MemoryReading,
 } from './machine-guard.js'
@@ -242,6 +244,7 @@ import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
 import {
   assignmentMeta,
   assignmentRefusal,
+  fixRoundRoot,
   inferWorkRole,
   spawnProvenance,
   worktreeProvenance,
@@ -1357,6 +1360,7 @@ const reviewerRewriteWarning = (root: string): string =>
 
 export interface MachineGuardReaders {
   readMemoryFree: () => MemoryReading
+  readCpuPressure: () => CpuPressureReading
   limits: () => MachineLimits
 }
 
@@ -2190,14 +2194,17 @@ export class Supervisor implements TeleportHost {
     return void this.spawnSlots.hold(req.requestedBy, agentId, reservation)
   }
 
-  /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
+  /** CC-406, CC-1670: refuses at the headless-agent total, below the memory-free floor or under CPU pressure. */
   private machineRefusal(surface: SurfaceName): Extract<MachineDecision, { ok: false }> | undefined {
     if (this.machineGuard === undefined) return undefined
     const memory = this.machineGuard.readMemoryFree()
     if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
+    const cpuPressure = this.machineGuard.readCpuPressure()
+    if (cpuPressure !== null && 'error' in cpuPressure)
+      logEvent('machine_guard_reader_failed', { reader: 'cpu_pressure', error: cpuPressure.error })
     const liveHeadless = countLiveHeadless(this.core.agents.roster())
     const decision = machineDecision(
-      { liveHeadless, memory },
+      { liveHeadless, memory, cpuPressure },
       this.machineGuard.limits(),
       surface === 'headless',
     )
@@ -2308,7 +2315,12 @@ export class Supervisor implements TeleportHost {
     if (this.seatBudget === undefined) return undefined
     let read: SeatSpawnRead
     try {
-      read = this.seatBudget.read({ name: req.name, spawner: req.requestedBy, configDir, now: new Date() })
+      read = this.seatBudget.read({
+        name: req.name,
+        spawner: this.seatSpawner(req),
+        configDir,
+        now: new Date(),
+      })
     } catch (err) {
       logEvent('seat_spawn_gate_failed', {
         name: req.name,
@@ -2325,6 +2337,20 @@ export class Supervisor implements TeleportHost {
     const verdict = seatSpawnGate({ ...read.input, model: profile.model, role })
     logEvent('seat_spawn_gate', { name: req.name, allow: verdict.allow, reason: verdict.reason })
     return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
+  }
+
+  /**
+   * TP-4560: Shepherd spawns a successor over the CLI, so `human` does not say whose work it continues. The seat
+   * gate reads the spawner recorded for the agent the successor's chain started from; unrecorded, `human` stands.
+   */
+  private seatSpawner(req: SpawnRequest): string {
+    if (req.requestedBy !== HUMAN) return req.requestedBy
+    const origin = fixRoundRoot(req.predecessor ?? req.name)
+    if (origin === req.name) return HUMAN
+    const agent = this.core.agents
+      .roster({ includeRetired: true })
+      .find(a => a.name === origin && a.origin === 'spawned')
+    return agent?.spawnedBy ?? HUMAN
   }
 
   /** CC-1078: refuses a reviewer spawn into an account at or past its five_hour ceiling; a reader failure lets it through. */
@@ -2623,8 +2649,16 @@ export class Supervisor implements TeleportHost {
     return { profile: { ...profile, warnings: [...(profile.warnings ?? []), warning] }, startsRoot: false }
   }
 
-  /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
-  private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
+  /**
+   * CC-163: what the TARGET profile's role allows, checked once the profile is loaded. CC-1675: a
+   * depth refusal names the seat-policy entry that would have made the requester a root.
+   */
+  private checkRole(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    coordinatorDepth: number,
+    requester: Requester,
+  ): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
       return (
         `profile "${profile.name}" is a worker and cannot run with Remote Control; only a ` +
@@ -2632,8 +2666,9 @@ export class Supervisor implements TeleportHost {
       )
     if (coordinatorDepth > MAX_COORDINATOR_DEPTH)
       return (
-        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}; spawn a ` +
-        'worker profile instead, or ask the human to start this coordinator'
+        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}, and ` +
+        `${seatRootGap(loadSeatPolicy(), req.requestedBy, requester.profile)}, so it is not a root seat; ` +
+        'spawn a worker profile instead, ask the owner to add that entry, or ask the human to start this coordinator'
       )
     return undefined
   }
@@ -2860,7 +2895,7 @@ export class Supervisor implements TeleportHost {
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
       ...(requester.seat === undefined ? {} : { seat: requester.seat }),
     })
-    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth)
+    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth, requester)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
@@ -3809,7 +3844,7 @@ export class Supervisor implements TeleportHost {
     try {
       const spawn = {
         name: req.name,
-        spawner: req.requestedBy,
+        spawner: this.seatSpawner(req),
         configDir: defaultConfigDir(),
         now: new Date(),
       }
