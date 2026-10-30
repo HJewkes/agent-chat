@@ -621,6 +621,11 @@ export class SocketServer {
     this.supervisor.startIdlePrintWake()
   }
 
+  /** CC-1671 S1: called once the socket is listening; `close` stops it with the supervisor. */
+  startFootprintSampling(): void {
+    this.supervisor.startFootprintSampling()
+  }
+
   /** `/health` and `/api/lifecycle` readings, absent while the ledger shadow is off. */
   lifecycle(): HttpAppOptions['lifecycle'] {
     const verifier = this.verifier
