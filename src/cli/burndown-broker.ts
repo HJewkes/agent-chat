@@ -42,7 +42,13 @@ export function tickBroker(
       return res.items
     },
     async resume(name, message) {
-      const frame = { t: 'resume' as const, name, surface: 'headless' as const, message }
+      const frame = {
+        t: 'resume' as const,
+        name,
+        surface: 'headless' as const,
+        message,
+        source: 'burndown' as const,
+      }
       return spawnReply((await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>)
     },
     async retire(name) {

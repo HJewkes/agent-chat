@@ -214,13 +214,23 @@ import {
   startFootprintSampling,
 } from './agent-footprint.js'
 import { CostTable, exitFootprints } from './agent-cost.js'
+import {
+  CRASH_LOOP,
+  CRASH_LOOP_REFUSAL,
+  crashLoopNotice,
+  crashLoopRefusal,
+  crashStreak,
+  isAutomaticRelaunch,
+  stderrTail,
+  type CrashLoopLimits,
+} from './crash-loop.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { launchedByBroker, stoppedAt } from './identity.js'
 import { inheritedProfile } from './teleport-config.js'
 import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
-import { resolveCoordinatorGrantableTools, resolveProfileDriftMode } from '../config.js'
+import { resolveCoordinatorGrantableTools, resolveCrashLoop, resolveProfileDriftMode } from '../config.js'
 import { knownMachineAliases } from './machine-registry.js'
 import { ProfileBaseline, type ProfileDriftMode } from './profile-baseline.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
@@ -858,6 +868,7 @@ export type SpawnRefusalCode =
   | 'surface_refused'
   | 'spawn_rate_limit'
   | AdmissionRefusalCode
+  | typeof CRASH_LOOP_REFUSAL
   | 'broker_draining'
   | typeof ACCOUNT_EXHAUSTED
   | MachineRefusalCode
@@ -1039,6 +1050,8 @@ export interface SupervisorOptions {
   semaphore?: Semaphore
   /** CC-1671 S3: the per-requester burst guard, which any spawn's slot frees at register or exit. */
   spawnSlots?: SpawnSlots
+  /** CC-1671 S4: read at each exit; defaults to config. */
+  crashLoop?: () => CrashLoopLimits
   /** CC-1671 S3: absent turns predicted-cost admission off, as in tests that do not exercise it. */
   predictedCost?: PredictedCostReaders
   /** CC-1671: reads each live agent's process tree; only `startFootprintSampling` ticks it. */
@@ -1405,6 +1418,7 @@ export class Supervisor implements TeleportHost {
   private readonly semaphore: Semaphore
   private readonly spawnSlots: SpawnSlots
   private readonly predictedCost: PredictedCostReaders | undefined
+  private readonly crashLoop: () => CrashLoopLimits
   private readonly footprint: FootprintSampler
   private stopFootprint: (() => void) | undefined
   private stopMergedRetire: (() => void) | undefined
@@ -1469,6 +1483,7 @@ export class Supervisor implements TeleportHost {
     this.semaphore = options.semaphore ?? new Semaphore()
     this.spawnSlots = options.spawnSlots ?? new SpawnSlots()
     this.predictedCost = options.predictedCost
+    this.crashLoop = options.crashLoop ?? resolveCrashLoop
     this.footprint = options.footprint ?? new FootprintSampler()
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
@@ -1791,6 +1806,7 @@ export class Supervisor implements TeleportHost {
     // the exact distinction this task exists to draw. Deriving it from the log
     // makes whichever listener arrives first produce the same terminal state.
     const failed = outcome.failed ?? this.unattachedExit(entry.name, agentId, outcome)
+    const crash = this.crashAtExit(entry, outcome, failed !== undefined)
 
     this.core.append({
       kind: 'agent_exited',
@@ -1803,13 +1819,18 @@ export class Supervisor implements TeleportHost {
         ...(outcome.inferred ? { inferred: 'true' } : {}),
         ...(failed === undefined ? {} : { failed: 'true' }),
         ...footprintMeta(this.footprint.take(agentId)),
+        ...crash.meta,
       },
     })
+    if (crash.looped) this.noticeCrashLoop(agentId)
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
     if (entry.cancelReason !== MODE_SWITCH && entry.cancelReason !== IDLE_PRINT_WAKE)
       await this.reportReviewerTree(entry)
     const resumeOn =
-      failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless'
+      failed === undefined &&
+      entry.cancelReason === undefined &&
+      entry.handle.surface === 'headless' &&
+      !crash.looped
         ? this.reportIfUnreported(agentId, entry.name)
         : undefined
     this.shadow.finish(entry.executionId, exitTerminal(outcome, failed, entry.cancelReason))
@@ -1840,6 +1861,51 @@ export class Supervisor implements TeleportHost {
     }
     if (resumeOn !== undefined) await this.resumeForBackground(agentId, entry.name, resumeOn)
     if (entry.cancelReason === IDLE_PRINT_WAKE) await this.resumeIdlePrint(agentId, entry.name)
+  }
+
+  /** CC-1671 S4: this exit's place in the identity's run of crashes at launch, as `agent_exited` meta. */
+  private crashAtExit(
+    entry: Live,
+    outcome: { code: number | null; signal: string | null; inferred?: boolean },
+    failed: boolean,
+  ): { meta: Record<string, string>; looped: boolean } {
+    const identity = this.core.agents.get(entry.agentId)
+    if (identity === undefined) return { meta: {}, looped: false }
+    const { streak, looped } = crashStreak(
+      {
+        ...outcome,
+        failed,
+        cancelled: entry.cancelReason !== undefined,
+        ranMs: Date.now() - this.core.runStartedAt(identity),
+        priorStreak: identity.crashStreak ?? 0,
+      },
+      this.crashLoop(),
+    )
+    if (streak === 0) return { meta: {}, looped: false }
+    const tail = looped ? stderrTail(readOutputTail(agentDir(entry.agentId))) : undefined
+    const meta = {
+      crash_streak: String(streak),
+      ...(looped ? { crash_loop: 'true' } : {}),
+      ...(tail === undefined ? {} : { stderr_tail: tail }),
+    }
+    return { meta, looped }
+  }
+
+  /** CC-1671 S4: said once, when the mark lands; a refused relaunch after it is silent to the spawner. */
+  private noticeCrashLoop(agentId: string): void {
+    const identity = this.core.agents.get(agentId)
+    if (identity?.crashLoop === undefined) return
+    const { name, spawnedBy: spawner } = identity
+    const body = crashLoopNotice(name, identity.crashLoop)
+    const { msgId } = this.core.append({
+      kind: spawner === HUMAN ? 'notice' : 'message',
+      actor: 'agent-chat',
+      target: spawner,
+      body,
+      meta: { event: CRASH_LOOP, agent: name, agent_id: agentId },
+    })
+    this.core.deliverTo(spawner, { msgId, from: 'agent-chat', text: body, at: Date.now(), event: CRASH_LOOP })
+    logEvent(CRASH_LOOP, { agentId, name, spawner, count: identity.crashLoop.count })
   }
 
   /** CC-763: never rejects; anything that goes wrong gathering the facts leaves the legacy fields. */
@@ -2127,6 +2193,7 @@ export class Supervisor implements TeleportHost {
             | 'spawn_rate_limit'
             | MachineRefusalCode
             | AdmissionRefusalCode
+            | typeof CRASH_LOOP_REFUSAL
             | SeatBudgetRefusalCode
             | typeof REVIEWER_ACCOUNT_LIMIT
             | typeof ACCOUNT_EXHAUSTED
@@ -2929,6 +2996,8 @@ export class Supervisor implements TeleportHost {
       const { reason, ...cause } = drained
       return this.refuse(req, reason, cause)
     }
+    const crashLooping = this.lineageCrashRefusal(req)
+    if (crashLooping) return this.refuse(req, crashLooping, { code: CRASH_LOOP_REFUSAL, retryable: false })
     const rateLimited = this.rateRefusal(req)
     if (rateLimited) return rateLimited
 
@@ -3451,6 +3520,7 @@ export class Supervisor implements TeleportHost {
         // injected block, so a reader can find the assignment without matching
         // this module's heading strings.
         ...(briefing ? { briefing: briefing.slug, briefing_chars: String(briefing.text.length) } : {}),
+        ...this.inheritedCrashStreak(req),
         parent: req.parentAgentId ?? '',
         profile: profile.name,
         model: profile.model,
@@ -4750,6 +4820,8 @@ export class Supervisor implements TeleportHost {
     if (drained) return { ok: false, ...drained }
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
+    const crashLooping = crashLoopRefusal(identity, req)
+    if (crashLooping) return { ok: false, reason: crashLooping, code: CRASH_LOOP_REFUSAL, retryable: false }
     const refused =
       this.checkResumer(identity, req) ??
       this.supersededRefusal(identity) ??
@@ -4997,6 +5069,7 @@ export class Supervisor implements TeleportHost {
         ...(req.source === undefined ? {} : { source: req.source }),
         ...(req.cause === undefined ? {} : { cause: req.cause }),
         ...launchMeta(req),
+        ...this.crashClearedMeta(agent, req),
       },
     })
     const answer = await spawn(host, launch, HOST_RESUME_TIMEOUT_MS)
@@ -5120,6 +5193,25 @@ export class Supervisor implements TeleportHost {
   }
 
   /** The launch half of `resume`. Isolation is reused, never reallocated, so a worktree agent lands back in its own. */
+  /** CC-1671 S4: a resume by hand is the one row that clears a mark or a streak. */
+  private crashClearedMeta(agent: AgentIdentity, req: ResumeRequest): Record<string, string> {
+    if (agent.crashStreak === undefined || isAutomaticRelaunch(req)) return {}
+    return { crash_cleared: 'true' }
+  }
+
+  /** CC-1671 S4: a seat relaunch mints a new id, so the identity it replaces is the one to read. */
+  private lineageCrashRefusal(req: SpawnRequest): string | undefined {
+    const replaced = req.lineageFrom === undefined ? undefined : this.core.agents.get(req.lineageFrom)
+    return replaced === undefined ? undefined : crashLoopRefusal(replaced, req)
+  }
+
+  /** CC-1671 S4: an automated relaunch under a new id carries on its predecessor's count. */
+  private inheritedCrashStreak(req: SpawnRequest): Record<string, string> {
+    const streak =
+      req.lineageFrom === undefined ? undefined : this.core.agents.get(req.lineageFrom)?.crashStreak
+    return streak === undefined || !isAutomaticRelaunch(req) ? {} : { crash_streak: String(streak) }
+  }
+
   private async relaunchResumed(
     agent: AgentIdentity,
     profile: AgentProfile,
@@ -5175,6 +5267,7 @@ export class Supervisor implements TeleportHost {
         ...(req.source === undefined ? {} : { source: req.source }),
         ...(req.cause === undefined ? {} : { cause: req.cause }),
         ...launchMeta(req),
+        ...this.crashClearedMeta(agent, req),
         ...(humanProof ? { [INTEGRITY_CLEARED]: HUMAN } : {}),
         // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
         ...provenance,
