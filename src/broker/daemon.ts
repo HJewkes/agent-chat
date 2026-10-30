@@ -349,6 +349,12 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     {
       semaphore: newAgentSlots(),
       machineGuard: { readMemoryFree: () => readMemoryFree(), limits: resolveMachineLimits },
+      predictedCost: {
+        readMemoryFree: () => readMemoryFree(),
+        totalMemoryKb: () => os.totalmem() / 1024,
+        cpuCount: () => os.availableParallelism(),
+        limits: resolveMachineLimits,
+      },
       repoVisibility: repoVisibilityReader(),
       ...(ledger === undefined ? {} : { ledger }),
       ...journal,

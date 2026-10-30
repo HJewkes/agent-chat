@@ -1813,11 +1813,21 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   `shadow_errors` count, is the one condition that fails the check.
   `GET /api/lifecycle` and `/health`'s optional `lifecycle` field carry the
   same report to the dashboard and to relay.
-- **Rate:** `SpawnRateBudget` (`agents/spawn-rate.ts`), a spawn budget per
-  requester per window — 5 attempts per 60s by default — mirroring the
-  broadcast budget already in `registry.ts:63-64`. Checked in
-  `Supervisor.preflight`, exempting the human at the CLI for the same reason
-  `checkCwd` does (CC-25, closed 2026-07-30 — this was prose-only until then).
+- **Rate (CC-1671):** `SpawnSlots` (`agents/spawn-admission.ts`) replaced the
+  fixed 5-per-60s budget of CC-25. A requester may have 5 local launches in
+  flight; a slot frees when the agent registers or exits, or after 120s if
+  neither row arrives, so a 10s agent holds nothing for a minute. The refusal
+  is the retryable `spawn_rate_limit`. The human at the CLI is exempt for the
+  same reason `checkCwd` does. Launches on another host take no slot.
+- **Predicted cost (CC-1671):** just before the slot is taken, a local spawn
+  must clear the machine guard's limits with the profile's p90 added: free
+  memory less the p90 RSS stays at or above `machineMemoryFreePercent`, and CPU
+  PSI plus the p90 cores as a share of all cores stays under
+  `machineCpuPressurePercent`. What agents admitted in the last 60s are
+  predicted to use counts too, until they exit, because a new agent's memory
+  lags its registration. The refusals are the retryable
+  `machine_predicted_memory` and `machine_predicted_cpu`. A cold-start default
+  gates like a measured estimate; a reading that failed never refuses.
 - **Footprint (CC-1671):** the broker samples each live local agent's process
   tree every 10s (`agents/agent-footprint.ts`, Linux only): CPU seconds, peak
   RSS, peak child count and, every sixth sample, peak files under its own
@@ -1832,6 +1842,8 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   across roles, then to a rough cold-start default per profile; `source` on
   each estimate says which answered. Failed starts are left out.
   `agent-chat machine costs` shows what is running and these estimates.
+  TMPDIR files are reported but not gated: a launch's TMPDIR is on the home
+  disk, and the headroom readings expose a percent, not a count to subtract.
 - Every refusal appends `agent_spawn_refused` and returns a `reason` the model
   can act on — the `send_result.reason` pattern (`broker/index.ts:81-82`), which
   exists because a refusal a model cannot understand is a refusal it will retry.

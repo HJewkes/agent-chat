@@ -20,6 +20,7 @@ import {
   encode,
   HUMAN,
   RESERVED_NAMES,
+  type AgentCostEstimate,
   type AgentCosts,
   type AgentIdentity,
   type ExperimentArm,
@@ -185,7 +186,14 @@ import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-re
 import { parkImplementerAtExit, type ImplementerParkPort } from './isolation/park-implementer-at-exit.js'
 import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
-import { SpawnRateBudget } from './spawn-rate.js'
+import {
+  predictedCostDecision,
+  SpawnSlots,
+  type AdmissionDecision,
+  type AdmissionLimits,
+  type AdmissionRefusalCode,
+  type CpuPressure,
+} from './spawn-admission.js'
 import {
   FOOTPRINT_INTERVAL_MS,
   FootprintSampler,
@@ -836,6 +844,7 @@ function raised(computed: number, recorded: string | undefined): number {
 export type SpawnRefusalCode =
   | 'surface_refused'
   | 'spawn_rate_limit'
+  | AdmissionRefusalCode
   | 'broker_draining'
   | typeof ACCOUNT_EXHAUSTED
   | MachineRefusalCode
@@ -1013,7 +1022,10 @@ export interface SupervisorOptions {
   /** CC-334: lists process working directories for parking a detached agent. Injected in tests. */
   cwdLister?: CwdLister
   semaphore?: Semaphore
-  spawnRateBudget?: SpawnRateBudget
+  /** CC-1671 S3: the per-requester burst guard, which any spawn's slot frees at register or exit. */
+  spawnSlots?: SpawnSlots
+  /** CC-1671 S3: absent turns predicted-cost admission off, as in tests that do not exercise it. */
+  predictedCost?: PredictedCostReaders
   /** CC-1671: reads each live agent's process tree; only `startFootprintSampling` ticks it. */
   footprint?: FootprintSampler
   settleMs?: number
@@ -1348,6 +1360,15 @@ export interface MachineGuardReaders {
   limits: () => MachineLimits
 }
 
+export interface PredictedCostReaders {
+  readMemoryFree: () => MemoryReading
+  totalMemoryKb: () => number
+  /** Absent until a host wires CC-1670's reading; the CPU check is then skipped. */
+  readCpuPressure?: () => CpuPressure
+  cpuCount: () => number
+  limits: () => AdmissionLimits
+}
+
 /** What retire did to an agent's process; the `reaped` meta on its `agent_retired` row. */
 type Reaped =
   'true' | 'not_registered' | 'another_agent' | 'no_host_pid' | 'already_gone' | 'remote_end_requested'
@@ -1365,7 +1386,8 @@ export class Supervisor implements TeleportHost {
   /** CC-1457: session ids with a launch in flight, to the name launching it and when it started. */
   private readonly launchingSessions = new Map<string, { name: string; since: number }>()
   private readonly semaphore: Semaphore
-  private readonly spawnRateBudget: SpawnRateBudget
+  private readonly spawnSlots: SpawnSlots
+  private readonly predictedCost: PredictedCostReaders | undefined
   private readonly footprint: FootprintSampler
   private stopFootprint: (() => void) | undefined
   private readonly drainState = new DrainState()
@@ -1427,7 +1449,8 @@ export class Supervisor implements TeleportHost {
   ) {
     this.cwdLister = options.cwdLister ?? lsofCwds
     this.semaphore = options.semaphore ?? new Semaphore()
-    this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
+    this.spawnSlots = options.spawnSlots ?? new SpawnSlots()
+    this.predictedCost = options.predictedCost
     this.footprint = options.footprint ?? new FootprintSampler()
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
@@ -1516,6 +1539,8 @@ export class Supervisor implements TeleportHost {
   private onRow(row: { kind: string; ref?: string }): void {
     const agentId = row.ref
     if (agentId === undefined) return
+    if (row.kind === 'agent_attached') this.spawnSlots.registered(agentId)
+    if (row.kind === 'agent_exited' || row.kind === 'agent_retired') this.spawnSlots.release(agentId)
     if (row.kind === 'agent_attached') this.remoteSpawns.attached(agentId)
     // TP-4341: a reconnect is a surviving agent's first contact with a restarted broker.
     if (row.kind === 'agent_attached') this.readmit(agentId)
@@ -2053,6 +2078,7 @@ export class Supervisor implements TeleportHost {
           code:
             | 'spawn_rate_limit'
             | MachineRefusalCode
+            | AdmissionRefusalCode
             | SeatBudgetRefusalCode
             | typeof REVIEWER_ACCOUNT_LIMIT
             | typeof ACCOUNT_EXHAUSTED
@@ -2121,14 +2147,47 @@ export class Supervisor implements TeleportHost {
    * Checked right after preflight's cheap gates and first of the stateful ones:
    * the human at the CLI is exempt, same reasoning as checkCwd's exemption — they
    * hold no registry entry to be rate-limited by and reaching the socket already
-   * means being the local user. Retryable (CC-717): the window slides, so the
-   * same spawn succeeds once older attempts age out.
+   * means being the local user. Retryable (CC-717): the same spawn succeeds once
+   * one of the requester's launches registers or exits.
    */
   private rateRefusal(req: SpawnRequest): SpawnOutcome | undefined {
     if (req.requestedBy === HUMAN) return undefined
-    const rate = this.spawnRateBudget.check(req.requestedBy)
+    const rate = this.spawnSlots.check(req.requestedBy)
     if (rate.ok) return undefined
     return this.refuse(req, rate.reason, { code: 'spawn_rate_limit', retryable: true })
+  }
+
+  /** CC-1671 S3: whether this profile's p90, on top of the readings and recent admissions, clears the limits. */
+  private predictedRefusal(
+    readers: PredictedCostReaders,
+    estimate: AgentCostEstimate,
+  ): Extract<AdmissionDecision, { ok: false }> | undefined {
+    const memory = readers.readMemoryFree()
+    const cpuPressure = readers.readCpuPressure?.() ?? null
+    const decision = predictedCostDecision(
+      { memory, totalMemoryKb: readers.totalMemoryKb(), cpuPressure, cpuCount: readers.cpuCount() },
+      estimate,
+      this.spawnSlots.reserved(),
+      readers.limits(),
+    )
+    return decision.ok ? undefined : decision
+  }
+
+  /** CC-1671 S3: the burst guard and the slot are one synchronous step, so concurrent spawns cannot overshoot. */
+  private holdLaunchSlot(req: SpawnRequest, agentId: string, profile: string): SpawnOutcome | undefined {
+    const rateLimited = this.rateRefusal(req)
+    if (rateLimited) return rateLimited
+    const readers = this.predictedCost
+    if (readers === undefined) return void this.spawnSlots.hold(req.requestedBy, agentId)
+    const role = req.workRole ?? inferWorkRole(profile, req.name)
+    const estimate = this.costTable().estimate(profile, role)
+    const predicted = this.predictedRefusal(readers, estimate)
+    if (predicted) {
+      const { code, retryable, reason } = predicted
+      return this.refuse(req, reason, { code, retryable })
+    }
+    const reservation = { rssKb: estimate.rssKb.p90, cpuCores: estimate.cpuCores.p90 }
+    return void this.spawnSlots.hold(req.requestedBy, agentId, reservation)
   }
 
   /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
@@ -2920,8 +2979,12 @@ export class Supervisor implements TeleportHost {
     if (predecessor !== undefined && 'error' in predecessor) return this.refuse(req, predecessor.error)
     if (predecessor?.warning !== undefined) warnings.push(predecessor.warning)
 
-    if (!this.semaphore.acquire(agentId))
+    const unadmitted = this.holdLaunchSlot(req, agentId, profile.name)
+    if (unadmitted) return unadmitted
+    if (!this.semaphore.acquire(agentId)) {
+      this.spawnSlots.release(agentId)
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
+    }
     const executionId = this.shadow.open(agentId, account.dir)
 
     try {
@@ -2937,6 +3000,7 @@ export class Supervisor implements TeleportHost {
       })
     } catch (err) {
       this.semaphore.release(agentId)
+      this.spawnSlots.release(agentId)
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
       if (!this.live.has(agentId)) await this.abandonLaunch(req, agentId, reason)

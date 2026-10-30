@@ -83,6 +83,8 @@ export interface SpawnResultFields {
     | 'spawn_rate_limit'
     | 'machine_headless_limit'
     | 'machine_memory_floor'
+    | 'machine_predicted_memory'
+    | 'machine_predicted_cpu'
     | 'seat_budget_stop'
     | 'seat_spawn_overlap'
     | 'seat_hand_reserve'
