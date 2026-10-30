@@ -48,7 +48,8 @@ export function primaryCheckoutOf(cwd: string): string | undefined {
   let dir = canonicalPath(cwd)
   for (;;) {
     const marker = gitMarkerAt(dir)
-    if (marker !== undefined) return marker === 'dir' ? dir : undefined
+    if (marker === 'dir') return dir
+    if (marker === 'file') return undefined
     const parent = path.dirname(dir)
     if (parent === dir) return undefined
     dir = parent
