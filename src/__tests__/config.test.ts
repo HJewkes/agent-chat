@@ -13,6 +13,7 @@ import {
   resolveFullSuiteSlots,
   resolveGitShellAliases,
   resolveMachineLimits,
+  resolveMachineStopLimits,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
   resolvePoolProbe,
@@ -173,14 +174,22 @@ describe('resolveReviewerWorktreeBudget', () => {
 
 describe('machine guard limits (CC-406)', () => {
   it('defaults to 10 headless agents, a 15 percent memory-free floor and 4 full-suite slots', () => {
-    expect(resolveMachineLimits()).toEqual({ headlessAgents: 10, memoryFreePercent: 15 })
+    expect(resolveMachineLimits()).toEqual({
+      headlessAgents: 10,
+      memoryFreePercent: 15,
+      cpuPressurePercent: 40,
+    })
     expect(resolveFullSuiteSlots()).toBe(4)
   })
 
   it('reads all three limits from config.json', () => {
     writeConfigJson({ machineHeadlessAgents: 6, machineMemoryFreePercent: 20, fullSuiteSlots: 2 })
 
-    expect(resolveMachineLimits()).toEqual({ headlessAgents: 6, memoryFreePercent: 20 })
+    expect(resolveMachineLimits()).toEqual({
+      headlessAgents: 6,
+      memoryFreePercent: 20,
+      cpuPressurePercent: 40,
+    })
     expect(resolveFullSuiteSlots()).toBe(2)
   })
 
@@ -188,6 +197,38 @@ describe('machine guard limits (CC-406)', () => {
     writeConfigJson({ machineMemoryFreePercent: value })
 
     expect(resolveMachineLimits().memoryFreePercent).toBe(15)
+  })
+
+  it('reads machineCpuPressurePercent, and null turns the check off (CC-1670)', () => {
+    writeConfigJson({ machineCpuPressurePercent: 55 })
+    expect(resolveMachineLimits().cpuPressurePercent).toBe(55)
+
+    writeConfigJson({ machineCpuPressurePercent: null })
+    expect(resolveMachineLimits().cpuPressurePercent).toBeNull()
+  })
+
+  it.each([0, 101, '40'])('falls back to 40 when machineCpuPressurePercent is %j', value => {
+    writeConfigJson({ machineCpuPressurePercent: value })
+
+    expect(resolveMachineLimits().cpuPressurePercent).toBe(40)
+  })
+})
+
+describe('machine stop limits (CC-1670)', () => {
+  it('defaults CPU pressure to 40 with load5 kept as a backstop', () => {
+    expect(resolveMachineStopLimits()).toMatchObject({ cpuPressurePercent: 40, load5: 28 })
+  })
+
+  it('reads machineStopCpuPressurePercent and a null load5 that turns the backstop off', () => {
+    writeConfigJson({ machineStopCpuPressurePercent: 60, machineStopLoad5: null })
+
+    expect(resolveMachineStopLimits()).toMatchObject({ cpuPressurePercent: 60, load5: null })
+  })
+
+  it('a null machineStopCpuPressurePercent disables the CPU trigger', () => {
+    writeConfigJson({ machineStopCpuPressurePercent: null })
+
+    expect(resolveMachineStopLimits().cpuPressurePercent).toBeNull()
   })
 })
 

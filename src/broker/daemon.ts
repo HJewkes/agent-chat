@@ -18,7 +18,7 @@ import {
   resolveAutoParkOnExit,
   resolveAccountRotation,
 } from '../config.js'
-import { readMemoryFree } from '../agents/machine-guard.js'
+import { readCpuPressure, readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
@@ -348,9 +348,14 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     core,
     {
       semaphore: newAgentSlots(),
-      machineGuard: { readMemoryFree: () => readMemoryFree(), limits: resolveMachineLimits },
+      machineGuard: {
+        readMemoryFree: () => readMemoryFree(),
+        readCpuPressure: () => readCpuPressure(),
+        limits: resolveMachineLimits,
+      },
       predictedCost: {
         readMemoryFree: () => readMemoryFree(),
+        readCpuPressure: () => readCpuPressure(),
         totalMemoryKb: () => os.totalmem() / 1024,
         cpuCount: () => os.availableParallelism(),
         limits: resolveMachineLimits,

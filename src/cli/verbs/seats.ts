@@ -12,7 +12,9 @@ import { readAccountBudget, readBudget } from '../../agents/budget.js'
 import { hostIdentity } from '../../server/host.js'
 import {
   countLiveHeadless,
+  cpuPressurePercent,
   machineStatus,
+  readCpuPressure,
   readLoad5,
   readMemoryFree,
   readMemoryPressure,
@@ -609,12 +611,13 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
   }
 }
 
-/** The live memory, swap, pressure level and load readings the machine stop decides on. */
+/** The live memory, swap, pressure level, CPU pressure and load readings the machine stop decides on. */
 export const readMachineStopReadings = (): MachineStopReadings => ({
   memoryFreePercent: readMemoryPressure(),
   load5: readLoad5(),
   swapUsedPercent: swapPercent(readSwapUsage()),
   pressureLevel: readPressureLevel(),
+  cpuPressurePercent: cpuPressurePercent(readCpuPressure()),
 })
 
 /** CC-431, CC-492: the live memory, swap, pressure level and load readings against the stop limits. */
@@ -629,6 +632,7 @@ function readMachineStatus(agents: AgentIdentity[]): MachineStatus {
   const readings = {
     liveHeadless: countLiveHeadless(agents),
     memory: readMemoryFree(),
+    cpuPressure: readCpuPressure(),
     swap: readSwapUsage(),
   }
   return machineStatus(readings, resolveMachineLimits(), slotUsage(suiteSlotDeps()))

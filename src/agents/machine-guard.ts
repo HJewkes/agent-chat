@@ -3,13 +3,16 @@ import os from 'node:os'
 import type { AgentIdentity } from '../protocol.js'
 import {
   PROC_MEMINFO,
+  PROC_PRESSURE_CPU,
   PROC_PRESSURE_MEMORY,
   parseMeminfoFree,
   parseMeminfoSwap,
+  parsePsiCpu,
   parsePsiMemory,
   psiPressureLevel,
   readProc,
   readProcFile,
+  type PsiReading,
   type ReadFile,
 } from './machine-guard-linux.js'
 
@@ -28,24 +31,31 @@ import {
 
 export const DEFAULT_MACHINE_HEADLESS_AGENTS = 10
 export const DEFAULT_MACHINE_MEMORY_FREE_PERCENT = 15
+export const DEFAULT_MACHINE_CPU_PRESSURE_PERCENT = 40
 
 export interface MachineLimits {
   headlessAgents: number
   /** Refuse below this share of memory free, as `kern.memorystatus_level` reports it. */
   memoryFreePercent: number
+  /** CC-1670: refuse at or above this CPU PSI "some avg60"; null disables the check. */
+  cpuPressurePercent: number | null
 }
 
 export type MemoryReading = { freePercent: number } | { error: string }
 
 export type SwapReading = { usedBytes: number; totalBytes: number } | { error: string }
 
+/** CPU PSI; null where the kernel has no PSI (macOS), so the check is skipped rather than failed. */
+export type CpuPressureReading = PsiReading | null
+
 export interface MachineReadings {
   liveHeadless: number
   memory: MemoryReading
+  cpuPressure: CpuPressureReading
 }
 
-/** CC-445: stable causes of a machine-guard refusal; both clear as load drops. */
-export type MachineRefusalCode = 'machine_headless_limit' | 'machine_memory_floor'
+/** CC-445: stable causes of a machine-guard refusal; each clears as load drops. */
+export type MachineRefusalCode = 'machine_headless_limit' | 'machine_memory_floor' | 'machine_cpu_pressure'
 
 export type MachineDecision =
   { ok: true } | { ok: false; code: MachineRefusalCode; retryable: true; reason: string }
@@ -91,7 +101,20 @@ export function machineDecision(
         'wait for memory pressure to ease before spawning',
     }
   }
-  return { ok: true }
+  return cpuPressureDecision(readings.cpuPressure, limits.cpuPressurePercent)
+}
+
+/** CC-1670: runnable tasks waiting on a CPU, not the load average, say the machine is saturated. */
+function cpuPressureDecision(cpu: CpuPressureReading, limit: number | null): MachineDecision {
+  if (cpu === null || 'error' in cpu || limit === null || cpu.someAvg60 < limit) return { ok: true }
+  return {
+    ok: false,
+    code: 'machine_cpu_pressure',
+    retryable: true,
+    reason:
+      `machine guard: CPU pressure some avg60 ${cpu.someAvg60}% ` +
+      `(limit ${limit}%, config machineCpuPressurePercent); wait for CPU pressure to ease before spawning`,
+  }
 }
 
 type ExecFile = (file: string, args: string[], options: { encoding: 'utf8'; timeout: number }) => string
@@ -154,10 +177,24 @@ export function readSwapUsage(
   }
 }
 
+/** CC-1670: CPU PSI on Linux; null on macOS and elsewhere, where the kernel has no PSI. */
+export function readCpuPressure(
+  platform: NodeJS.Platform = process.platform,
+  readFile: ReadFile = readProcFile,
+): CpuPressureReading {
+  return platform === 'linux' ? readProc(PROC_PRESSURE_CPU, parsePsiCpu, readFile) : null
+}
+
+/** CPU PSI "some avg60" as the seat stop reads it: null when unread or not read on this platform. */
+export const cpuPressurePercent = (cpu: CpuPressureReading): number | null =>
+  cpu === null || 'error' in cpu ? null : cpu.someAvg60
+
 export interface MachineStatus {
   /** `live` is null when the broker's roster could not be read, so the count is unknown, not zero. */
   headlessAgents: { live: number | null; limit: number }
   memoryFree: { percent: number | null; limit: number; error?: string }
+  /** `someAvg60` is null when unread; `skipped` is true where the platform has no PSI. */
+  cpuPressure: { someAvg60: number | null; limit: number | null; skipped?: true; error?: string }
   /** Reported only; no limit applies. */
   swap: { usedPercent: number | null; error?: string }
   fullSuiteSlots: { inUse: number; total: number }
@@ -165,6 +202,11 @@ export interface MachineStatus {
 
 const errorOf = (reading: { error: string } | object): { error?: string } =>
   'error' in reading ? { error: reading.error } : {}
+
+function cpuPressureStatus(cpu: CpuPressureReading, limit: number | null): MachineStatus['cpuPressure'] {
+  if (cpu === null) return { someAvg60: null, limit, skipped: true }
+  return { someAvg60: cpuPressurePercent(cpu), limit, ...errorOf(cpu) }
+}
 
 export function machineStatus(
   readings: MachineReadings & { swap: SwapReading },
@@ -179,6 +221,7 @@ export function machineStatus(
       limit: limits.memoryFreePercent,
       ...errorOf(memory),
     },
+    cpuPressure: cpuPressureStatus(readings.cpuPressure, limits.cpuPressurePercent),
     swap: { usedPercent: swapPercent(swap), ...errorOf(swap) },
     fullSuiteSlots: slots,
   }

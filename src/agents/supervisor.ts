@@ -102,6 +102,7 @@ import {
   machineDecision,
   type MachineDecision,
   type MachineRefusalCode,
+  type CpuPressureReading,
   type MachineLimits,
   type MemoryReading,
 } from './machine-guard.js'
@@ -252,6 +253,7 @@ import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
 import {
   assignmentMeta,
   assignmentRefusal,
+  fixRoundRoot,
   inferWorkRole,
   spawnProvenance,
   worktreeProvenance,
@@ -1370,6 +1372,7 @@ const reviewerRewriteWarning = (root: string): string =>
 
 export interface MachineGuardReaders {
   readMemoryFree: () => MemoryReading
+  readCpuPressure: () => CpuPressureReading
   limits: () => MachineLimits
 }
 
@@ -2257,14 +2260,17 @@ export class Supervisor implements TeleportHost {
     return void this.spawnSlots.hold(req.requestedBy, agentId, reservation)
   }
 
-  /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
+  /** CC-406, CC-1670: refuses at the headless-agent total, below the memory-free floor or under CPU pressure. */
   private machineRefusal(surface: SurfaceName): Extract<MachineDecision, { ok: false }> | undefined {
     if (this.machineGuard === undefined) return undefined
     const memory = this.machineGuard.readMemoryFree()
     if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
+    const cpuPressure = this.machineGuard.readCpuPressure()
+    if (cpuPressure !== null && 'error' in cpuPressure)
+      logEvent('machine_guard_reader_failed', { reader: 'cpu_pressure', error: cpuPressure.error })
     const liveHeadless = countLiveHeadless(this.core.agents.roster())
     const decision = machineDecision(
-      { liveHeadless, memory },
+      { liveHeadless, memory, cpuPressure },
       this.machineGuard.limits(),
       surface === 'headless',
     )
@@ -2375,7 +2381,12 @@ export class Supervisor implements TeleportHost {
     if (this.seatBudget === undefined) return undefined
     let read: SeatSpawnRead
     try {
-      read = this.seatBudget.read({ name: req.name, spawner: req.requestedBy, configDir, now: new Date() })
+      read = this.seatBudget.read({
+        name: req.name,
+        spawner: this.seatSpawner(req),
+        configDir,
+        now: new Date(),
+      })
     } catch (err) {
       logEvent('seat_spawn_gate_failed', {
         name: req.name,
@@ -2392,6 +2403,20 @@ export class Supervisor implements TeleportHost {
     const verdict = seatSpawnGate({ ...read.input, model: profile.model, role })
     logEvent('seat_spawn_gate', { name: req.name, allow: verdict.allow, reason: verdict.reason })
     return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
+  }
+
+  /**
+   * TP-4560: Shepherd spawns a successor over the CLI, so `human` does not say whose work it continues. The seat
+   * gate reads the spawner recorded for the agent the successor's chain started from; unrecorded, `human` stands.
+   */
+  private seatSpawner(req: SpawnRequest): string {
+    if (req.requestedBy !== HUMAN) return req.requestedBy
+    const origin = fixRoundRoot(req.predecessor ?? req.name)
+    if (origin === req.name) return HUMAN
+    const agent = this.core.agents
+      .roster({ includeRetired: true })
+      .find(a => a.name === origin && a.origin === 'spawned')
+    return agent?.spawnedBy ?? HUMAN
   }
 
   /** CC-1078: refuses a reviewer spawn into an account at or past its five_hour ceiling; a reader failure lets it through. */
@@ -3879,7 +3904,7 @@ export class Supervisor implements TeleportHost {
     try {
       const spawn = {
         name: req.name,
-        spawner: req.requestedBy,
+        spawner: this.seatSpawner(req),
         configDir: defaultConfigDir(),
         now: new Date(),
       }

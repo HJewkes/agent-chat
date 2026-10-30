@@ -83,6 +83,7 @@ export interface SpawnResultFields {
     | 'spawn_rate_limit'
     | 'machine_headless_limit'
     | 'machine_memory_floor'
+    | 'machine_cpu_pressure'
     | 'machine_predicted_memory'
     | 'machine_predicted_cpu'
     | 'crash_looping'

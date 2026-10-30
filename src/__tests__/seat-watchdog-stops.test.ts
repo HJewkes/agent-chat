@@ -375,8 +375,15 @@ describe('machineStop swap and pressure level (CC-492)', () => {
     load5: 28,
     swapUsedPercent: 60,
     pressureLevel: 2,
+    cpuPressurePercent: 40,
   }
-  const calm: MachineStopReadings = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1 }
+  const calm: MachineStopReadings = {
+    memoryFreePercent: 60,
+    load5: 2,
+    swapUsedPercent: 10,
+    pressureLevel: 1,
+    cpuPressurePercent: 2.4,
+  }
 
   it('swap at 60.1 percent with memory and load fine stops the seat and names swap', () => {
     const stop = machineStop({ ...calm, swapUsedPercent: 60.1 }, limits)
@@ -401,5 +408,52 @@ describe('machineStop swap and pressure level (CC-492)', () => {
 
   it('swap limit set to null in config disables the swap trigger', () => {
     expect(machineStop({ ...calm, swapUsedPercent: 95 }, { ...limits, swapUsedPercent: null })).toBeNull()
+  })
+})
+
+describe('machineStop on CPU pressure, with load5 as a backstop (CC-1670)', () => {
+  const limits: MachineStopLimits = {
+    memoryFreePercent: 20,
+    load5: 48,
+    swapUsedPercent: 60,
+    pressureLevel: 2,
+    cpuPressurePercent: 40,
+  }
+  const calm: MachineStopReadings = {
+    memoryFreePercent: 80,
+    load5: 27,
+    swapUsedPercent: 0,
+    pressureLevel: 1,
+    cpuPressurePercent: 2.4,
+  }
+
+  it('CPU pressure at the limit stops the seat and names the reading', () => {
+    expect(machineStop({ ...calm, cpuPressurePercent: 40 }, limits)?.reason).toBe(
+      'machine under pressure: CPU pressure 40% (limit 40%)',
+    )
+  })
+
+  it('CPU pressure one below the limit does not stop', () => {
+    expect(machineStop({ ...calm, cpuPressurePercent: 39 }, limits)).toBeNull()
+  })
+
+  it('an unread CPU pressure, as on macOS, never stops', () => {
+    expect(machineStop({ ...calm, cpuPressurePercent: null }, limits)).toBeNull()
+  })
+
+  it('a null CPU pressure limit disables the trigger', () => {
+    expect(
+      machineStop({ ...calm, cpuPressurePercent: 95 }, { ...limits, cpuPressurePercent: null }),
+    ).toBeNull()
+  })
+
+  it('load5 still stops above its backstop while CPU pressure is calm', () => {
+    expect(machineStop({ ...calm, load5: 48.5 }, limits)?.reason).toBe(
+      'machine under pressure: load5 48.5 (limit 48)',
+    )
+  })
+
+  it('a null load5 limit turns the backstop off', () => {
+    expect(machineStop({ ...calm, load5: 200 }, { ...limits, load5: null })).toBeNull()
   })
 })
