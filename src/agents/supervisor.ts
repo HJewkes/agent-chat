@@ -73,6 +73,7 @@ import {
   ceilingDriftRefusal,
   ceilingRefusal,
   policySeat,
+  seatRootGap,
   seatRootOf,
   startsSeatRoot,
   type SeatClaim,
@@ -2533,8 +2534,16 @@ export class Supervisor implements TeleportHost {
     return { profile: { ...profile, warnings: [...(profile.warnings ?? []), warning] }, startsRoot: false }
   }
 
-  /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
-  private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
+  /**
+   * CC-163: what the TARGET profile's role allows, checked once the profile is loaded. CC-1675: a
+   * depth refusal names the seat-policy entry that would have made the requester a root.
+   */
+  private checkRole(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    coordinatorDepth: number,
+    requester: Requester,
+  ): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
       return (
         `profile "${profile.name}" is a worker and cannot run with Remote Control; only a ` +
@@ -2542,8 +2551,9 @@ export class Supervisor implements TeleportHost {
       )
     if (coordinatorDepth > MAX_COORDINATOR_DEPTH)
       return (
-        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}; spawn a ` +
-        'worker profile instead, or ask the human to start this coordinator'
+        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}, and ` +
+        `${seatRootGap(loadSeatPolicy(), req.requestedBy, requester.profile)}, so it is not a root seat; ` +
+        'spawn a worker profile instead, ask the owner to add that entry, or ask the human to start this coordinator'
       )
     return undefined
   }
@@ -2770,7 +2780,7 @@ export class Supervisor implements TeleportHost {
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
       ...(requester.seat === undefined ? {} : { seat: requester.seat }),
     })
-    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth)
+    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth, requester)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
