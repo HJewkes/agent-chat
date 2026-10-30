@@ -301,7 +301,7 @@ describe('the depth refusal (CC-1675)', () => {
   it('refuses a non-seat coordinator at depth 3, naming the seat policy', async () => {
     const coordinator = await coordinatorAt(3)
 
-    const outcome = await spawn('deep-coord', 'opus-coordinator', coordinator)
+    const outcome = await spawn('coord-d', 'opus-coordinator', coordinator)
 
     expect(outcome.ok).toBe(false)
     expect(outcome.reason).toMatch(/coordinator depth 4 exceeds the cap of 3/)
@@ -325,7 +325,7 @@ describe('the depth refusal (CC-1675)', () => {
     expect(relaunch.ok, relaunch.reason).toBe(true)
     const coordinator: Requester = { agentId: relaunch.agentId as string, name: 'coord-3', binding: 'launch' }
 
-    const outcome = await spawn('deep-coord', 'opus-coordinator', coordinator)
+    const outcome = await spawn('coord-d', 'opus-coordinator', coordinator)
 
     expect(outcome.ok).toBe(false)
     expect(outcome.reason).toMatch(/coordinator depth 4 exceeds the cap of 3/)
