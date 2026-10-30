@@ -77,6 +77,9 @@ options go to `codex app-server`.
   name. The name follows the agent-name rule (lowercase letters, digits, `-` and `_`). If
   another session holds it, the server registers under a name derived from the directory,
   as it does without `--name`.
+- **`AGENT_CHAT_HOME`.** Codex passes MCP children only a short allowlist of variables, so
+  the supervisor sets this one in that server's env. Without it the server would join the
+  default broker while the supervisor watched another home's spool.
 - **Delivery.** The supervisor watches the spool of its own Codex. Records go in as one
   user-role text input per drain, in arrival order, under a header saying they come from a
   peer and not the user. While a turn runs they go in as `turn/steer` on that turn. When
@@ -96,3 +99,33 @@ options go to `codex app-server`.
   it, so an approval prompt would fail the tool call it gates.
 - **Exit.** The supervisor exits with the app-server's exit code, or 128 plus the signal
   number when a signal ended it. SIGINT and SIGTERM are forwarded to the app-server.
+
+## S6: the live wake probe
+
+`AGENT_CHAT_LIVE=1 node scripts/codex-listen-live.mjs` runs the real `codex` binary under
+`agent-chat codex run`, against a mock Responses server, with a scratch HOME, `CODEX_HOME`
+and `AGENT_CHAT_HOME`, and with hooks trusted only in the scratch home. Run `npm run build`
+first. It exits non-zero if an assertion fails.
+
+| Assertion      | Pass means                                                                                                | Basement, codex-cli 0.162.1                  |
+| -------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Idle wake      | Within 10 s the marker reaches the model under the peer header, with a `UserMessage` in the rollout       | PASS, about 4.7 s                            |
+| Mid-turn steer | The marker is in the request after the tool output; `sleep 20` exits 0; one turn ran                      | PASS                                         |
+| No duplicate   | With the S3 hooks on, the marker is once in model input, as user; the hook's developer notice has no body | PASS                                         |
+| Spool key      | Under the npm node wrapper, the supervisor finds `codex-hosts/<native pid>` through the real parent chain | PASS                                         |
+| Failure path   | With the app-server killed, records stay in the spool and the supervisor exits non-zero                   | **FAIL**: exit 137, but the spool is deleted |
+
+Findings from the run:
+
+- **Records are lost when the app-server dies.** The supervisor returns its claims to the
+  spool and logs that it did, but the MCP server's exit handler then removes
+  `codex-hosts/<pid>`, so they are gone. Whether a resumed supervisor could recover them
+  from there is UNVERIFIED: it has a new pid.
+- **The first message took about 4.7 s.** The spool dir does not exist until the first
+  record, so the likely cause is the 5 s rescan. That cause is UNVERIFIED.
+- **Hook trust is separate under `app-server`.** `--dangerously-bypass-hook-trust` is not
+  accepted after `app-server`, and hooks do not run when it is given before it. The probe
+  writes `hooks.state` from what `hooks/list` reports instead.
+
+Not run: the Mac half, because Mac spawns are not wired, and a real-model run, which needs
+owner approval.
