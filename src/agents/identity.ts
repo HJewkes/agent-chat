@@ -7,6 +7,7 @@ import {
   type Launcher,
 } from '../protocol.js'
 import { inferWorkRole } from './spawn-provenance.js'
+import { crashLoopOf } from './crash-loop.js'
 
 /**
  * The durable half of an agent: who it is, not whether it is currently plugged
@@ -104,6 +105,7 @@ const spawnedFields = (row: AgentEventRow, id: string): Omit<AgentIdentity, 'bri
   ...provenanceOf(row),
   lastEventAt: row.ts,
   generation: generationOf(row),
+  ...inheritedStreak(row),
   ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),
   ...predecessorOf(row),
 })
@@ -121,6 +123,21 @@ function predecessorOf(row: AgentEventRow): { predecessor?: string | null } {
   if (meta.predecessor) return { predecessor: meta.predecessor }
   if (originOf(row) === 'adopted' || meta.coordinator_depth === undefined) return {}
   return { predecessor: null }
+}
+
+/** CC-1671 S4: a row with no streak is an exit that broke one. */
+function applyCrashStreak(agent: AgentIdentity, row: AgentEventRow): void {
+  const streak = numberOrUndefined(row.meta.crash_streak)
+  if (streak === undefined) delete agent.crashStreak
+  else agent.crashStreak = streak
+  const loop = crashLoopOf(row.meta, agent.exit?.code ?? null, row.ts)
+  if (loop === undefined) delete agent.crashLoop
+  else agent.crashLoop = loop
+}
+
+const inheritedStreak = (row: AgentEventRow): { crashStreak?: number } => {
+  const streak = numberOrUndefined(row.meta.crash_streak)
+  return streak === undefined ? {} : { crashStreak: streak }
 }
 
 /** CC-1466: the automation that ran a human-requested spawn, beside `spawnedBy` and never in place of it. */
@@ -241,6 +258,11 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
       agent.exit = exitFrom(row)
       agent.exitedAt = row.ts
       exitInferred = row.meta.inferred === 'true' || row.meta.failed === 'true'
+      applyCrashStreak(agent, row)
+    }
+    if (row.kind === 'agent_resumed' && row.meta.crash_cleared === 'true') {
+      delete agent.crashStreak
+      delete agent.crashLoop
     }
     // CC-454: an inferred exit can be false (the launcher died, claude did not); a real one is final.
     // CC-450: so can a failed start, when the registration lands after the attach check gave up.

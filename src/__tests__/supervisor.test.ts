@@ -9,6 +9,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnSlots } from '../agents/spawn-admission.js'
+import type { CrashLoopLimits } from '../agents/crash-loop.js'
 import { FootprintSampler, parseFootprintMeta } from '../agents/agent-footprint.js'
 import {
   coordinatorExemption,
@@ -160,6 +161,7 @@ function withStubbedSurface(
     attachMs?: number
     semaphore?: Semaphore
     spawnSlots?: SpawnSlots
+    crashLoop?: () => CrashLoopLimits
     predictedCost?: PredictedCostReaders
     footprint?: FootprintSampler
     hookSpawn?: HookSpawnFn
@@ -3972,6 +3974,158 @@ describe('spawning onto an existing session', () => {
  * transcript only under the project dir of the cwd it starts in, so the
  * worktree comes back at its recorded path before the session does.
  */
+describe('an agent crash-looping at launch (CC-1671 S4)', () => {
+  const exitAs = (sup: Supervisor, agentId: string, code: number | null, signal: string | null = null) =>
+    (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit.call(
+      sup,
+      agentId,
+      {
+        code,
+        signal,
+      },
+    )
+  const relaunch = (sup: Supervisor, name = 'scout') =>
+    sup.resume(name, { source: 'watchdog', message: 'wake' })
+  const crashLoopRows = () => core.events.history(50).filter(r => r.text?.includes('crashed at launch'))
+
+  /** Spawns, crashes, then has automation relaunch it `times` more, crashing each time. */
+  async function crashRepeatedly(sup: Supervisor, times: number): Promise<string> {
+    const spawned = await sup.spawn(spawnReq({ spawnerConfigDir: workspace() }))
+    const agentId = spawned.agentId as string
+    writeTranscriptFor(core.agents.get(agentId)!)
+    await exitAs(sup, agentId, 1)
+    for (let i = 1; i < times; i += 1) {
+      expect((await relaunch(sup)).ok).toBe(true)
+      await exitAs(sup, agentId, 1)
+    }
+    return agentId
+  }
+
+  it('stops automated relaunches after K crashes while other spawns keep admitting', async () => {
+    const sup = withStubbedSurface()
+    const spawned = await sup.spawn(spawnReq({ spawnerConfigDir: workspace() }))
+    const agentId = spawned.agentId as string
+    writeTranscriptFor(core.agents.get(agentId)!)
+    const others: boolean[] = []
+
+    await exitAs(sup, agentId, 1)
+    others.push((await sup.spawn(spawnReq({ name: 'other-1' }))).ok)
+    expect((await relaunch(sup)).ok).toBe(true)
+    await exitAs(sup, agentId, 1)
+    others.push((await sup.spawn(spawnReq({ name: 'other-2' }))).ok)
+    expect((await relaunch(sup)).ok).toBe(true)
+    await exitAs(sup, agentId, 1)
+    others.push((await sup.spawn(spawnReq({ name: 'other-3' }))).ok)
+    const refused = await relaunch(sup)
+
+    expect(refused).toMatchObject({ ok: false, code: 'crash_looping', retryable: false })
+    expect(refused.reason).toMatch(/last exit code 1, 3 launches in a row/)
+    expect(others).toEqual([true, true, true])
+    expect((await sup.spawn(spawnReq({ name: 'other-4' }))).ok).toBe(true)
+  })
+
+  it('marks the row with the last exit and tells the spawner once', async () => {
+    const sup = withStubbedSurface()
+    const agentId = await crashRepeatedly(sup, 3)
+
+    await relaunch(sup)
+    await relaunch(sup)
+
+    expect(core.agents.get(agentId)?.crashLoop).toMatchObject({ count: 3, code: 1 })
+    expect(crashLoopRows()).toHaveLength(1)
+  })
+
+  it('keeps the output tail on the mark, bounded', async () => {
+    const sup = withStubbedSurface()
+    const agentId = await crashRepeatedly(sup, 2)
+    writeOutputTail(agentDir(agentId), `${'x'.repeat(2000)}boom`)
+    expect((await relaunch(sup)).ok).toBe(true)
+
+    await exitAs(sup, agentId, 7)
+
+    const tail = core.agents.get(agentId)?.crashLoop?.stderrTail
+    expect(tail).toMatch(/boom$/)
+    expect(tail).toHaveLength(500)
+    expect(core.agents.get(agentId)?.crashLoop?.code).toBe(7)
+  })
+
+  it('never marks a healthy short agent that exits 0 in 10 s', async () => {
+    const sup = withStubbedSurface()
+    const spawned = await sup.spawn(spawnReq({ spawnerConfigDir: workspace() }))
+    const agentId = spawned.agentId as string
+    writeTranscriptFor(core.agents.get(agentId)!)
+
+    for (let i = 0; i < 5; i += 1) {
+      vi.spyOn(Date, 'now').mockReturnValue(core.runStartedAt(core.agents.get(agentId)!) + 10_000)
+      await exitAs(sup, agentId, 0)
+      vi.restoreAllMocks()
+      expect((await relaunch(sup)).ok).toBe(true)
+    }
+
+    expect(core.agents.get(agentId)?.crashStreak).toBeUndefined()
+    expect(core.agents.get(agentId)?.crashLoop).toBeUndefined()
+  })
+
+  it('does not count a crash long after launch, and it ends a streak', async () => {
+    const sup = withStubbedSurface()
+    const agentId = await crashRepeatedly(sup, 2)
+    expect((await relaunch(sup)).ok).toBe(true)
+    vi.spyOn(Date, 'now').mockReturnValue(core.runStartedAt(core.agents.get(agentId)!) + 31_000)
+
+    await exitAs(sup, agentId, 1)
+    vi.restoreAllMocks()
+
+    expect(core.agents.get(agentId)?.crashStreak).toBeUndefined()
+    expect((await relaunch(sup)).ok).toBe(true)
+  })
+
+  it('a resume by hand runs and clears the mark, and the count starts over', async () => {
+    const sup = withStubbedSurface()
+    const agentId = await crashRepeatedly(sup, 3)
+
+    expect((await sup.resume('scout')).ok).toBe(true)
+
+    expect(core.agents.get(agentId)?.crashLoop).toBeUndefined()
+    expect(core.agents.get(agentId)?.crashStreak).toBeUndefined()
+    await exitAs(sup, agentId, 1)
+    expect(core.agents.get(agentId)?.crashStreak).toBe(1)
+    expect((await relaunch(sup)).ok).toBe(true)
+  })
+
+  it('stops a relaunch under a new id, while a spawn by hand of that name stands clear', async () => {
+    const sup = withStubbedSurface()
+    const agentId = await crashRepeatedly(sup, 3)
+    const lineage = { name: 'scout-2', lineageFrom: agentId }
+
+    const automated = await sup.spawn(spawnReq({ ...lineage, launchedBy: 'seat-watchdog' }))
+    const byHand = await sup.spawn(spawnReq(lineage))
+
+    expect(automated).toMatchObject({ ok: false, code: 'crash_looping' })
+    expect(byHand.ok).toBe(true)
+    expect(core.agents.byName('scout-2')?.crashLoop).toBeUndefined()
+  })
+
+  it('carries the count across an automated spawn with lineage', async () => {
+    const sup = withStubbedSurface()
+    const agentId = await crashRepeatedly(sup, 2)
+
+    const next = await sup.spawn(
+      spawnReq({ name: 'scout-2', lineageFrom: agentId, launchedBy: 'seat-watchdog' }),
+    )
+    await exitAs(sup, next.agentId as string, 1)
+
+    expect(core.agents.get(next.agentId as string)?.crashLoop).toMatchObject({ count: 3 })
+  })
+
+  it('does nothing with either limit null', async () => {
+    const sup = withStubbedSurface({ crashLoop: () => ({ seconds: 30, launches: null }) })
+    const agentId = await crashRepeatedly(sup, 4)
+
+    expect(core.agents.get(agentId)?.crashLoop).toBeUndefined()
+    expect((await relaunch(sup)).ok).toBe(true)
+  })
+})
+
 describe('resuming an agent whose worktree was removed', () => {
   const SCOUT_BRANCH = 'agent-chat/scout'
 
