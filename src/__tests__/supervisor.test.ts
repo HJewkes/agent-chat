@@ -695,17 +695,18 @@ describe('predicted-cost admission', () => {
     expect(refused.reason).toMatch(/predicted memory: 16% free now/)
   })
 
-  it('counts an admitted spawn against the next until it exits', async () => {
+  it('counts a launch in flight against the next until it ends', async () => {
+    const spawnSlots = new SpawnSlots()
+    spawnSlots.hold('human', 'held', { rssKb: 4 * GIB_KB, cpuCores: 0 })
     const sup = withStubbedSurface({
+      spawnSlots,
       predictedCost: readers({ readMemoryFree: () => ({ freePercent: 18 }) }),
     })
-    const first = await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'human' }))
-    expect(first.ok).toBe(true)
 
-    expect((await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'human' }))).ok).toBe(false)
+    expect((await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'human' }))).ok).toBe(false)
 
-    core.append({ kind: 'agent_exited', actor: 'scout-1', ref: first.agentId ?? '' })
-    expect((await sup.spawn(spawnReq({ name: 'scout-3', requestedBy: 'human' }))).ok).toBe(true)
+    core.append({ kind: 'agent_exited', actor: 'held', ref: 'held' })
+    expect((await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'human' }))).ok).toBe(true)
   })
 
   it('admits when the reading failed', async () => {

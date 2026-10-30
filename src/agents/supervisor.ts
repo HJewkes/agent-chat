@@ -1539,8 +1539,8 @@ export class Supervisor implements TeleportHost {
   private onRow(row: { kind: string; ref?: string }): void {
     const agentId = row.ref
     if (agentId === undefined) return
-    if (row.kind === 'agent_attached') this.spawnSlots.registered(agentId)
-    if (row.kind === 'agent_exited' || row.kind === 'agent_retired') this.spawnSlots.release(agentId)
+    if (['agent_attached', 'agent_exited', 'agent_retired'].includes(row.kind))
+      this.spawnSlots.release(agentId)
     if (row.kind === 'agent_attached') this.remoteSpawns.attached(agentId)
     // TP-4341: a reconnect is a surviving agent's first contact with a restarted broker.
     if (row.kind === 'agent_attached') this.readmit(agentId)

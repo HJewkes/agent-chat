@@ -4,22 +4,19 @@ import type { MemoryReading } from './machine-guard.js'
 /**
  * CC-1671 S3: spawn admission, replacing the fixed 5-per-60s budget. The owner's case: a reviewer
  * costs little and a test runner a lot, and an agent that finishes in 10 s must not hold a window
- * for a minute.
+ * for a minute. Nothing here is a window: every hold ends on a row, never on a clock. A crash loop
+ * is stopped where the agent is relaunched, not by throttling every other spawn.
  *
  * `SpawnSlots` is the burst guard: a requester may have so many launches in flight, and a slot
- * frees the moment its agent registers or exits. The semaphore still bounds the standing
- * population; this bounds how fast one requester can add to it.
+ * frees the moment its agent registers or exits. A launch that does neither is ended at the attach
+ * ceiling, so a slot cannot leak. The semaphore still bounds the standing population.
  *
  * `predictedCostDecision` is the machine's side: a spawn is admitted when the current reading
- * plus the profile's p90 and what recent admissions have yet to show still clear the machine
- * guard's limits. A reading that failed never refuses, as in the machine guard.
+ * plus the profile's p90 and the p90 of the launches in flight still clear the machine guard's
+ * limits. A reading that failed never refuses, as in the machine guard.
  */
 
 export const MAX_LAUNCHES_IN_FLIGHT = 5
-/** A launch that neither registered nor exited stops counting, so a lost row cannot hold a slot. */
-export const LAUNCH_SLOT_TTL_MS = 120_000
-/** A registered agent's memory lags its registration, so its prediction stands this long. */
-export const RESERVATION_MS = 60_000
 
 /** Stable causes of a predicted-cost refusal; each names the resource and clears as load drops. */
 export type AdmissionRefusalCode = 'machine_predicted_memory' | 'machine_predicted_cpu'
@@ -34,8 +31,6 @@ export interface Reservation {
 
 interface Hold extends Reservation {
   requester: string
-  at: number
-  registered: boolean
 }
 
 const NO_RESERVATION: Reservation = { rssKb: 0, cpuCores: 0 }
@@ -43,27 +38,11 @@ const NO_RESERVATION: Reservation = { rssKb: 0, cpuCores: 0 }
 export class SpawnSlots {
   private readonly holds = new Map<string, Hold>()
 
-  constructor(
-    private readonly limit: number = MAX_LAUNCHES_IN_FLIGHT,
-    private readonly now: () => number = Date.now,
-  ) {}
-
-  private prune(): void {
-    const now = this.now()
-    for (const [agentId, hold] of this.holds) {
-      const ttl = hold.registered ? RESERVATION_MS : LAUNCH_SLOT_TTL_MS
-      if (now - hold.at >= ttl) this.holds.delete(agentId)
-    }
-  }
-
-  private inFlight(requester: string): number {
-    this.prune()
-    return [...this.holds.values()].filter(h => h.requester === requester && !h.registered).length
-  }
+  constructor(private readonly limit: number = MAX_LAUNCHES_IN_FLIGHT) {}
 
   /** Charges nothing: a slot is taken by {@link hold} once the spawn is about to launch. */
   check(requester: string): { ok: true } | { ok: false; reason: string } {
-    const inFlight = this.inFlight(requester)
+    const inFlight = [...this.holds.values()].filter(h => h.requester === requester).length
     if (inFlight < this.limit) return { ok: true }
     return {
       ok: false,
@@ -74,23 +53,16 @@ export class SpawnSlots {
   }
 
   hold(requester: string, agentId: string, reservation: Reservation = NO_RESERVATION): void {
-    this.holds.set(agentId, { ...reservation, requester, at: this.now(), registered: false })
+    this.holds.set(agentId, { ...reservation, requester })
   }
 
-  /** Frees the slot; the reservation stands until the agent's own use can show in a reading. */
-  registered(agentId: string): void {
-    const hold = this.holds.get(agentId)
-    if (hold !== undefined) hold.registered = true
-  }
-
-  /** The agent is gone, so neither its slot nor its reservation stands. Safe to call twice. */
+  /** The agent registered or exited, so its launch is over. Safe to call twice. */
   release(agentId: string): void {
     this.holds.delete(agentId)
   }
 
-  /** What admitted agents are predicted to use and no reading shows yet. */
+  /** What the launches in flight are predicted to use. */
   reserved(): Reservation {
-    this.prune()
     const total = { ...NO_RESERVATION }
     for (const hold of this.holds.values()) {
       total.rssKb += hold.rssKb
@@ -152,7 +124,7 @@ function memoryDecision(
     retryable: true,
     reason:
       `predicted memory: ${memory.freePercent}% free now, ${oneDecimal(predicted)}% after ${costOf(cost)} ` +
-      `and recent spawns (floor ${limits.memoryFreePercent}%, config machineMemoryFreePercent); ` +
+      `and launches in flight (floor ${limits.memoryFreePercent}%, config machineMemoryFreePercent); ` +
       'retry when memory frees',
   }
 }
@@ -173,6 +145,6 @@ function cpuDecision(
     retryable: true,
     reason:
       `predicted CPU: pressure ${cpuPressure.someAvg60}% now, ${oneDecimal(predicted)}% after ${costOf(cost)} ` +
-      `and recent spawns (limit ${limit}%, config machineCpuPressurePercent); retry when CPU eases`,
+      `and launches in flight (limit ${limit}%, config machineCpuPressurePercent); retry when CPU eases`,
   }
 }

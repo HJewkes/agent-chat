@@ -1814,18 +1814,17 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   `GET /api/lifecycle` and `/health`'s optional `lifecycle` field carry the
   same report to the dashboard and to relay.
 - **Rate (CC-1671):** `SpawnSlots` (`agents/spawn-admission.ts`) replaced the
-  fixed 5-per-60s budget of CC-25. A requester may have 5 local launches in
-  flight; a slot frees when the agent registers or exits, or after 120s if
-  neither row arrives, so a 10s agent holds nothing for a minute. The refusal
+  fixed 5-per-60s budget of CC-25. There is no time window. A requester may have
+  5 local launches in flight, and a slot frees when the agent registers or
+  exits; a launch that does neither is ended at the attach ceiling. The refusal
   is the retryable `spawn_rate_limit`. The human at the CLI is exempt for the
   same reason `checkCwd` does. Launches on another host take no slot.
 - **Predicted cost (CC-1671):** just before the slot is taken, a local spawn
   must clear the machine guard's limits with the profile's p90 added: free
   memory less the p90 RSS stays at or above `machineMemoryFreePercent`, and CPU
   PSI plus the p90 cores as a share of all cores stays under
-  `machineCpuPressurePercent`. What agents admitted in the last 60s are
-  predicted to use counts too, until they exit, because a new agent's memory
-  lags its registration. The refusals are the retryable
+  `machineCpuPressurePercent`. The p90 of the launches in flight counts too,
+  until each registers or exits. The refusals are the retryable
   `machine_predicted_memory` and `machine_predicted_cpu`. A cold-start default
   gates like a measured estimate; a reading that failed never refuses.
 - **Footprint (CC-1671):** the broker samples each live local agent's process

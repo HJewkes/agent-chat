@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { CostTable, type ExitFootprint } from '../agents/agent-cost.js'
 import {
-  LAUNCH_SLOT_TTL_MS,
   predictedCostDecision,
-  RESERVATION_MS,
   SpawnSlots,
   type AdmissionLimits,
   type AdmissionReadings,
@@ -37,7 +35,7 @@ const testRunner = table.estimate('test-runner', 'implementer')
 
 /** Admits like the broker: each admission reserves its p90 against the next. */
 function admit(cost: typeof reviewer, wave: number, at: AdmissionReadings): boolean[] {
-  const slots = new SpawnSlots(wave, () => 0)
+  const slots = new SpawnSlots(wave)
   return Array.from({ length: wave }, (_, i) => {
     const decision = predictedCostDecision(at, cost, slots.reserved(), LIMITS)
     if (decision.ok) slots.hold('seat', `a${i}`, { rssKb: cost.rssKb.p90, cpuCores: cost.cpuCores.p90 })
@@ -117,11 +115,6 @@ describe('admission on predicted cost', () => {
 })
 
 describe('launch slots', () => {
-  const clock = (): { now: () => number; advance: (ms: number) => void } => {
-    let at = 0
-    return { now: () => at, advance: ms => void (at += ms) }
-  }
-
   it('refuses a requester at the limit and no other', () => {
     const slots = new SpawnSlots(1)
     slots.hold('seat', 'a1')
@@ -130,52 +123,20 @@ describe('launch slots', () => {
     expect(slots.check('other')).toEqual({ ok: true })
   })
 
-  it('frees the slot the moment the agent exits', () => {
+  it('frees the slot and its reservation the moment the launch ends', () => {
     const slots = new SpawnSlots(1)
-    slots.hold('seat', 'a1')
-
-    slots.release('a1')
-
-    expect(slots.check('seat')).toEqual({ ok: true })
-  })
-
-  it('frees the slot at registration but keeps the reservation until its time is up', () => {
-    const { now, advance } = clock()
-    const slots = new SpawnSlots(1, now)
     slots.hold('seat', 'a1', { rssKb: 100, cpuCores: 1 })
-
-    slots.registered('a1')
-
-    expect(slots.check('seat')).toEqual({ ok: true })
     expect(slots.reserved()).toEqual({ rssKb: 100, cpuCores: 1 })
-    advance(RESERVATION_MS)
-    expect(slots.reserved()).toEqual(NONE)
-  })
-
-  it('drops the reservation of a registered agent that exits', () => {
-    const slots = new SpawnSlots(1)
-    slots.hold('seat', 'a1', { rssKb: 100, cpuCores: 1 })
-    slots.registered('a1')
 
     slots.release('a1')
 
+    expect(slots.check('seat')).toEqual({ ok: true })
     expect(slots.reserved()).toEqual(NONE)
   })
 
-  it('lets go of a launch that never registers nor exits', () => {
-    const { now, advance } = clock()
-    const slots = new SpawnSlots(1, now)
-    slots.hold('seat', 'a1')
-
-    advance(LAUNCH_SLOT_TTL_MS)
-
-    expect(slots.check('seat')).toEqual({ ok: true })
-  })
-
-  it('takes a registered or released id it never held as a no-op', () => {
+  it('takes a released id it never held as a no-op', () => {
     const slots = new SpawnSlots(1)
 
-    slots.registered('ghost')
     slots.release('ghost')
 
     expect(slots.check('seat')).toEqual({ ok: true })
