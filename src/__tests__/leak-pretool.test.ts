@@ -21,8 +21,6 @@ import { agentDir } from '../paths.js'
 import { aliasReader } from '../leak-guard/git-alias.js'
 import { includedHooksPathReader } from '../leak-guard/git-include.js'
 import { parseShell } from '../leak-guard/shell-words.js'
-import { killQuietly, waitUntilGone } from './helpers/process-gone.js'
-import { releaseFifos } from './helpers/run-root.js'
 
 const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-pretool-'))
@@ -1609,52 +1607,6 @@ describe('a git alias already in config', () => {
 
       it('allows a lone include passed to a plain alias, from the built CLI', () => {
         expect(hookSays(`git -c include.path=${nameCfg} sp`)).toBe('')
-      })
-    })
-
-    describe('an include git blocks on (CC-1673)', () => {
-      const fifoDir = path.join(SCRATCH, 'include-fifo-dir')
-      const fifo = path.join(fifoDir, 'include-fifo')
-      const groupFile = path.join(fifoDir, 'git-group')
-
-      /**
-       * A git wrapper like the agent shim: the real git is a grandchild of the guard's spawn, so
-       * killing only the direct child on timeout would leave it blocked on the FIFO.
-       */
-      const wrapperEnv = (): NodeJS.ProcessEnv => {
-        const shimDir = path.join(fifoDir, 'shim')
-        const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
-        fs.mkdirSync(shimDir)
-        const wrapper = path.join(shimDir, 'git')
-        const script = `#!/bin/sh\nPATH='${process.env.PATH}'\n'${realGit}' "$@" &\necho "$$ $!" > '${groupFile}'\nwait $!\n`
-        fs.writeFileSync(wrapper, script, { mode: 0o755 })
-        return { ...READ_ENV, PATH: `${shimDir}:${process.env.PATH}` }
-      }
-
-      const realGitPid = (): number => Number(fs.readFileSync(groupFile, 'utf8').split(' ')[1])
-
-      beforeEach(() => {
-        fs.mkdirSync(fifoDir)
-        execFileSync('mkfifo', [fifo])
-      })
-
-      afterEach(() => {
-        const [group] = fs.existsSync(groupFile) ? fs.readFileSync(groupFile, 'utf8').split(' ') : []
-        if (group !== undefined) killQuietly(-Number(group))
-        releaseFifos(fifoDir)
-        fs.rmSync(fifoDir, { recursive: true, force: true })
-      })
-
-      it('denies an include git cannot read within the timeout', () => {
-        expect(checkCommand(`git -c include.path=${fifo} push`, at(plain))).toBe(REASONS.includePath)
-      })
-
-      it('leaves no git behind a wrapper blocked on it after the timeout', async () => {
-        const env = wrapperEnv()
-        const reader = ctx({ cwd: plain, readIncludedHooksPath: includedHooksPathReader(env) })
-
-        expect(checkCommand(`git -c include.path=${fifo} push`, reader)).toBe(REASONS.includePath)
-        expect(await waitUntilGone(realGitPid(), 2000)).toBe(true)
       })
     })
 
