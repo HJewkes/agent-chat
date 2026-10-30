@@ -137,6 +137,39 @@ describe('finding a primary checkout', () => {
     expect(primaryCheckoutOf(linked)).toBeUndefined()
     expect(primaryCheckoutOf(tmp('rv-plain-'))).toBeUndefined()
   })
+
+  it('ignores an empty .git directory above cwd (CC-1685)', () => {
+    const outer = tmp('rv-empty-git-')
+    fs.mkdirSync(path.join(outer, '.git'))
+    const plain = path.join(outer, 'plain')
+    fs.mkdirSync(plain)
+
+    expect(primaryCheckoutOf(plain)).toBeUndefined()
+  })
+
+  it('keeps walking past an empty .git directory to the real repo above it (CC-1685)', () => {
+    const repo = makeRepo()
+    const inner = path.join(repo, 'inner')
+    fs.mkdirSync(path.join(inner, '.git'), { recursive: true })
+
+    expect(primaryCheckoutOf(inner)).toBe(repo)
+  })
+
+  it('counts a .git file only when it starts with gitdir: (CC-1685)', () => {
+    const repo = makeRepo()
+    const pointer = path.join(repo, 'linked')
+    fs.mkdirSync(pointer)
+    fs.writeFileSync(path.join(pointer, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n')
+    const junk = tmp('rv-junkfile-')
+    fs.writeFileSync(path.join(junk, '.git'), 'not a pointer\n')
+    const nested = path.join(repo, 'nested')
+    fs.mkdirSync(nested)
+    fs.writeFileSync(path.join(nested, '.git'), 'garbage\n')
+
+    expect(primaryCheckoutOf(pointer)).toBeUndefined()
+    expect(primaryCheckoutOf(junk)).toBeUndefined()
+    expect(primaryCheckoutOf(nested)).toBe(repo)
+  })
 })
 
 describe.each(['reviewer', 'bd-reviewer', 'rv-readonly'])('a %s spawned in a primary checkout', profile => {

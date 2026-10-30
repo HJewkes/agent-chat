@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { gitMarkerAt } from '../git-marker.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, AgentLifecycle, ServerMessage } from '../protocol.js'
 import { findTranscript } from '../agents/transcript.js'
@@ -196,7 +197,7 @@ const notARepo = (error: unknown, cwd: string): boolean =>
 
 function insideRepo(cwd: string): boolean {
   for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
-    if (fs.existsSync(path.join(dir, '.git'))) return true
+    if (gitMarkerAt(dir) !== undefined) return true
     if (path.dirname(dir) === dir) return false
   }
 }
