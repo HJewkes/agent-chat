@@ -1779,15 +1779,21 @@ Therefore:
   resource's used percent against its limit) and `holding` (the reason a
   headless spawn would be refused now, or null). `agent_resume` is not guarded
   yet.
-- **Seat machine stop (CC-431, CC-492, CC-1670):** every seat stops dispatch
-  while free memory is below `machineStopMemoryFreePercent` (default 20), swap
-  used is above `machineStopSwapUsedPercent` (default 60), the memory pressure
-  level is at or above `machineStopPressureLevel` (default 2), or CPU PSI "some
-  avg60" is at or above `machineStopCpuPressurePercent` (default 40). Load5
-  above `machineStopLoad5` (default 28) stays as a backstop for hosts without
-  PSI; `null` turns it off, as it does the swap and CPU pressure triggers. A
-  reading that fails never stops a seat. `agent-chat machine status` prints
-  each reading.
+- **Seat machine stop (CC-431, CC-492, CC-1670, CC-1265):** every seat stops
+  dispatch while free memory is below `machineStopMemoryFreePercent` (default
+  20), swap used is above `machineStopSwapUsedPercent` (default 60), the memory
+  pressure level is at or above `machineStopPressureLevel` (default 2), CPU PSI
+  "some avg60" is at or above `machineStopCpuPressurePercent` (default 40), or
+  `/tmp` inodes reach `machineStopTmpInodesPercent` (default 80), `/tmp` bytes
+  `machineStopTmpBytesPercent` (default 95) or disk-root bytes
+  `machineStopDiskBytesPercent` (default 95). These sit above the spawn guard's
+  headroom limits, so a filling `/tmp` first refuses spawns and only later stops
+  seats. Load5 above `machineStopLoad5` (default 28) stays as a backstop for
+  hosts without PSI. `null` turns off load5, swap, CPU pressure or any headroom
+  trigger. A reading that fails never stops a seat. `agent-chat machine status`
+  prints each reading. The `stop` line of `seats status` names what holds
+  dispatch: the machine stop reason, else `spawns refused: <reason>` when the
+  spawn guard refuses on memory, `/tmp`, disk or CPU, else the budget stop.
 - **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
   worker (any profile without `"role": "coordinator"`) is refused. The cap
   counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped

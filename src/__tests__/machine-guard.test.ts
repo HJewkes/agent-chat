@@ -448,6 +448,16 @@ describe('the headroom gate (CC-1265)', () => {
     expect(statusAt(70).headroom.tmp_inodes).toEqual({ usedPercent: 70, limit: 70 })
     expect(statusAt(69).holding).toBeNull()
   })
+
+  it('does not report the headless cap as holding: it is a count, not a machine resource', () => {
+    const status = machineStatus(
+      { liveHeadless: 10, memory: free(60), cpuPressure: null, headroom: CLEAR_HEADROOM, swap: swapOf(0) },
+      LIMITS,
+      { inUse: 0, total: 4 },
+    )
+
+    expect(status.holding).toBeNull()
+  })
 })
 
 describe('the sysctl readers under a PATH without /usr/sbin (CC-498)', () => {

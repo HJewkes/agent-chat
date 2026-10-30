@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { CLEAR_HEADROOM, STOP_HEADROOM_LIMITS } from './helpers/headroom.js'
+import type { HeadroomResource } from '../agents/host-headroom.js'
 import { RUN_CAP_MS, dayStart } from '../agents/burndown/budget-gate.js'
 import {
   RESTART_WINDOW_MAX_MS,
@@ -376,6 +378,7 @@ describe('machineStop swap and pressure level (CC-492)', () => {
     swapUsedPercent: 60,
     pressureLevel: 2,
     cpuPressurePercent: 40,
+    headroom: STOP_HEADROOM_LIMITS,
   }
   const calm: MachineStopReadings = {
     memoryFreePercent: 60,
@@ -383,6 +386,7 @@ describe('machineStop swap and pressure level (CC-492)', () => {
     swapUsedPercent: 10,
     pressureLevel: 1,
     cpuPressurePercent: 2.4,
+    headroom: CLEAR_HEADROOM,
   }
 
   it('swap at 60.1 percent with memory and load fine stops the seat and names swap', () => {
@@ -418,6 +422,7 @@ describe('machineStop on CPU pressure, with load5 as a backstop (CC-1670)', () =
     swapUsedPercent: 60,
     pressureLevel: 2,
     cpuPressurePercent: 40,
+    headroom: STOP_HEADROOM_LIMITS,
   }
   const calm: MachineStopReadings = {
     memoryFreePercent: 80,
@@ -425,6 +430,7 @@ describe('machineStop on CPU pressure, with load5 as a backstop (CC-1670)', () =
     swapUsedPercent: 0,
     pressureLevel: 1,
     cpuPressurePercent: 2.4,
+    headroom: CLEAR_HEADROOM,
   }
 
   it('CPU pressure at the limit stops the seat and names the reading', () => {
@@ -455,5 +461,70 @@ describe('machineStop on CPU pressure, with load5 as a backstop (CC-1670)', () =
 
   it('a null load5 limit turns the backstop off', () => {
     expect(machineStop({ ...calm, load5: 200 }, { ...limits, load5: null })).toBeNull()
+  })
+})
+
+describe('machineStop on /tmp and disk headroom (CC-1265)', () => {
+  const limits: MachineStopLimits = {
+    memoryFreePercent: 20,
+    load5: 48,
+    swapUsedPercent: 60,
+    pressureLevel: 2,
+    cpuPressurePercent: 40,
+    headroom: STOP_HEADROOM_LIMITS,
+  }
+  const calm: MachineStopReadings = {
+    memoryFreePercent: 80,
+    load5: 4,
+    swapUsedPercent: 0,
+    pressureLevel: 1,
+    cpuPressurePercent: 2,
+    headroom: CLEAR_HEADROOM,
+  }
+  const at = (resource: HeadroomResource, usedPercent: number) =>
+    machineStop({ ...calm, headroom: { ...CLEAR_HEADROOM, [resource]: { usedPercent } } }, limits)
+
+  it.each([
+    ['tmp_inodes', 80, '/tmp inodes 80% used (limit 80%, config machineStopTmpInodesPercent)'],
+    ['tmp_bytes', 95, '/tmp bytes 95% used (limit 95%, config machineStopTmpBytesPercent)'],
+    ['disk_bytes', 95, '95% used (limit 95%, config machineStopDiskBytesPercent)'],
+  ] as const)('stops every seat with %s at its stop limit %i', (resource, limit, text) => {
+    expect(at(resource, limit)?.reason).toContain(`machine under pressure: `)
+    expect(at(resource, limit)?.reason).toContain(text)
+  })
+
+  it.each([
+    ['tmp_inodes', 79],
+    ['tmp_bytes', 94],
+    ['disk_bytes', 94],
+  ] as const)('does not stop with %s one below its stop limit, at %i', (resource, usedPercent) => {
+    expect(at(resource, usedPercent)).toBeNull()
+  })
+
+  it('does not stop at the spawn limit: 70% /tmp inodes refuses spawns but leaves seats running', () => {
+    expect(at('tmp_inodes', 70)).toBeNull()
+  })
+
+  it('never stops on a failed reading or a null limit', () => {
+    const failed = machineStop(
+      { ...calm, headroom: { ...CLEAR_HEADROOM, tmp_inodes: { error: 'statfs /tmp: boom' } } },
+      limits,
+    )
+    const disabled = machineStop(
+      { ...calm, headroom: { ...CLEAR_HEADROOM, tmp_inodes: { usedPercent: 99 } } },
+      {
+        ...limits,
+        headroom: {
+          ...STOP_HEADROOM_LIMITS,
+          tmp_inodes: { percent: null, configKey: 'machineStopTmpInodesPercent' },
+        },
+      },
+    )
+
+    expect([failed, disabled]).toEqual([null, null])
+  })
+
+  it('carries the headroom readings in the stop', () => {
+    expect(at('tmp_inodes', 82)?.headroom.tmp_inodes).toEqual({ usedPercent: 82 })
   })
 })
