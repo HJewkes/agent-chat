@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { isRunning, killQuietly, waitUntilGone } from './helpers/process-gone.js'
-import { createRunRoot, runBase, sweepDeadRuns } from './helpers/run-root.js'
+import { createRunRoot, hasGitAbove, runBase, sweepDeadRuns } from './helpers/run-root.js'
 
 let base: string
 const leftover: number[] = []
@@ -132,5 +132,55 @@ describe('where the run root goes', () => {
     expect(runBase('/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T', '/h/zq7')).toBe(
       '/h/zq7/.cache/ac-test',
     )
+  })
+
+  it('leaves a TMPDIR that sits in a checkout for the short dir on disk', () => {
+    const inCheckout = (dir: string) => dir === '/var/tmp/short'
+
+    expect(runBase('/var/tmp/short', '/h/zq7', inCheckout)).toBe('/h/zq7/.cache/ac-test')
+  })
+
+  it('keeps the short TMPDIR when every candidate sits in a checkout', () => {
+    expect(runBase('/var/tmp/short', '/h/zq7', () => true)).toBe('/var/tmp/short')
+  })
+
+  it('gives this run a temp dir with no .git above it, so "outside any repository" specs hold', () => {
+    expect(hasGitAbove(os.tmpdir())).toBe(false)
+  })
+})
+
+describe('finding a .git above a directory', () => {
+  it('finds a .git directory at the path and above it, even an empty one git would not accept', () => {
+    fs.mkdirSync(path.join(base, '.git'))
+    const nested = path.join(base, 'a', 'b')
+    fs.mkdirSync(nested, { recursive: true })
+
+    expect(hasGitAbove(base)).toBe(true)
+    expect(hasGitAbove(nested)).toBe(true)
+  })
+
+  it('finds a linked worktree, whose .git is a file', () => {
+    fs.writeFileSync(path.join(base, '.git'), 'gitdir: elsewhere\n')
+
+    expect(hasGitAbove(base)).toBe(true)
+  })
+
+  it('reads a path that does not exist yet through its nearest ancestor', () => {
+    fs.mkdirSync(path.join(base, '.git'))
+
+    expect(hasGitAbove(path.join(base, 'not', 'made', 'yet'))).toBe(true)
+  })
+
+  it('follows a symlink to the checkout it points into', () => {
+    const repo = path.join(base, 'repo')
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true })
+    const link = path.join(base, 'link')
+    fs.symlinkSync(repo, link)
+
+    expect(hasGitAbove(link)).toBe(true)
+  })
+
+  it('finds nothing in a plain directory', () => {
+    expect(hasGitAbove(base)).toBe(false)
   })
 })

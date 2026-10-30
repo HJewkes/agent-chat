@@ -399,7 +399,8 @@ describe('the 6,000-character cap', () => {
   })
 
   it('cuts the log section before the newest five messages, never the queue', async () => {
-    const bigQueue = `${NEXT}\n${'- in flight row\n'.repeat(200)}`
+    // Leaves headroom in the cap: the boot text prints paths, whose length varies with the run root.
+    const bigQueue = `${NEXT}\n${'- in flight row\n'.repeat(180)}`
     write(`queues/${SEAT}.md`, `${bigQueue}\n`)
     writeLog(`## State at teleport 1\n${'state line\n'.repeat(140)}`)
     sendMessages(10, 240)

@@ -39,7 +39,7 @@ afterEach(() => {
 })
 
 function tmpdir(): string {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-integrity-hook-')))
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-integrity-')))
   dirs.push(dir)
   return dir
 }
