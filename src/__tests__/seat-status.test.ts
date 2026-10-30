@@ -33,6 +33,7 @@ import {
   type MemoryReading,
   type SwapReading,
 } from '../agents/machine-guard.js'
+import { CLEAR_HEADROOM, SPAWN_HEADROOM_LIMITS } from './helpers/headroom.js'
 import { machineStop } from '../agents/seats/stops.js'
 import { readPoolPicks } from '../agents/seats/pool-pick-log.js'
 
@@ -244,8 +245,13 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
       }),
     machine: agents =>
       machineStatus(
-        { liveHeadless: countLiveHeadless(agents), memory, cpuPressure: cpu, swap },
-        { headlessAgents: 10, memoryFreePercent: 15, cpuPressurePercent: 40 },
+        { liveHeadless: countLiveHeadless(agents), memory, cpuPressure: cpu, headroom: CLEAR_HEADROOM, swap },
+        {
+          headlessAgents: 10,
+          memoryFreePercent: 15,
+          cpuPressurePercent: 40,
+          headroom: SPAWN_HEADROOM_LIMITS,
+        },
         { inUse: 1, total: 4 },
       ),
     machineStop: () =>

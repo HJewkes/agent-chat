@@ -4,10 +4,14 @@ import { DEFAULT_SLOTS } from './agents/semaphore.js'
 import { configPath } from './paths.js'
 import {
   DEFAULT_MACHINE_CPU_PRESSURE_PERCENT,
+  DEFAULT_MACHINE_DISK_BYTES_PERCENT,
   DEFAULT_MACHINE_HEADLESS_AGENTS,
   DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
+  DEFAULT_MACHINE_TMP_BYTES_PERCENT,
+  DEFAULT_MACHINE_TMP_INODES_PERCENT,
   type MachineLimits,
 } from './agents/machine-guard.js'
+import type { HeadroomLimits } from './agents/host-headroom.js'
 import {
   DEFAULT_MACHINE_STOP_CPU_PRESSURE_PERCENT,
   DEFAULT_MACHINE_STOP_LOAD5,
@@ -58,6 +62,9 @@ export interface AgentChatConfig {
   machineMemoryFreePercent?: unknown
   machineCpuPressurePercent?: unknown
   machineStopCpuPressurePercent?: unknown
+  machineTmpInodesPercent?: unknown
+  machineTmpBytesPercent?: unknown
+  machineDiskBytesPercent?: unknown
   machineStopMemoryFreePercent?: unknown
   machineStopLoad5?: unknown
   machineStopSwapUsedPercent?: unknown
@@ -462,6 +469,32 @@ export function resolveMachineLimits(): MachineLimits {
       'machineCpuPressurePercent',
       readConfig().machineCpuPressurePercent,
       DEFAULT_MACHINE_CPU_PRESSURE_PERCENT,
+    ),
+    headroom: resolveSpawnHeadroomLimits(readConfig()),
+  }
+}
+
+/** CC-1265: the spawn gate's /tmp and disk-root used-percent limits; null in config.json disables one. */
+function resolveSpawnHeadroomLimits(config: AgentChatConfig): HeadroomLimits {
+  const limit = (configKey: string, value: unknown, fallback: number) => ({
+    percent: percentOrNullFrom(configKey, value, fallback),
+    configKey,
+  })
+  return {
+    tmp_inodes: limit(
+      'machineTmpInodesPercent',
+      config.machineTmpInodesPercent,
+      DEFAULT_MACHINE_TMP_INODES_PERCENT,
+    ),
+    tmp_bytes: limit(
+      'machineTmpBytesPercent',
+      config.machineTmpBytesPercent,
+      DEFAULT_MACHINE_TMP_BYTES_PERCENT,
+    ),
+    disk_bytes: limit(
+      'machineDiskBytesPercent',
+      config.machineDiskBytesPercent,
+      DEFAULT_MACHINE_DISK_BYTES_PERCENT,
     ),
   }
 }

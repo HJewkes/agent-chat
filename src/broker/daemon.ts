@@ -19,6 +19,7 @@ import {
   resolveAccountRotation,
 } from '../config.js'
 import { readCpuPressure, readMemoryFree } from '../agents/machine-guard.js'
+import { readHostHeadroom } from '../agents/host-headroom.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
@@ -350,6 +351,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
       machineGuard: {
         readMemoryFree: () => readMemoryFree(),
         readCpuPressure: () => readCpuPressure(),
+        readHeadroom: () => readHostHeadroom(),
         limits: resolveMachineLimits,
       },
       repoVisibility: repoVisibilityReader(),

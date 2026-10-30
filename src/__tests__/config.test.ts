@@ -26,6 +26,7 @@ import {
   retireThresholdK,
 } from '../config.js'
 import { newAgentSlots } from '../broker/daemon.js'
+import { SPAWN_HEADROOM_LIMITS } from './helpers/headroom.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
 import { OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -177,6 +178,7 @@ describe('machine guard limits (CC-406)', () => {
       headlessAgents: 10,
       memoryFreePercent: 15,
       cpuPressurePercent: 40,
+      headroom: SPAWN_HEADROOM_LIMITS,
     })
     expect(resolveFullSuiteSlots()).toBe(4)
   })
@@ -188,6 +190,7 @@ describe('machine guard limits (CC-406)', () => {
       headlessAgents: 6,
       memoryFreePercent: 20,
       cpuPressurePercent: 40,
+      headroom: SPAWN_HEADROOM_LIMITS,
     })
     expect(resolveFullSuiteSlots()).toBe(2)
   })
@@ -210,6 +213,26 @@ describe('machine guard limits (CC-406)', () => {
     writeConfigJson({ machineCpuPressurePercent: value })
 
     expect(resolveMachineLimits().cpuPressurePercent).toBe(40)
+  })
+
+  it('reads the three headroom keys, and null disables one (CC-1265)', () => {
+    writeConfigJson({
+      machineTmpInodesPercent: 60,
+      machineTmpBytesPercent: null,
+      machineDiskBytesPercent: 95,
+    })
+
+    expect(resolveMachineLimits().headroom).toEqual({
+      tmp_inodes: { percent: 60, configKey: 'machineTmpInodesPercent' },
+      tmp_bytes: { percent: null, configKey: 'machineTmpBytesPercent' },
+      disk_bytes: { percent: 95, configKey: 'machineDiskBytesPercent' },
+    })
+  })
+
+  it.each([0, 101, '70'])('falls back to the default when machineTmpInodesPercent is %j', value => {
+    writeConfigJson({ machineTmpInodesPercent: value })
+
+    expect(resolveMachineLimits().headroom.tmp_inodes.percent).toBe(70)
   })
 })
 
