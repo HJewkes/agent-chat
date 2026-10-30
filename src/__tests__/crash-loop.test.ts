@@ -60,6 +60,7 @@ describe('who may relaunch a marked identity', () => {
     [{ cause: 'background-resume' }],
     [{ forChild: 'c' }],
     [{ launchedBy: 'shepherd' as const }],
+    [{ launchedBy: 'autoresearch' as const }],
     [{ source: 'watchdog' as const }],
     [{ source: 'shepherd' as const }],
     [{ source: 'burndown' as const }],
