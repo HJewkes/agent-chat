@@ -122,22 +122,22 @@ options go to `codex app-server`.
 `AGENT_CHAT_LIVE=1 node scripts/codex-listen-live.mjs` runs the real `codex` binary under
 `agent-chat codex run`, against a mock Responses server, with a scratch HOME, `CODEX_HOME`
 and `AGENT_CHAT_HOME`, and with hooks trusted only in the scratch home. Run `npm run build`
-first. It exits non-zero if an assertion fails.
+first. It exits non-zero if an assertion fails. The probe names every run, since `codex run`
+requires `--name` (CC-1684). The table is the 5/5 run of 2026-10-30.
 
-| Assertion      | Pass means                                                                                                | Basement, codex-cli 0.162.1                  |
-| -------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Idle wake      | Within 10 s the marker reaches the model under the peer header, with a `UserMessage` in the rollout       | PASS, about 4.7 s                            |
-| Mid-turn steer | The marker is in the request after the tool output; `sleep 20` exits 0; one turn ran                      | PASS                                         |
-| No duplicate   | With the S3 hooks on, the marker is once in model input, as user; the hook's developer notice has no body | PASS                                         |
-| Spool key      | Under the npm node wrapper, the supervisor finds `codex-hosts/<native pid>` through the real parent chain | PASS                                         |
-| Failure path   | With the app-server killed, records stay in the spool and the supervisor exits non-zero                   | **FAIL**: exit 137, but the spool is deleted |
+| Assertion      | Pass means                                                                                                                                                              | Basement, codex-cli 0.162.1                                               |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Idle wake      | Within 10 s the marker reaches the model under the peer header, with a `UserMessage` in the rollout                                                                     | PASS, about 4.7 s                                                         |
+| Mid-turn steer | The marker is in the request after the tool output; `sleep 20` exits 0; one turn ran                                                                                    | PASS                                                                      |
+| No duplicate   | With the S3 hooks on, the marker is once in model input, as user; the hook's developer notice has no body                                                               | PASS                                                                      |
+| Spool key      | Under the npm node wrapper, the supervisor finds `codex-hosts/<native pid>` through the real parent chain                                                               | PASS                                                                      |
+| Failure path   | With the app-server killed, the supervisor exits non-zero, the pid dir goes, records move to `codex-pending/<name>`, and the next run under the name delivers each once | PASS (CC-1683, ac#1315): exit 137, 2 records kept, 1 copy in the next run |
 
 Findings from the run:
 
-- **Records are lost when the app-server dies.** The supervisor returns its claims to the
-  spool and logs that it did, but the MCP server's exit handler then removes
-  `codex-hosts/<pid>`, so they are gone. Whether a resumed supervisor could recover them
-  from there is UNVERIFIED: it has a new pid.
+- **Records survive the app-server dying (CC-1683).** The first run of this probe failed
+  here: the MCP server's exit handler removed `codex-hosts/<pid>` with the returned records
+  in it. They now move to `codex-pending/<name>` first.
 - **The first message took about 4.7 s.** The spool dir does not exist until the first
   record, so the likely cause is the 5 s rescan. That cause is UNVERIFIED.
 - **Hook trust is separate under `app-server`.** `--dangerously-bypass-hook-trust` is not
