@@ -27,6 +27,7 @@ import {
   retireThresholdK,
 } from '../config.js'
 import { newAgentSlots } from '../broker/daemon.js'
+import { SPAWN_HEADROOM_LIMITS, STOP_HEADROOM_LIMITS } from './helpers/headroom.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
 import { OFF_BROKER, writeLaunchFiles } from '../agents/launch-files.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -178,6 +179,7 @@ describe('machine guard limits (CC-406)', () => {
       headlessAgents: 10,
       memoryFreePercent: 15,
       cpuPressurePercent: 40,
+      headroom: SPAWN_HEADROOM_LIMITS,
     })
     expect(resolveFullSuiteSlots()).toBe(4)
   })
@@ -189,6 +191,7 @@ describe('machine guard limits (CC-406)', () => {
       headlessAgents: 6,
       memoryFreePercent: 20,
       cpuPressurePercent: 40,
+      headroom: SPAWN_HEADROOM_LIMITS,
     })
     expect(resolveFullSuiteSlots()).toBe(2)
   })
@@ -212,6 +215,26 @@ describe('machine guard limits (CC-406)', () => {
 
     expect(resolveMachineLimits().cpuPressurePercent).toBe(40)
   })
+
+  it('reads the three headroom keys, and null disables one (CC-1265)', () => {
+    writeConfigJson({
+      machineTmpInodesPercent: 60,
+      machineTmpBytesPercent: null,
+      machineDiskBytesPercent: 95,
+    })
+
+    expect(resolveMachineLimits().headroom).toEqual({
+      tmp_inodes: { percent: 60, configKey: 'machineTmpInodesPercent' },
+      tmp_bytes: { percent: null, configKey: 'machineTmpBytesPercent' },
+      disk_bytes: { percent: 95, configKey: 'machineDiskBytesPercent' },
+    })
+  })
+
+  it.each([0, 101, '70'])('falls back to the default when machineTmpInodesPercent is %j', value => {
+    writeConfigJson({ machineTmpInodesPercent: value })
+
+    expect(resolveMachineLimits().headroom.tmp_inodes.percent).toBe(70)
+  })
 })
 
 describe('machine stop limits (CC-1670)', () => {
@@ -229,6 +252,32 @@ describe('machine stop limits (CC-1670)', () => {
     writeConfigJson({ machineStopCpuPressurePercent: null })
 
     expect(resolveMachineStopLimits().cpuPressurePercent).toBeNull()
+  })
+})
+
+describe('machine stop headroom limits (CC-1265)', () => {
+  it('defaults to 80% /tmp inodes and 95% /tmp and disk bytes', () => {
+    expect(resolveMachineStopLimits().headroom).toEqual(STOP_HEADROOM_LIMITS)
+  })
+
+  it('reads the three stop keys, and null disables one', () => {
+    writeConfigJson({
+      machineStopTmpInodesPercent: 75,
+      machineStopTmpBytesPercent: null,
+      machineStopDiskBytesPercent: 98,
+    })
+
+    expect(resolveMachineStopLimits().headroom).toEqual({
+      tmp_inodes: { percent: 75, configKey: 'machineStopTmpInodesPercent' },
+      tmp_bytes: { percent: null, configKey: 'machineStopTmpBytesPercent' },
+      disk_bytes: { percent: 98, configKey: 'machineStopDiskBytesPercent' },
+    })
+  })
+
+  it.each([0, 101, '80'])('falls back to 80 when machineStopTmpInodesPercent is %j', value => {
+    writeConfigJson({ machineStopTmpInodesPercent: value })
+
+    expect(resolveMachineStopLimits().headroom.tmp_inodes.percent).toBe(80)
   })
 })
 

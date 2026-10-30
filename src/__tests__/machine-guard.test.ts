@@ -15,12 +15,19 @@ import {
   type MemoryReading,
   type SwapReading,
 } from '../agents/machine-guard.js'
+import { CLEAR_HEADROOM, SPAWN_HEADROOM_LIMITS } from './helpers/headroom.js'
+import type { HeadroomReadings, HeadroomResource } from '../agents/host-headroom.js'
 import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
 
 /** CC-406: the machine-wide spawn guard, over mocked memory, swap and roster readings. */
 
 const GIB = 1024 ** 3
-const LIMITS: MachineLimits = { headlessAgents: 10, memoryFreePercent: 15, cpuPressurePercent: 40 }
+const LIMITS: MachineLimits = {
+  headlessAgents: 10,
+  memoryFreePercent: 15,
+  cpuPressurePercent: 40,
+  headroom: SPAWN_HEADROOM_LIMITS,
+}
 const free = (freePercent: number): MemoryReading => ({ freePercent })
 const swapOf = (usedGib: number, totalGib = 8): SwapReading => ({
   usedBytes: usedGib * GIB,
@@ -29,7 +36,11 @@ const swapOf = (usedGib: number, totalGib = 8): SwapReading => ({
 
 describe('the machine guard decision', () => {
   it('refuses a headless spawn at the headless total, naming the limit and the count', () => {
-    const decision = machineDecision({ liveHeadless: 10, memory: free(60), cpuPressure: null }, LIMITS, true)
+    const decision = machineDecision(
+      { liveHeadless: 10, memory: free(60), cpuPressure: null, headroom: CLEAR_HEADROOM },
+      LIMITS,
+      true,
+    )
 
     expect(decision).toEqual({
       ok: false,
@@ -41,19 +52,33 @@ describe('the machine guard decision', () => {
   })
 
   it('allows a headless spawn one under the total', () => {
-    expect(machineDecision({ liveHeadless: 9, memory: free(60), cpuPressure: null }, LIMITS, true)).toEqual({
+    expect(
+      machineDecision(
+        { liveHeadless: 9, memory: free(60), cpuPressure: null, headroom: CLEAR_HEADROOM },
+        LIMITS,
+        true,
+      ),
+    ).toEqual({
       ok: true,
     })
   })
 
   it('lets a visible spawn through at the headless total', () => {
-    expect(machineDecision({ liveHeadless: 12, memory: free(60), cpuPressure: null }, LIMITS, false)).toEqual(
-      { ok: true },
-    )
+    expect(
+      machineDecision(
+        { liveHeadless: 12, memory: free(60), cpuPressure: null, headroom: CLEAR_HEADROOM },
+        LIMITS,
+        false,
+      ),
+    ).toEqual({ ok: true })
   })
 
   it('refuses any spawn below the memory-free floor, naming the reading, the floor and the key', () => {
-    const decision = machineDecision({ liveHeadless: 0, memory: free(9), cpuPressure: null }, LIMITS, false)
+    const decision = machineDecision(
+      { liveHeadless: 0, memory: free(9), cpuPressure: null, headroom: CLEAR_HEADROOM },
+      LIMITS,
+      false,
+    )
 
     expect(decision.ok ? '' : decision.reason).toContain(
       'memory 9% free (floor 15%, config machineMemoryFreePercent)',
@@ -62,14 +87,20 @@ describe('the machine guard decision', () => {
   })
 
   it('allows a spawn with memory free exactly at the floor', () => {
-    expect(machineDecision({ liveHeadless: 0, memory: free(15), cpuPressure: null }, LIMITS, true)).toEqual({
+    expect(
+      machineDecision(
+        { liveHeadless: 0, memory: free(15), cpuPressure: null, headroom: CLEAR_HEADROOM },
+        LIMITS,
+        true,
+      ),
+    ).toEqual({
       ok: true,
     })
   })
 
   it('fails open on a memory reading that errored', () => {
     const decision = machineDecision(
-      { liveHeadless: 0, memory: { error: 'sysctl failed' }, cpuPressure: null },
+      { liveHeadless: 0, memory: { error: 'sysctl failed' }, cpuPressure: null, headroom: CLEAR_HEADROOM },
       LIMITS,
       true,
     )
@@ -81,7 +112,7 @@ describe('the machine guard decision', () => {
 describe('the machine status block', () => {
   it('reports high swap without flagging it while memory is free', () => {
     const status = machineStatus(
-      { liveHeadless: 3, memory: free(35), cpuPressure: null, swap: swapOf(7) },
+      { liveHeadless: 3, memory: free(35), cpuPressure: null, headroom: CLEAR_HEADROOM, swap: swapOf(7) },
       LIMITS,
       {
         inUse: 1,
@@ -95,12 +126,24 @@ describe('the machine status block', () => {
       cpuPressure: { someAvg60: null, limit: 40, skipped: true },
       swap: { usedPercent: 87.5 },
       fullSuiteSlots: { inUse: 1, total: 4 },
+      headroom: {
+        tmp_inodes: { usedPercent: 13, limit: 70 },
+        tmp_bytes: { usedPercent: 20, limit: 85 },
+        disk_bytes: { usedPercent: 40, limit: 90 },
+      },
+      holding: null,
     })
   })
 
   it('carries each failed reader error and no figure', () => {
     const status = machineStatus(
-      { liveHeadless: 0, memory: { error: 'no level' }, cpuPressure: null, swap: { error: 'no swap' } },
+      {
+        liveHeadless: 0,
+        memory: { error: 'no level' },
+        cpuPressure: null,
+        headroom: CLEAR_HEADROOM,
+        swap: { error: 'no swap' },
+      },
       LIMITS,
       { inUse: 0, total: 4 },
     )
@@ -113,10 +156,14 @@ describe('the machine status block', () => {
 
   it('reports CPU pressure against its limit, and a failed reading with its error (CC-1670)', () => {
     const at = (cpuPressure: CpuPressureReading) =>
-      machineStatus({ liveHeadless: 0, memory: free(60), cpuPressure, swap: swapOf(0) }, LIMITS, {
-        inUse: 0,
-        total: 4,
-      }).cpuPressure
+      machineStatus(
+        { liveHeadless: 0, memory: free(60), cpuPressure, headroom: CLEAR_HEADROOM, swap: swapOf(0) },
+        LIMITS,
+        {
+          inUse: 0,
+          total: 4,
+        },
+      ).cpuPressure
 
     expect([at({ someAvg60: 41.5 }), at({ error: 'no psi' })]).toEqual([
       { someAvg60: 41.5, limit: 40 },
@@ -175,10 +222,16 @@ describe('agent spawn under the machine guard', () => {
   let memory: MemoryReading
   let limits: MachineLimits
   let cpu: CpuPressureReading = null
+  let headroom: HeadroomReadings = CLEAR_HEADROOM
 
   const harness = (): RestartHarness => {
     h = startSupervisor({
-      machineGuard: { readMemoryFree: () => memory, readCpuPressure: () => cpu, limits: () => limits },
+      machineGuard: {
+        readMemoryFree: () => memory,
+        readCpuPressure: () => cpu,
+        readHeadroom: () => headroom,
+        limits: () => limits,
+      },
     })
     return h
   }
@@ -187,11 +240,17 @@ describe('agent spawn under the machine guard', () => {
     h?.close()
     h = undefined
     cpu = null
+    headroom = CLEAR_HEADROOM
   })
 
   it('refuses the spawn that would pass the headless total and logs the refusal', async () => {
     memory = free(60)
-    limits = { headlessAgents: 2, memoryFreePercent: 15, cpuPressurePercent: 40 }
+    limits = {
+      headlessAgents: 2,
+      memoryFreePercent: 15,
+      cpuPressurePercent: 40,
+      headroom: SPAWN_HEADROOM_LIMITS,
+    }
     const sup = harness()
     await sup.spawnAgent('mg-one')
     await sup.spawnAgent('mg-two')
@@ -271,6 +330,134 @@ describe('agent spawn under the machine guard', () => {
     const log = fs.readFileSync(path.join(sup.home, 'broker.log'), 'utf8')
     expect(log).toContain('"event":"machine_guard_reader_failed","reader":"cpu_pressure"')
   })
+
+  it('refuses a spawn with /tmp inodes at 75% and names the config key (CC-1265)', async () => {
+    memory = free(60)
+    headroom = { ...CLEAR_HEADROOM, tmp_inodes: { usedPercent: 75 } }
+    limits = LIMITS
+    const sup = harness()
+
+    const outcome = await sup.spawnAgent('mg-inodes')
+
+    expect(outcome).toEqual({
+      ok: false,
+      code: 'machine_resource_headroom',
+      retryable: true,
+      reason: expect.stringContaining('/tmp inodes 75% used (limit 70%, config machineTmpInodesPercent)'),
+    })
+  })
+
+  it('spawns when a headroom reader fails, and logs the failed resource', async () => {
+    memory = free(60)
+    headroom = { ...CLEAR_HEADROOM, tmp_inodes: { error: 'statfs /tmp: boom' } }
+    limits = LIMITS
+    const sup = harness()
+
+    const outcome = await sup.spawnAgent('mg-inodes-open')
+
+    expect(outcome.ok).toBe(true)
+    const log = fs.readFileSync(path.join(sup.home, 'broker.log'), 'utf8')
+    expect(log).toContain('"event":"machine_guard_reader_failed","reader":"tmp_inodes"')
+  })
+})
+
+describe('the headroom gate (CC-1265)', () => {
+  const decide = (resource: HeadroomResource, usedPercent: number, headless = true) =>
+    machineDecision(
+      {
+        liveHeadless: 0,
+        memory: free(60),
+        cpuPressure: null,
+        headroom: { ...CLEAR_HEADROOM, [resource]: { usedPercent } },
+      },
+      LIMITS,
+      headless,
+    )
+
+  it.each([
+    ['tmp_inodes', 70, '/tmp inodes 70% used (limit 70%, config machineTmpInodesPercent)'],
+    ['tmp_bytes', 85, '/tmp bytes 85% used (limit 85%, config machineTmpBytesPercent)'],
+    ['disk_bytes', 90, '90% used (limit 90%, config machineDiskBytesPercent)'],
+  ] as const)('refuses every spawn with %s at its limit %i', (resource, limit, text) => {
+    expect(decide(resource, limit)).toEqual({
+      ok: false,
+      code: 'machine_resource_headroom',
+      retryable: true,
+      reason: expect.stringContaining(text),
+    })
+  })
+
+  it.each([
+    ['tmp_inodes', 69],
+    ['tmp_bytes', 84],
+    ['disk_bytes', 89],
+  ] as const)('allows a spawn with %s one below its limit, at %i', (resource, usedPercent) => {
+    expect(decide(resource, usedPercent)).toEqual({ ok: true })
+  })
+
+  it('refuses a visible spawn too, as the memory floor does', () => {
+    expect(decide('tmp_inodes', 70, false)).toMatchObject({ ok: false, code: 'machine_resource_headroom' })
+  })
+
+  it('lets a spawn through on a failed reading and on a null limit', () => {
+    const failed = machineDecision(
+      {
+        liveHeadless: 0,
+        memory: free(60),
+        cpuPressure: null,
+        headroom: { ...CLEAR_HEADROOM, tmp_inodes: { error: 'x' } },
+      },
+      LIMITS,
+      true,
+    )
+    const disabled = machineDecision(
+      {
+        liveHeadless: 0,
+        memory: free(60),
+        cpuPressure: null,
+        headroom: { ...CLEAR_HEADROOM, tmp_inodes: { usedPercent: 99 } },
+      },
+      {
+        ...LIMITS,
+        headroom: {
+          ...SPAWN_HEADROOM_LIMITS,
+          tmp_inodes: { percent: null, configKey: 'machineTmpInodesPercent' },
+        },
+      },
+      true,
+    )
+
+    expect([failed, disabled]).toEqual([{ ok: true }, { ok: true }])
+  })
+
+  it('reports the holding resource in the status block at the limit and none one below', () => {
+    const statusAt = (usedPercent: number) =>
+      machineStatus(
+        {
+          liveHeadless: 0,
+          memory: free(60),
+          cpuPressure: null,
+          headroom: { ...CLEAR_HEADROOM, tmp_inodes: { usedPercent } },
+          swap: swapOf(0),
+        },
+        LIMITS,
+        { inUse: 0, total: 4 },
+      )
+
+    expect(statusAt(70).holding).toContain('/tmp inodes 70% used (limit 70%')
+    expect(statusAt(70).headroom.tmp_inodes).toEqual({ usedPercent: 70, limit: 70 })
+    expect(statusAt(69).holding).toBeNull()
+  })
+
+  it('does not report the headless cap as holding: it is a count, not a machine resource', () => {
+    const status = machineStatus(
+      { liveHeadless: 10, memory: free(60), cpuPressure: null, headroom: CLEAR_HEADROOM, swap: swapOf(0) },
+      LIMITS,
+      { inUse: 0, total: 4 },
+    )
+
+    expect(status.holding).toBeNull()
+  })
 })
 
 describe('the sysctl readers under a PATH without /usr/sbin (CC-498)', () => {
@@ -303,7 +490,11 @@ describe('the sysctl readers under a PATH without /usr/sbin (CC-498)', () => {
 
   it('refuses a spawn when the stubbed memorystatus level is below the floor', () => {
     const memory = readMemoryFree('darwin', exec)
-    const decision = machineDecision({ liveHeadless: 0, memory, cpuPressure: null }, LIMITS, true)
+    const decision = machineDecision(
+      { liveHeadless: 0, memory, cpuPressure: null, headroom: CLEAR_HEADROOM },
+      LIMITS,
+      true,
+    )
 
     expect(decision).toMatchObject({
       ok: false,

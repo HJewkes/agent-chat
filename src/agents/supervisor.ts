@@ -75,6 +75,7 @@ import {
   ceilingDriftRefusal,
   ceilingRefusal,
   policySeat,
+  seatRootGap,
   seatRootOf,
   startsSeatRoot,
   type SeatClaim,
@@ -106,6 +107,7 @@ import {
   type MachineLimits,
   type MemoryReading,
 } from './machine-guard.js'
+import type { HeadroomReadings } from './host-headroom.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder, lexicalCwdRefusal } from './spawn-cwd.js'
 import {
   callerHomeFor,
@@ -182,7 +184,16 @@ import {
   type NamePresence,
   type RetireScope,
 } from './isolation/retire-finished.js'
+import type { MergedPr } from './isolation/merged-pr.js'
+import { readPrState } from './isolation/pr-state.js'
 import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
+import {
+  MERGED_RETIRE_EVERY_MS,
+  passPrReads,
+  retireMerged,
+  startMergedRetireSweep,
+  type PrRead,
+} from './isolation/retire-merged.js'
 import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-reviewer-at-report.js'
 import { parkImplementerAtExit, type ImplementerParkPort } from './isolation/park-implementer-at-exit.js'
 import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
@@ -977,6 +988,8 @@ export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'
   checkProcesses?: boolean
   /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
   noFixRoundCheck?: boolean
+  /** CC-1678: a done PR's head, which backs HEAD where a merge deleted the branch on origin. Broker-internal. */
+  prHead?: MergedPr
 }
 
 export interface ResumeRequest {
@@ -1373,6 +1386,7 @@ const reviewerRewriteWarning = (root: string): string =>
 export interface MachineGuardReaders {
   readMemoryFree: () => MemoryReading
   readCpuPressure: () => CpuPressureReading
+  readHeadroom: () => HeadroomReadings
   limits: () => MachineLimits
 }
 
@@ -1407,6 +1421,7 @@ export class Supervisor implements TeleportHost {
   private readonly crashLoop: () => CrashLoopLimits
   private readonly footprint: FootprintSampler
   private stopFootprint: (() => void) | undefined
+  private stopMergedRetire: (() => void) | undefined
   private readonly drainState = new DrainState()
   private readonly settleMs: number
   private readonly attachMs: number
@@ -2026,6 +2041,36 @@ export class Supervisor implements TeleportHost {
     this.stopFootprint = startFootprintSampling(this.footprint, () => footprintTargets(roster), everyMs)
   }
 
+  /** CC-1678: retires exited workers whose PR is done on an unref'd interval; without Shepherd's reads it never runs. */
+  startMergedRetire(everyMs = MERGED_RETIRE_EVERY_MS): void {
+    this.stopMergedRetire?.()
+    const skip = this.shepherdSkip
+    if (skip === undefined) return
+    const reads = passPrReads(readPrState)
+    const pass = (): Promise<void> => this.retireMergedPass(skip, reads())
+    this.stopMergedRetire = startMergedRetireSweep(pass, everyMs)
+  }
+
+  private async retireMergedPass(skip: ShepherdSkipPort, readPr: PrRead): Promise<void> {
+    const treeHold = this.burndownTreeHold
+    const results = await retireMerged({
+      roster: () => this.core.agents.roster(),
+      events: () => this.core.events.agentEvents(),
+      current: agentId => this.core.agents.get(agentId),
+      tracked: agentId => this.live.has(agentId),
+      parking: agentId => this.parking.has(agentId),
+      presence: agent => this.namePresence(agent),
+      lastReport: agent => this.lastReportText(agent),
+      treeHold: tree => treeHold?.(tree),
+      skip,
+      readPr,
+      park: (agentId, prHead) => this.parkById(agentId, { checkProcesses: true, prHead }),
+      retire: agentId => this.retireById(agentId, 'agent-chat', { keepBranch: true }),
+    })
+    for (const { action, ...detail } of results)
+      logEvent(action === 'retired' ? 'merged_retired' : 'merged_retire_kept', detail)
+  }
+
   /** CC-1669 S2: checks for idle print hosts with waiting mail on an unref'd interval. */
   startIdlePrintWake(everyMs = IDLE_PRINT_WAKE_EVERY_MS): void {
     clearInterval(this.idlePrintTimer)
@@ -2265,12 +2310,15 @@ export class Supervisor implements TeleportHost {
     if (this.machineGuard === undefined) return undefined
     const memory = this.machineGuard.readMemoryFree()
     if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
+    const headroom = this.machineGuard.readHeadroom()
+    for (const [reader, reading] of Object.entries(headroom))
+      if ('error' in reading) logEvent('machine_guard_reader_failed', { reader, error: reading.error })
     const cpuPressure = this.machineGuard.readCpuPressure()
     if (cpuPressure !== null && 'error' in cpuPressure)
       logEvent('machine_guard_reader_failed', { reader: 'cpu_pressure', error: cpuPressure.error })
     const liveHeadless = countLiveHeadless(this.core.agents.roster())
     const decision = machineDecision(
-      { liveHeadless, memory, cpuPressure },
+      { liveHeadless, memory, cpuPressure, headroom },
       this.machineGuard.limits(),
       surface === 'headless',
     )
@@ -2715,8 +2763,16 @@ export class Supervisor implements TeleportHost {
     return { profile: { ...profile, warnings: [...(profile.warnings ?? []), warning] }, startsRoot: false }
   }
 
-  /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
-  private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
+  /**
+   * CC-163: what the TARGET profile's role allows, checked once the profile is loaded. CC-1675: a
+   * depth refusal names the seat-policy entry that would have made the requester a root.
+   */
+  private checkRole(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    coordinatorDepth: number,
+    requester: Requester,
+  ): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
       return (
         `profile "${profile.name}" is a worker and cannot run with Remote Control; only a ` +
@@ -2724,8 +2780,9 @@ export class Supervisor implements TeleportHost {
       )
     if (coordinatorDepth > MAX_COORDINATOR_DEPTH)
       return (
-        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}; spawn a ` +
-        'worker profile instead, or ask the human to start this coordinator'
+        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}, and ` +
+        `${seatRootGap(loadSeatPolicy(), req.requestedBy, requester.profile)}, so it is not a root seat; ` +
+        'spawn a worker profile instead, ask the owner to add that entry, or ask the human to start this coordinator'
       )
     return undefined
   }
@@ -2954,7 +3011,7 @@ export class Supervisor implements TeleportHost {
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
       ...(requester.seat === undefined ? {} : { seat: requester.seat }),
     })
-    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth)
+    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth, requester)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
@@ -4384,10 +4441,12 @@ export class Supervisor implements TeleportHost {
     const check = req.noFixRoundCheck === true ? undefined : this.shepherdSkip
     const fixRound = check && (await fixRoundBlocker(check, identity, target))
     if (fixRound) return { ok: false, reason: fixRound }
+    const { prHead } = req
     const parked = await parkWorktree(
       target,
       () => this.parkBlockerFor(identity.agentId, target),
       identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
+      prHead && (() => Promise.resolve([prHead])),
     )
     this.parking.delete(identity.agentId)
     if (!parked.ok) return parked
@@ -6078,6 +6137,7 @@ export class Supervisor implements TeleportHost {
     clearTimeout(this.readmitSweep)
     clearInterval(this.idlePrintTimer)
     this.stopFootprint?.()
+    this.stopMergedRetire?.()
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
       if (entry.attachCeiling) clearTimeout(entry.attachCeiling)

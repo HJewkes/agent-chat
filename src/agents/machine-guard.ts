@@ -15,6 +15,15 @@ import {
   type PsiReading,
   type ReadFile,
 } from './machine-guard-linux.js'
+import {
+  TMP_PATH,
+  describeBreach,
+  diskRootPath,
+  headroomBreaches,
+  type HeadroomLimits,
+  type HeadroomReadings,
+  type HeadroomResource,
+} from './host-headroom.js'
 
 /**
  * CC-406: a machine-wide spawn guard. The semaphore bounds the broker's standing
@@ -32,6 +41,9 @@ import {
 export const DEFAULT_MACHINE_HEADLESS_AGENTS = 10
 export const DEFAULT_MACHINE_MEMORY_FREE_PERCENT = 15
 export const DEFAULT_MACHINE_CPU_PRESSURE_PERCENT = 40
+export const DEFAULT_MACHINE_TMP_INODES_PERCENT = 70
+export const DEFAULT_MACHINE_TMP_BYTES_PERCENT = 85
+export const DEFAULT_MACHINE_DISK_BYTES_PERCENT = 90
 
 export interface MachineLimits {
   headlessAgents: number
@@ -39,6 +51,8 @@ export interface MachineLimits {
   memoryFreePercent: number
   /** CC-1670: refuse at or above this CPU PSI "some avg60"; null disables the check. */
   cpuPressurePercent: number | null
+  /** CC-1265: refuse at or above each resource's used percent; a null percent disables that resource. */
+  headroom: HeadroomLimits
 }
 
 export type MemoryReading = { freePercent: number } | { error: string }
@@ -52,10 +66,12 @@ export interface MachineReadings {
   liveHeadless: number
   memory: MemoryReading
   cpuPressure: CpuPressureReading
+  headroom: HeadroomReadings
 }
 
 /** CC-445: stable causes of a machine-guard refusal; each clears as load drops. */
-export type MachineRefusalCode = 'machine_headless_limit' | 'machine_memory_floor' | 'machine_cpu_pressure'
+export type MachineRefusalCode =
+  'machine_headless_limit' | 'machine_memory_floor' | 'machine_resource_headroom' | 'machine_cpu_pressure'
 
 export type MachineDecision =
   { ok: true } | { ok: false; code: MachineRefusalCode; retryable: true; reason: string }
@@ -101,7 +117,25 @@ export function machineDecision(
         'wait for memory pressure to ease before spawning',
     }
   }
-  return cpuPressureDecision(readings.cpuPressure, limits.cpuPressurePercent)
+  const headroom = headroomDecision(readings.headroom, limits.headroom)
+  return headroom.ok ? cpuPressureDecision(readings.cpuPressure, limits.cpuPressurePercent) : headroom
+}
+
+const pathOf = (resource: HeadroomResource): string =>
+  resource === 'disk_bytes' ? diskRootPath(process.platform) : TMP_PATH
+
+/** CC-1265: a full /tmp or disk breaks every agent while memory reads clear, so each holds every spawn. */
+function headroomDecision(readings: HeadroomReadings, limits: HeadroomLimits): MachineDecision {
+  const [breach] = headroomBreaches(readings, limits)
+  if (breach === undefined) return { ok: true }
+  return {
+    ok: false,
+    code: 'machine_resource_headroom',
+    retryable: true,
+    reason:
+      `machine guard: ${describeBreach(breach)}; ` +
+      `wait for ${pathOf(breach.resource)} to free up before spawning`,
+  }
 }
 
 /** CC-1670: runnable tasks waiting on a CPU, not the load average, say the machine is saturated. */
@@ -198,14 +232,32 @@ export interface MachineStatus {
   /** Reported only; no limit applies. */
   swap: { usedPercent: number | null; error?: string }
   fullSuiteSlots: { inUse: number; total: number }
+  /** CC-1265: each resource's used percent against its spawn limit; null when unread. */
+  headroom: Record<HeadroomResource, { usedPercent: number | null; limit: number | null; error?: string }>
+  /** The machine resource (memory, /tmp, disk, CPU) refusing every spawn now, or null; the headless cap is not one. */
+  holding: string | null
 }
 
 const errorOf = (reading: { error: string } | object): { error?: string } =>
   'error' in reading ? { error: reading.error } : {}
 
+function headroomStatus(readings: HeadroomReadings, limits: HeadroomLimits): MachineStatus['headroom'] {
+  const row = (resource: HeadroomResource) => {
+    const reading = readings[resource]
+    const usedPercent = 'error' in reading ? null : reading.usedPercent
+    return { usedPercent, limit: limits[resource].percent, ...errorOf(reading) }
+  }
+  return { tmp_inodes: row('tmp_inodes'), tmp_bytes: row('tmp_bytes'), disk_bytes: row('disk_bytes') }
+}
+
 function cpuPressureStatus(cpu: CpuPressureReading, limit: number | null): MachineStatus['cpuPressure'] {
   if (cpu === null) return { someAvg60: null, limit, skipped: true }
   return { someAvg60: cpuPressurePercent(cpu), limit, ...errorOf(cpu) }
+}
+
+const holdingReason = (readings: MachineReadings, limits: MachineLimits): string | null => {
+  const decision = machineDecision(readings, limits, false)
+  return decision.ok ? null : decision.reason
 }
 
 export function machineStatus(
@@ -224,6 +276,8 @@ export function machineStatus(
     cpuPressure: cpuPressureStatus(readings.cpuPressure, limits.cpuPressurePercent),
     swap: { usedPercent: swapPercent(swap), ...errorOf(swap) },
     fullSuiteSlots: slots,
+    headroom: headroomStatus(readings.headroom, limits.headroom),
+    holding: holdingReason(readings, limits),
   }
 }
 

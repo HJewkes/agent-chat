@@ -38,6 +38,12 @@ function deps(agents: StatusDeps['agents']): StatusDeps {
       cpuPressure: { someAvg60: null, limit: 40, skipped: true },
       swap: { usedPercent: 10 },
       fullSuiteSlots: { inUse: 0, total: 4 },
+      headroom: {
+        tmp_inodes: { usedPercent: 13, limit: 70 },
+        tmp_bytes: { usedPercent: 20, limit: 85 },
+        disk_bytes: { usedPercent: 40, limit: 90 },
+      },
+      holding: null,
     }),
     machineStop: () => null,
   }

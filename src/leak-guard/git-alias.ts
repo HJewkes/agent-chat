@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import path from 'node:path'
 
 /**
@@ -63,15 +63,42 @@ export const CONFIG_ENV = [
 
 export const ALIAS_TIMEOUT_MS = 1000
 
+// Node's spawnSync honours `detached` (its own process group), though @types/node leaves it out.
+const OWN_GROUP = { detached: true }
+
+/**
+ * Runs git with the hook's timeout. spawnSync's timeout kills only its direct child, so a real git
+ * behind a wrapper script, blocked on a FIFO include, outlived the hook (CC-1673). git runs as the
+ * leader of its own group, and a timeout kills the whole group.
+ */
+export function spawnGitBounded(
+  args: readonly string[],
+  dir: string,
+  env: NodeJS.ProcessEnv,
+): SpawnSyncReturns<string> {
+  const run = spawnSync('git', args, {
+    cwd: dir,
+    env,
+    encoding: 'utf8',
+    timeout: ALIAS_TIMEOUT_MS,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    ...OWN_GROUP,
+  })
+  if (run.pid && (run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') killGroup(run.pid)
+  return run
+}
+
+function killGroup(leader: number): void {
+  try {
+    process.kill(-leader, 'SIGKILL')
+  } catch {
+    // ESRCH: the leader was the group's last member.
+  }
+}
+
 function gitOutput(args: readonly string[], dir: string, env: NodeJS.ProcessEnv): string | undefined {
   try {
-    const run = spawnSync('git', args, {
-      cwd: dir,
-      env,
-      encoding: 'utf8',
-      timeout: ALIAS_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
+    const run = spawnGitBounded(args, dir, env)
     return run.status === 0 ? run.stdout.replace(/\n$/, '') : undefined
   } catch {
     return undefined

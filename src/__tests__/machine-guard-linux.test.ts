@@ -22,12 +22,18 @@ import {
   readSwapUsage,
   type MachineLimits,
 } from '../agents/machine-guard.js'
+import { CLEAR_HEADROOM, SPAWN_HEADROOM_LIMITS } from './helpers/headroom.js'
 
 /** CC-805: the machine guard on Linux, over fixture /proc text injected as the file reader. */
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'proc-linux')
 const fixture = (name: string): string => fs.readFileSync(path.join(FIXTURES, name), 'utf8')
-const LIMITS: MachineLimits = { headlessAgents: 10, memoryFreePercent: 15, cpuPressurePercent: 40 }
+const LIMITS: MachineLimits = {
+  headlessAgents: 10,
+  memoryFreePercent: 15,
+  cpuPressurePercent: 40,
+  headroom: SPAWN_HEADROOM_LIMITS,
+}
 const KIB = 1024
 const never = (): never => {
   throw new Error('exec must not run on linux')
@@ -146,6 +152,7 @@ describe('the readers on linux', () => {
       liveHeadless: 2,
       memory: readMemoryFree('linux', never, proc),
       cpuPressure: null,
+      headroom: CLEAR_HEADROOM,
       swap: readSwapUsage('linux', never, proc),
     }
 
@@ -158,7 +165,9 @@ describe('the readers on linux', () => {
   it('refuse a spawn below the memory floor on low MemAvailable', () => {
     const memory = readMemoryFree('linux', never, procOf({ '/proc/meminfo': 'meminfo-low-available.txt' }))
 
-    expect(machineDecision({ liveHeadless: 0, memory, cpuPressure: null }, LIMITS, true)).toMatchObject({
+    expect(
+      machineDecision({ liveHeadless: 0, memory, cpuPressure: null, headroom: CLEAR_HEADROOM }, LIMITS, true),
+    ).toMatchObject({
       ok: false,
       code: 'machine_memory_floor',
       reason: expect.stringContaining('memory 10% free (floor 15%'),
@@ -175,7 +184,12 @@ describe('CPU pressure on linux (CC-1670)', () => {
     }
   const decide = (avg60: string, headless = true) =>
     machineDecision(
-      { liveHeadless: 0, memory: { freePercent: 80 }, cpuPressure: readCpuPressure('linux', cpuAt(avg60)) },
+      {
+        liveHeadless: 0,
+        memory: { freePercent: 80 },
+        cpuPressure: readCpuPressure('linux', cpuAt(avg60)),
+        headroom: CLEAR_HEADROOM,
+      },
       LIMITS,
       headless,
     )
@@ -205,7 +219,12 @@ describe('CPU pressure on linux (CC-1670)', () => {
 
   it('allows any reading when the limit is null', () => {
     const decision = machineDecision(
-      { liveHeadless: 0, memory: { freePercent: 80 }, cpuPressure: readCpuPressure('linux', cpuAt('99.00')) },
+      {
+        liveHeadless: 0,
+        memory: { freePercent: 80 },
+        cpuPressure: readCpuPressure('linux', cpuAt('99.00')),
+        headroom: CLEAR_HEADROOM,
+      },
       { ...LIMITS, cpuPressurePercent: null },
       true,
     )
@@ -222,7 +241,11 @@ describe('CPU pressure on linux (CC-1670)', () => {
       { error: expect.stringContaining('unparsed /proc/pressure/cpu') },
     ])
     expect(
-      machineDecision({ liveHeadless: 0, memory: { freePercent: 80 }, cpuPressure: missing }, LIMITS, true),
+      machineDecision(
+        { liveHeadless: 0, memory: { freePercent: 80 }, cpuPressure: missing, headroom: CLEAR_HEADROOM },
+        LIMITS,
+        true,
+      ),
     ).toEqual({
       ok: true,
     })

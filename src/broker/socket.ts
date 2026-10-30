@@ -626,6 +626,11 @@ export class SocketServer {
     this.supervisor.startFootprintSampling()
   }
 
+  /** CC-1678: called once the socket is listening; `close` stops it with the supervisor. */
+  startMergedRetire(): void {
+    this.supervisor.startMergedRetire()
+  }
+
   /** `/health` and `/api/lifecycle` readings, absent while the ledger shadow is off. */
   lifecycle(): HttpAppOptions['lifecycle'] {
     const verifier = this.verifier
@@ -2214,6 +2219,29 @@ export class SocketServer {
     })
   }
 
+  private handleInbox(
+    name: string | undefined,
+    msg: Extract<ClientMessage, { t: 'inbox' }>,
+  ): Extract<ServerMessage, { t: 'inbox_result' }> {
+    const result =
+      msg.after !== undefined
+        ? this.inboxAfter(name, msg.after, msg.limit)
+        : { t: 'inbox_result' as const, messages: name ? this.core.events.inboxFor(name, msg.limit) : [] }
+    if (name !== undefined) this.logInboxRead(name, result.messages)
+    return result
+  }
+
+  /** CC-1680: one receipt per read that returned records, so "how long did it wait" is a query. */
+  private logInboxRead(reader: string, messages: DeliveredMessage[]): void {
+    if (messages.length === 0) return
+    const oldest = Math.min(...messages.map(m => m.at))
+    this.core.append({
+      kind: 'inbox_read',
+      actor: reader,
+      meta: { msgIds: messages.map(m => m.msgId).join(','), waitMs: String(Date.now() - oldest) },
+    })
+  }
+
   /** CC-886: oldest-first read of what followed `after`; one extra row detects truncation. */
   private inboxAfter(
     name: string | undefined,
@@ -2321,11 +2349,8 @@ export class SocketServer {
         return this.handleEndorseRequest(conn, msg)
       case 'endorse_approve':
         return this.handleEndorseApprove(conn, msg.msgId, { text: msg.text, to: msg.to })
-      case 'inbox': {
-        const name = core.registry.nameOf(conn)
-        if (msg.after !== undefined) return reply(conn, this.inboxAfter(name, msg.after, msg.limit))
-        return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })
-      }
+      case 'inbox':
+        return reply(conn, this.handleInbox(core.registry.nameOf(conn), msg))
       case 'queue':
         return reply(conn, {
           t: 'queue_result',

@@ -424,7 +424,9 @@ while `machineHeadlessAgents` (default 10) headless agents are live machine-wide
 and any spawn while free memory (`kern.memorystatus_level`) is below
 `machineMemoryFreePercent` (default 15) percent. On Linux it also refuses any
 spawn while CPU pressure (`/proc/pressure/cpu` "some avg60") is at or above
-`machineCpuPressurePercent` (default 40), code `machine_cpu_pressure`. These keys
+`machineCpuPressurePercent` (default 40), code `machine_cpu_pressure`. It refuses
+any spawn, code `machine_resource_headroom`, at `machineTmpInodesPercent` (default 70) of `/tmp` inodes used, `machineTmpBytesPercent` (default 85) of `/tmp` bytes or
+`machineDiskBytesPercent` (default 90) of disk-root bytes. These keys
 live in `~/.agent-chat/config.json`. Swap used is reported by `seats status` but never
 refuses, because macOS keeps swap allocated after memory pressure ends. A reader
 that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.

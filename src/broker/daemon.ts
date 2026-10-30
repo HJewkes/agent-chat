@@ -19,6 +19,7 @@ import {
   resolveAccountRotation,
 } from '../config.js'
 import { readCpuPressure, readMemoryFree } from '../agents/machine-guard.js'
+import { readHostHeadroom } from '../agents/host-headroom.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
@@ -117,6 +118,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   socketServer.startLifecycleVerifier()
   socketServer.startIdlePrintWake()
   if (!isEphemeralHome(home())) socketServer.startFootprintSampling()
+  if (!isEphemeralHome(home())) socketServer.startMergedRetire()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
   const stopOrphanSweep = startOrphanSweep(
@@ -351,6 +353,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
       machineGuard: {
         readMemoryFree: () => readMemoryFree(),
         readCpuPressure: () => readCpuPressure(),
+        readHeadroom: () => readHostHeadroom(),
         limits: resolveMachineLimits,
       },
       predictedCost: {

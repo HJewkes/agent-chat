@@ -30,6 +30,8 @@ export interface DrainDeps {
 export interface Drained {
   blocks: string[]
   msgIds: string[]
+  /** CC-1680: delivery time by msgId, for the records that carry one. */
+  sentAt: Record<string, number>
   /** The claimed files, deleted by `releaseClaims` once the output was written. */
   claimed: string[]
 }
@@ -128,7 +130,7 @@ function claim(dir: string, name: string, fs: DrainFs, pid: number): string | un
 export function drainInbox(dir: string, deps: DrainDeps = {}): Drained {
   const fs = deps.fs ?? nodeFs
   const budget = deps.budget ?? DRAIN_BUDGET
-  const drained: Drained = { blocks: [], msgIds: [], claimed: [] }
+  const drained: Drained = { blocks: [], msgIds: [], sentAt: {}, claimed: [] }
   let used = 0
   try {
     recoverStaleClaims(dir, fs, deps)
@@ -140,7 +142,9 @@ export function drainInbox(dir: string, deps: DrainDeps = {}): Drained {
       used += block.length
       drained.blocks.push(block)
       drained.claimed.push(claimed)
-      if (record.msgId !== undefined) drained.msgIds.push(record.msgId)
+      if (record.msgId === undefined) continue
+      drained.msgIds.push(record.msgId)
+      if (record.at !== undefined) drained.sentAt[record.msgId] = record.at
     }
   } catch {
     // No spool yet, or an unreadable one: nothing to show.

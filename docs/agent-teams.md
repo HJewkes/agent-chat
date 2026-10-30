@@ -1759,7 +1759,13 @@ Therefore:
   `machineCpuPressurePercent` (default 40; `null` turns it off). The load
   average is not a spawn gate: it counts runnable tasks, so a many-core host
   reads a high load while no task waits for a CPU. macOS has no PSI, so the
-  check is skipped there. These keys live in `~/.agent-chat/config.json` and are
+  check is skipped there. CC-1265: it refuses any spawn, with the retryable code
+  `machine_resource_headroom`, at `machineTmpInodesPercent` (default 70) of
+  `/tmp` inodes used, `machineTmpBytesPercent` (default 85) of `/tmp` bytes, or
+  `machineDiskBytesPercent` (default 90) of the disk root's bytes (`/`, and
+  `/System/Volumes/Data` on macOS), read by `statfs` in `host-headroom.ts`. A
+  full `/tmp` breaks every agent while memory reads clear. Each takes `null` to
+  turn it off. These keys live in `~/.agent-chat/config.json` and are
   read per spawn. The refusal names the reading, the limit and the config key.
   Free memory is `sysctl -n kern.memorystatus_level` on macOS and MemAvailable
   from `/proc/meminfo` on Linux. Swap is not a gate:
@@ -1768,18 +1774,26 @@ Therefore:
   never refuses, and the failure is logged as `machine_guard_reader_failed`. A
   broken reader would otherwise stop every seat. `seats status --json` reports
   the readings in its `machine` block: `headlessAgents`, `memoryFree`,
-  `cpuPressure` (`skipped` on macOS), `swap` (used percent, no limit) and the
-  full-suite slots in use (`fullSuiteSlots`, README "Tests"). `agent_resume` is
-  not guarded yet.
-- **Seat machine stop (CC-431, CC-492, CC-1670):** every seat stops dispatch
-  while free memory is below `machineStopMemoryFreePercent` (default 20), swap
-  used is above `machineStopSwapUsedPercent` (default 60), the memory pressure
-  level is at or above `machineStopPressureLevel` (default 2), or CPU PSI "some
-  avg60" is at or above `machineStopCpuPressurePercent` (default 40). Load5
-  above `machineStopLoad5` (default 28) stays as a backstop for hosts without
-  PSI; `null` turns it off, as it does the swap and CPU pressure triggers. A
-  reading that fails never stops a seat. `agent-chat machine status` prints
-  each reading.
+  `cpuPressure` (`skipped` on macOS), `swap` (used percent, no limit), the
+  full-suite slots in use (`fullSuiteSlots`, README "Tests"), `headroom` (each
+  resource's used percent against its limit) and `holding` (the reason a
+  headless spawn would be refused now, or null). `agent_resume` is not guarded
+  yet.
+- **Seat machine stop (CC-431, CC-492, CC-1670, CC-1265):** every seat stops
+  dispatch while free memory is below `machineStopMemoryFreePercent` (default
+  20), swap used is above `machineStopSwapUsedPercent` (default 60), the memory
+  pressure level is at or above `machineStopPressureLevel` (default 2), CPU PSI
+  "some avg60" is at or above `machineStopCpuPressurePercent` (default 40), or
+  `/tmp` inodes reach `machineStopTmpInodesPercent` (default 80), `/tmp` bytes
+  `machineStopTmpBytesPercent` (default 95) or disk-root bytes
+  `machineStopDiskBytesPercent` (default 95). These sit above the spawn guard's
+  headroom limits, so a filling `/tmp` first refuses spawns and only later stops
+  seats. Load5 above `machineStopLoad5` (default 28) stays as a backstop for
+  hosts without PSI. `null` turns off load5, swap, CPU pressure or any headroom
+  trigger. A reading that fails never stops a seat. `agent-chat machine status`
+  prints each reading. The `stop` line of `seats status` names what holds
+  dispatch: the machine stop reason, else `spawns refused: <reason>` when the
+  spawn guard refuses on memory, `/tmp`, disk or CPU, else the budget stop.
 - **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
   worker (any profile without `"role": "coordinator"`) is refused. The cap
   counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped

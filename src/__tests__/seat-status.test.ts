@@ -15,6 +15,8 @@ import { startRun } from '../agents/seats/run-start.js'
 import {
   STATUS_TOP,
   readInbox,
+  renderBrief,
+  renderStatus,
   seatStatus,
   type SeatStatus,
   type StatusDeps,
@@ -33,6 +35,8 @@ import {
   type MemoryReading,
   type SwapReading,
 } from '../agents/machine-guard.js'
+import { CLEAR_HEADROOM, SPAWN_HEADROOM_LIMITS, STOP_HEADROOM_LIMITS } from './helpers/headroom.js'
+import type { HeadroomReadings } from '../agents/host-headroom.js'
 import { machineStop } from '../agents/seats/stops.js'
 import { readPoolPicks } from '../agents/seats/pool-pick-log.js'
 
@@ -185,12 +189,14 @@ const GIB = 1024 ** 3
 let swap: SwapReading
 let memory: MemoryReading
 let cpu: CpuPressureReading
+let spawnHeadroom: HeadroomReadings
 let pressure: {
   memoryFreePercent: number | null
   load5: number | null
   swapUsedPercent: number | null
   pressureLevel: number | null
   cpuPressurePercent: number | null
+  headroom: HeadroomReadings
 }
 
 /** A checkout of its own per agent, so two agents never share one tree. */
@@ -244,8 +250,13 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
       }),
     machine: agents =>
       machineStatus(
-        { liveHeadless: countLiveHeadless(agents), memory, cpuPressure: cpu, swap },
-        { headlessAgents: 10, memoryFreePercent: 15, cpuPressurePercent: 40 },
+        { liveHeadless: countLiveHeadless(agents), memory, cpuPressure: cpu, headroom: spawnHeadroom, swap },
+        {
+          headlessAgents: 10,
+          memoryFreePercent: 15,
+          cpuPressurePercent: 40,
+          headroom: SPAWN_HEADROOM_LIMITS,
+        },
         { inUse: 1, total: 4 },
       ),
     machineStop: () =>
@@ -255,6 +266,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
         swapUsedPercent: 60,
         pressureLevel: 2,
         cpuPressurePercent: 40,
+        headroom: STOP_HEADROOM_LIMITS,
       }),
     ...over,
   }
@@ -270,8 +282,16 @@ const scorerExplodes = (): never => {
 }
 
 beforeEach(() => {
-  pressure = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1, cpuPressurePercent: 1 }
+  pressure = {
+    memoryFreePercent: 60,
+    load5: 2,
+    swapUsedPercent: 10,
+    pressureLevel: 1,
+    cpuPressurePercent: 1,
+    headroom: CLEAR_HEADROOM,
+  }
   cpu = null
+  spawnHeadroom = CLEAR_HEADROOM
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-status-')))
   autonomy = path.join(tmp, 'autonomy')
   activeWork = path.join(tmp, 'active-work')
@@ -1396,10 +1416,10 @@ describe('the machine-wide guard readings', () => {
     const failed = await statusReport(deps(), SEAT, false)
 
     expect(low.lines).toContain(
-      'machine       headless 0/10, memory 9% free/15% floor LOW, swap 25% used, suite slots 1/4',
+      'machine       headless 0/10, memory 9% free/15% floor LOW, swap 25% used, /tmp inodes 13%/70%, /tmp bytes 20%/85%, disk 40%/90%, suite slots 1/4',
     )
     expect(failed.lines).toContain(
-      'machine       headless 0/10, memory unread (no level), swap unread (sysctl failed), suite slots 1/4',
+      'machine       headless 0/10, memory unread (no level), swap unread (sysctl failed), /tmp inodes 13%/70%, /tmp bytes 20%/85%, disk 40%/90%, suite slots 1/4',
     )
   })
 
@@ -1412,10 +1432,10 @@ describe('the machine-wide guard readings', () => {
     const unreadCpu = await statusReport(deps(), SEAT, false)
 
     expect(high.lines).toContain(
-      'machine       headless 0/10, memory 60% free/15% floor, CPU pressure 41.5%/40% HIGH, swap 0% used, suite slots 1/4',
+      'machine       headless 0/10, memory 60% free/15% floor, CPU pressure 41.5%/40% HIGH, swap 0% used, /tmp inodes 13%/70%, /tmp bytes 20%/85%, disk 40%/90%, suite slots 1/4',
     )
     expect(unreadCpu.lines).toContain(
-      'machine       headless 0/10, memory 60% free/15% floor, CPU pressure unread (no psi), swap 0% used, suite slots 1/4',
+      'machine       headless 0/10, memory 60% free/15% floor, CPU pressure unread (no psi), swap 0% used, /tmp inodes 13%/70%, /tmp bytes 20%/85%, disk 40%/90%, suite slots 1/4',
     )
   })
 })
@@ -1436,6 +1456,7 @@ describe('the machine stop (CC-431)', () => {
       swapUsedPercent: 10,
       pressureLevel: 1,
       cpuPressurePercent: 1,
+      headroom: CLEAR_HEADROOM,
       reason: 'machine under pressure: memory 19% free (floor 20%)',
     })
   })
@@ -1481,12 +1502,60 @@ describe('the machine stop (CC-431)', () => {
         swapUsedPercent: 10,
         pressureLevel: 1,
         cpuPressurePercent: 1,
+        headroom: CLEAR_HEADROOM,
       }
       return statusReport(deps(), SEAT, false)
     })()
 
     expect(report.lines).toContain(
       'stop          machine under pressure: memory 5% free (floor 20%), load5 40 (limit 28)',
+    )
+  })
+})
+
+describe('the stop line names what holds dispatch (CC-1265)', () => {
+  const SPAWNS_REFUSED =
+    'spawns refused: machine guard: /tmp inodes 72% used (limit 70%, config machineTmpInodesPercent)'
+  const stopLines = (s: SeatStatus): string[] =>
+    [...renderBrief(s), ...renderStatus(s)].filter(l => l.startsWith('stop '))
+
+  it('names the spawn guard resource when /tmp holds spawns but no seat stop applies', async () => {
+    spawnHeadroom = { ...CLEAR_HEADROOM, tmp_inodes: { usedPercent: 72 } }
+
+    const result = await status()
+
+    expect(result.stop).toBeNull()
+    expect(result.machine.holding).toContain('/tmp inodes 72% used')
+    expect(stopLines(result).map(l => l.replace(/^stop\s+/, ''))).toEqual([
+      expect.stringContaining(SPAWNS_REFUSED),
+      expect.stringContaining(SPAWNS_REFUSED),
+    ])
+  })
+
+  it('shows the seat machine stop before the spawn guard', async () => {
+    spawnHeadroom = { ...CLEAR_HEADROOM, tmp_inodes: { usedPercent: 82 } }
+    pressure = { ...pressure, headroom: { ...CLEAR_HEADROOM, tmp_inodes: { usedPercent: 82 } } }
+
+    const lines = stopLines(await status())
+
+    expect(lines).toEqual([
+      expect.stringContaining('machine under pressure: /tmp inodes 82% used (limit 80%'),
+      expect.stringContaining('machine under pressure: /tmp inodes 82% used (limit 80%'),
+    ])
+  })
+
+  it('names neither with clear headroom, and marks a resource at its limit HOLD on the machine line', async () => {
+    const clear = await status()
+    spawnHeadroom = {
+      ...CLEAR_HEADROOM,
+      tmp_inodes: { usedPercent: 70 },
+      disk_bytes: { error: 'statfs /: boom' },
+    }
+    const held = await statusReport(deps(), SEAT, false)
+
+    expect(stopLines(clear).some(l => l.includes('spawns refused'))).toBe(false)
+    expect(held.lines).toContainEqual(
+      expect.stringContaining('/tmp inodes 70%/70% HOLD, /tmp bytes 20%/85%, disk unread (statfs /: boom)'),
     )
   })
 })
@@ -1519,7 +1588,7 @@ describe('the status verb', () => {
       `budget        pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
       `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
       `pace          ${POOL}: 70 | no pace, the reading has no seven_day reset time`,
-      'machine       headless 2/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
+      'machine       headless 2/10, memory 50% free/15% floor, swap 25% used, /tmp inodes 13%/70%, /tmp bytes 20%/85%, disk 40%/90%, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      AL-1  72.0  alpha  Harden the secret store against injection',
       '              AL-2  51.6  alpha  Add the export feature to the dashboard',
@@ -1586,7 +1655,7 @@ describe('the status verb', () => {
       `budget        pool ${POOL}: seven_day 41%, five_hour 12% (reading 300s old, STALE)`,
       `stop          none; pool ${POOL}: five_hour 12% vs ceiling 70%, seven_day 41% vs line 65% (no seven_day resets_at, flat reserve)`,
       `pace          ${POOL}: 41 | no pace, the reading has no seven_day reset time`,
-      'machine       headless 0/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
+      'machine       headless 0/10, memory 50% free/15% floor, swap 25% used, /tmp inodes 13%/70%, /tmp bytes 20%/85%, disk 40%/90%, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      unavailable: scorer exploded',
     ])

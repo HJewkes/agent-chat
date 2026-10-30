@@ -45,6 +45,16 @@ export interface DeliveryDeps {
   /** Told once each time the cap trips (CC-1545). */
   onWakeCapped?: ((cap: number) => void) | undefined
   drain?: (dir: string) => Drained
+  /** CC-1680: told once per message handed to the thread. */
+  onDelivered?: ((delivery: ThreadDelivery) => void) | undefined
+}
+
+export interface ThreadDelivery {
+  msgId: string
+  threadId: string
+  /** Delivery time minus the message's own; undefined for a record spooled without a time. */
+  latencyMs: number | undefined
+  mode: 'steer' | 'start'
 }
 
 /** Put claimed records back under their own names, so nothing is lost when an RPC fails. */
@@ -106,21 +116,31 @@ export class DeliveryLoop {
     if (drained.blocks.length === 0) return
     const input: CodexUserInput[] = [{ type: 'text', text: [PEER_HEADER, ...drained.blocks].join('\n\n') }]
     try {
-      await this.send(input)
+      const mode = await this.send(input)
       releaseClaims(drained.claimed)
+      this.reportDelivered(drained, mode)
     } catch (error) {
       returnClaims(dir, drained.claimed)
       this.log(`delivery failed, ${drained.claimed.length} record(s) back in the spool: ${String(error)}`)
     }
   }
 
-  private async send(input: CodexUserInput[]): Promise<void> {
+  private reportDelivered(drained: Drained, mode: ThreadDelivery['mode']): void {
+    const at = this.now()
+    for (const msgId of drained.msgIds) {
+      const sentAt = drained.sentAt[msgId]
+      const latencyMs = sentAt === undefined ? undefined : at - sentAt
+      this.deps.onDelivered?.({ msgId, threadId: this.deps.threadId, latencyMs, mode })
+    }
+  }
+
+  private async send(input: CodexUserInput[]): Promise<ThreadDelivery['mode']> {
     const { server, threadId } = this.deps
     const expectedTurnId = this.activeTurn
     if (expectedTurnId !== undefined) {
       try {
         await server.turnSteer({ threadId, expectedTurnId, input })
-        return
+        return 'steer'
       } catch (error) {
         if (!(error instanceof CodexSteerPreconditionError)) throw error
         this.turnCompleted(expectedTurnId)
@@ -130,6 +150,7 @@ export class DeliveryLoop {
     const { turnId } = await server.turnStart({ threadId, input })
     this.wakes.push(this.now())
     this.turnStarted(turnId)
+    return 'start'
   }
 
   /** Over the cap the records wait in the spool, and the next allowed wake carries them all. */
@@ -202,6 +223,7 @@ export interface SuperviseOptions {
   log?: ((line: string) => void) | undefined
   /** Told the Codex pids whose spools the cap is holding (CC-1545). */
   onWakeCapped?: ((hostPids: number[], cap: number) => void) | undefined
+  onDelivered?: ((delivery: ThreadDelivery) => void) | undefined
 }
 
 /** Watch each spool dir once found; a debounced change, or the rescan, kicks a drain. */
@@ -253,6 +275,7 @@ export async function superviseCodex(options: SuperviseOptions): Promise<number>
     wakeCap: options.wakeCap,
     log: options.log,
     onWakeCapped,
+    onDelivered: options.onDelivered,
   })
   const kick = (): void => void loop.kick()
   server.onEvent(event => {
