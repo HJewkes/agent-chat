@@ -174,6 +174,42 @@ describe('pushes to a retired or parked agent', () => {
     expect(pushed(successor).map(m => m.text)).toEqual(['Any news?', 'Go ahead', 'Ready for review'])
   })
 
+  // Catches: a successor the owner put to work in its pane, which no event row records, staying held.
+  it("releases a park teleport's successor once it spawns a worker, and pushes what was held", () => {
+    const successor = teleportInto(AGENT, 'park')
+    const peer = join('peer')
+    send(peer, AGENT, 'Sent while it waited')
+
+    core.append({ kind: 'agent_spawned', actor: AGENT, target: 'worker', body: '' })
+
+    expect(pushed(successor).map(m => m.text)).toEqual(['Sent while it waited'])
+    expect(send(peer, AGENT, 'Status: DONE').results?.[0]?.status).toBe('delivered')
+    expect(pushed(successor).map(m => m.text)).toEqual(['Sent while it waited', 'Status: DONE'])
+  })
+
+  // Catches: the same wake lost for a successor that messages a peer rather than spawning one.
+  it("releases a park teleport's successor once it messages a peer", () => {
+    const successor = teleportInto(AGENT, 'park')
+    const peer = join('peer')
+
+    send(successor, 'peer', 'Can you take a look?')
+
+    expect(send(peer, AGENT, 'Done').results?.[0]?.status).toBe('delivered')
+    expect(pushed(successor).map(m => m.text)).toEqual(['Done'])
+  })
+
+  // Catches: the teleport's own spawn row, or a word to the human, ending the wait on the human.
+  it("keeps a park teleport's successor held after its spawn row and a message to the human", () => {
+    const successor = teleportInto(AGENT, 'park')
+    const peer = join('peer')
+    const self = { actor: AGENT, target: AGENT, body: '' }
+    core.append({ kind: 'agent_spawned', ...self })
+    core.append({ kind: 'message', ...self, target: 'human' })
+
+    expect(send(peer, AGENT, 'Still waiting?').results?.[0]?.status).toBe('held')
+    expect(pushed(successor)).toEqual([])
+  })
+
   // Catches: holding every teleport successor, not only one that parked.
   it('pushes to the successor of a teleport that did not park', () => {
     const successor = teleportInto(AGENT, 'account')
