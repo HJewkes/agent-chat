@@ -116,6 +116,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   listener.serve(socketServer)
   socketServer.startLifecycleVerifier()
   socketServer.startIdlePrintWake()
+  if (!isEphemeralHome(home())) socketServer.startFootprintSampling()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
   const stopOrphanSweep = startOrphanSweep(

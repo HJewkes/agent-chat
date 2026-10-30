@@ -185,6 +185,13 @@ import { parkImplementerAtExit, type ImplementerParkPort } from './isolation/par
 import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
+import {
+  FOOTPRINT_INTERVAL_MS,
+  FootprintSampler,
+  footprintMeta,
+  footprintTargets,
+  startFootprintSampling,
+} from './agent-footprint.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { launchedByBroker, stoppedAt } from './identity.js'
 import { inheritedProfile } from './teleport-config.js'
@@ -1005,6 +1012,8 @@ export interface SupervisorOptions {
   cwdLister?: CwdLister
   semaphore?: Semaphore
   spawnRateBudget?: SpawnRateBudget
+  /** CC-1671: reads each live agent's process tree; only `startFootprintSampling` ticks it. */
+  footprint?: FootprintSampler
   settleMs?: number
   /** CC-95's attach window. Shortened in tests; never shortened in production. */
   attachMs?: number
@@ -1355,6 +1364,8 @@ export class Supervisor implements TeleportHost {
   private readonly launchingSessions = new Map<string, { name: string; since: number }>()
   private readonly semaphore: Semaphore
   private readonly spawnRateBudget: SpawnRateBudget
+  private readonly footprint: FootprintSampler
+  private stopFootprint: (() => void) | undefined
   private readonly drainState = new DrainState()
   private readonly settleMs: number
   private readonly attachMs: number
@@ -1415,6 +1426,7 @@ export class Supervisor implements TeleportHost {
     this.cwdLister = options.cwdLister ?? lsofCwds
     this.semaphore = options.semaphore ?? new Semaphore()
     this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
+    this.footprint = options.footprint ?? new FootprintSampler()
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
     this.attachCeilingMs = options.attachCeilingMs ?? ATTACH_CEILING_MS
@@ -1614,7 +1626,11 @@ export class Supervisor implements TeleportHost {
       actor: agent.name,
       ref: agent.agentId,
       body,
-      meta: { inferred: 'true', ...(liveness.pid === undefined ? {} : { pid: String(liveness.pid) }) },
+      meta: {
+        inferred: 'true',
+        ...(liveness.pid === undefined ? {} : { pid: String(liveness.pid) }),
+        ...footprintMeta(this.footprint.take(agent.agentId)),
+      },
     })
     logEvent('agent_exited', {
       agentId: agent.agentId,
@@ -1682,6 +1698,7 @@ export class Supervisor implements TeleportHost {
         ...(outcome.code === null ? {} : { code: String(outcome.code) }),
         ...(outcome.signal === null ? {} : { signal: outcome.signal }),
         ...(outcome.inferred ? { inferred: 'true' } : {}),
+        ...footprintMeta(this.footprint.take(entry.agentId)),
       },
     })
     logEvent('agent_exited', {
@@ -1740,6 +1757,7 @@ export class Supervisor implements TeleportHost {
         ...(outcome.signal === null ? {} : { signal: outcome.signal }),
         ...(outcome.inferred ? { inferred: 'true' } : {}),
         ...(failed === undefined ? {} : { failed: 'true' }),
+        ...footprintMeta(this.footprint.take(agentId)),
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
@@ -1879,6 +1897,19 @@ export class Supervisor implements TeleportHost {
     })
     logEvent(BACKGROUND_RESUME, { agentId, name, spawner, ok: outcome.ok })
     if (!outcome.ok) this.notifyUnreported(agentId, name, spawner, tail)
+  }
+
+  /** CC-1671 S1: samples each live local agent's process tree on an unref'd interval. Linux reads /proc. */
+  startFootprintSampling(everyMs = FOOTPRINT_INTERVAL_MS): void {
+    this.stopFootprint?.()
+    if (process.platform !== 'linux') return
+    const roster = {
+      agents: () => this.core.agents.roster(),
+      launcherPid,
+      hostPid: (name: string) => this.core.registry.hostPidFor(name),
+      isRemote: (agent: AgentIdentity) => remoteHostOf(agent) !== undefined,
+    }
+    this.stopFootprint = startFootprintSampling(this.footprint, () => footprintTargets(roster), everyMs)
   }
 
   /** CC-1669 S2: checks for idle print hosts with waiting mail on an unref'd interval. */
@@ -5844,6 +5875,7 @@ export class Supervisor implements TeleportHost {
     for (const timer of this.reattached.values()) clearTimeout(timer)
     clearTimeout(this.readmitSweep)
     clearInterval(this.idlePrintTimer)
+    this.stopFootprint?.()
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
       if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
