@@ -1623,7 +1623,9 @@ run `codex app-server` and deliver agent-chat messages to its thread: a steer wh
 new turn when idle; exits with the app-server exit code (CC-1523)
 
 Options:
-  --name <name>      register the session under this name, so peers can address it
+  --name <name>      register the session under this name, so peers can address it and the next run
+                     under it gets what this one left undelivered; a run without a name would lose
+                     that, so one is refused (CC-1684)
   --resume <thread>  resume this Codex thread instead of starting one
   --wake-cap <n>     at most n idle wakes per hour; uncapped by default
   --codex <path>     the codex executable (default: "codex")
