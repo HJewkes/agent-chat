@@ -764,7 +764,7 @@ export type WakeSource = (typeof WAKE_SOURCES)[number]
 export const wakeSource = (value: unknown): WakeSource | undefined =>
   WAKE_SOURCES.find(source => source === value)
 
-export const LAUNCHERS = ['seat-watchdog', 'shepherd'] as const
+export const LAUNCHERS = ['seat-watchdog', 'shepherd', 'autoresearch'] as const
 
 /**
  * CC-1466: the automation that ran a CLI spawn or resume as the human. The row's actor stays the human.

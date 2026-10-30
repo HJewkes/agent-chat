@@ -70,6 +70,12 @@ describe('the --launched-by flag', () => {
     expect(frame).toMatchObject({ t: 'resume', name: 'agent-x', launchedBy: 'shepherd' })
   })
 
+  it('accepts autoresearch as the launcher on a resume frame', async () => {
+    const frame = await cli('resume', 'agent-x', '--message', 'wake', '--launched-by', 'autoresearch')
+
+    expect(frame).toMatchObject({ t: 'resume', name: 'agent-x', launchedBy: 'autoresearch' })
+  })
+
   // Catches: free text accepted, which would let a caller dress a spawn up as any agent's.
   it.each([
     ['spawn', 'agent-x', 'explorer', 'go'],
