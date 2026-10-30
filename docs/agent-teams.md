@@ -1843,11 +1843,36 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   `shadow_errors` count, is the one condition that fails the check.
   `GET /api/lifecycle` and `/health`'s optional `lifecycle` field carry the
   same report to the dashboard and to relay.
-- **Rate:** `SpawnRateBudget` (`agents/spawn-rate.ts`), a spawn budget per
-  requester per window — 5 attempts per 60s by default — mirroring the
-  broadcast budget already in `registry.ts:63-64`. Checked in
-  `Supervisor.preflight`, exempting the human at the CLI for the same reason
-  `checkCwd` does (CC-25, closed 2026-07-30 — this was prose-only until then).
+- **Rate (CC-1671):** `SpawnSlots` (`agents/spawn-admission.ts`) replaced the
+  fixed 5-per-60s budget of CC-25. There is no time window. A requester may have
+  5 local launches in flight, and a slot frees when the agent registers or
+  exits; a launch that does neither is ended at the attach ceiling. The refusal
+  is the retryable `spawn_rate_limit`. The human at the CLI is exempt for the
+  same reason `checkCwd` does. Launches on another host take no slot.
+- **Predicted cost (CC-1671):** just before the slot is taken, a local spawn
+  must clear the machine guard's limits with the profile's p90 added: free
+  memory less the p90 RSS stays at or above `machineMemoryFreePercent`, and CPU
+  PSI plus the p90 cores as a share of all cores stays under
+  `machineCpuPressurePercent`. The p90 of the launches in flight counts too,
+  until each registers or exits. The refusals are the retryable
+  `machine_predicted_memory` and `machine_predicted_cpu`. A cold-start default
+  gates like a measured estimate; a reading that failed never refuses.
+- **Footprint (CC-1671):** the broker samples each live local agent's process
+  tree every 10s (`agents/agent-footprint.ts`, Linux only): CPU seconds, peak
+  RSS, peak child count and, every sixth sample, peak files under its own
+  `ac-*` TMPDIR. Reads are async and bounded (2,000 pids a tick, 512 an agent,
+  10,000 files a count). Each run's footprint is the `footprint` JSON in its
+  `agent_exited` row's meta. An agent that exits before its first sample has
+  none, CPU after the last sample is not counted, and RSS is an upper bound
+  because shared pages count once per process.
+- **Cost estimate (CC-1671):** `agents/agent-cost.ts` reads those exit rows
+  into the median and p90 of each measure per profile and role, over the last
+  50 exits. Fewer than 3 exits of a role falls back to the profile's exits
+  across roles, then to a rough cold-start default per profile; `source` on
+  each estimate says which answered. Failed starts are left out.
+  `agent-chat machine costs` shows what is running and these estimates.
+  TMPDIR files are reported but not gated: a launch's TMPDIR is on the home
+  disk, and the headroom readings expose a percent, not a count to subtract.
 - Every refusal appends `agent_spawn_refused` and returns a `reason` the model
   can act on — the `send_result.reason` pattern (`broker/index.ts:81-82`), which
   exists because a refusal a model cannot understand is a refusal it will retry.

@@ -20,6 +20,8 @@ import {
   encode,
   HUMAN,
   RESERVED_NAMES,
+  type AgentCostEstimate,
+  type AgentCosts,
   type AgentIdentity,
   type ExperimentArm,
   type IsolationName,
@@ -73,6 +75,7 @@ import {
   ceilingDriftRefusal,
   ceilingRefusal,
   policySeat,
+  seatRootGap,
   seatRootOf,
   startsSeatRoot,
   type SeatClaim,
@@ -181,12 +184,36 @@ import {
   type NamePresence,
   type RetireScope,
 } from './isolation/retire-finished.js'
+import type { MergedPr } from './isolation/merged-pr.js'
+import { readPrState } from './isolation/pr-state.js'
 import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
+import {
+  MERGED_RETIRE_EVERY_MS,
+  passPrReads,
+  retireMerged,
+  startMergedRetireSweep,
+  type PrRead,
+} from './isolation/retire-merged.js'
 import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-reviewer-at-report.js'
 import { parkImplementerAtExit, type ImplementerParkPort } from './isolation/park-implementer-at-exit.js'
 import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
-import { SpawnRateBudget } from './spawn-rate.js'
+import {
+  predictedCostDecision,
+  SpawnSlots,
+  type AdmissionDecision,
+  type AdmissionLimits,
+  type AdmissionRefusalCode,
+  type CpuPressure,
+} from './spawn-admission.js'
+import {
+  FOOTPRINT_INTERVAL_MS,
+  FootprintSampler,
+  footprintMeta,
+  footprintTargets,
+  startFootprintSampling,
+} from './agent-footprint.js'
+import { CostTable, exitFootprints } from './agent-cost.js'
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { launchedByBroker, stoppedAt } from './identity.js'
 import { inheritedProfile } from './teleport-config.js'
@@ -227,6 +254,7 @@ import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
 import {
   assignmentMeta,
   assignmentRefusal,
+  fixRoundRoot,
   inferWorkRole,
   spawnProvenance,
   worktreeProvenance,
@@ -829,6 +857,7 @@ function raised(computed: number, recorded: string | undefined): number {
 export type SpawnRefusalCode =
   | 'surface_refused'
   | 'spawn_rate_limit'
+  | AdmissionRefusalCode
   | 'broker_draining'
   | typeof ACCOUNT_EXHAUSTED
   | MachineRefusalCode
@@ -948,6 +977,8 @@ export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'
   checkProcesses?: boolean
   /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
   noFixRoundCheck?: boolean
+  /** CC-1678: a done PR's head, which backs HEAD where a merge deleted the branch on origin. Broker-internal. */
+  prHead?: MergedPr
 }
 
 export interface ResumeRequest {
@@ -1006,7 +1037,12 @@ export interface SupervisorOptions {
   /** CC-334: lists process working directories for parking a detached agent. Injected in tests. */
   cwdLister?: CwdLister
   semaphore?: Semaphore
-  spawnRateBudget?: SpawnRateBudget
+  /** CC-1671 S3: the per-requester burst guard, which any spawn's slot frees at register or exit. */
+  spawnSlots?: SpawnSlots
+  /** CC-1671 S3: absent turns predicted-cost admission off, as in tests that do not exercise it. */
+  predictedCost?: PredictedCostReaders
+  /** CC-1671: reads each live agent's process tree; only `startFootprintSampling` ticks it. */
+  footprint?: FootprintSampler
   settleMs?: number
   /** CC-95's attach window. Shortened in tests; never shortened in production. */
   attachMs?: number
@@ -1341,6 +1377,15 @@ export interface MachineGuardReaders {
   limits: () => MachineLimits
 }
 
+export interface PredictedCostReaders {
+  readMemoryFree: () => MemoryReading
+  totalMemoryKb: () => number
+  /** Absent until a host wires CC-1670's reading; the CPU check is then skipped. */
+  readCpuPressure?: () => CpuPressure
+  cpuCount: () => number
+  limits: () => AdmissionLimits
+}
+
 /** What retire did to an agent's process; the `reaped` meta on its `agent_retired` row. */
 type Reaped =
   'true' | 'not_registered' | 'another_agent' | 'no_host_pid' | 'already_gone' | 'remote_end_requested'
@@ -1358,7 +1403,11 @@ export class Supervisor implements TeleportHost {
   /** CC-1457: session ids with a launch in flight, to the name launching it and when it started. */
   private readonly launchingSessions = new Map<string, { name: string; since: number }>()
   private readonly semaphore: Semaphore
-  private readonly spawnRateBudget: SpawnRateBudget
+  private readonly spawnSlots: SpawnSlots
+  private readonly predictedCost: PredictedCostReaders | undefined
+  private readonly footprint: FootprintSampler
+  private stopFootprint: (() => void) | undefined
+  private stopMergedRetire: (() => void) | undefined
   private readonly drainState = new DrainState()
   private readonly settleMs: number
   private readonly attachMs: number
@@ -1418,7 +1467,9 @@ export class Supervisor implements TeleportHost {
   ) {
     this.cwdLister = options.cwdLister ?? lsofCwds
     this.semaphore = options.semaphore ?? new Semaphore()
-    this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
+    this.spawnSlots = options.spawnSlots ?? new SpawnSlots()
+    this.predictedCost = options.predictedCost
+    this.footprint = options.footprint ?? new FootprintSampler()
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
     this.attachCeilingMs = options.attachCeilingMs ?? ATTACH_CEILING_MS
@@ -1506,6 +1557,8 @@ export class Supervisor implements TeleportHost {
   private onRow(row: { kind: string; ref?: string }): void {
     const agentId = row.ref
     if (agentId === undefined) return
+    if (['agent_attached', 'agent_exited', 'agent_retired'].includes(row.kind))
+      this.spawnSlots.release(agentId)
     if (row.kind === 'agent_attached') this.remoteSpawns.attached(agentId)
     // TP-4341: a reconnect is a surviving agent's first contact with a restarted broker.
     if (row.kind === 'agent_attached') this.readmit(agentId)
@@ -1618,7 +1671,11 @@ export class Supervisor implements TeleportHost {
       actor: agent.name,
       ref: agent.agentId,
       body,
-      meta: { inferred: 'true', ...(liveness.pid === undefined ? {} : { pid: String(liveness.pid) }) },
+      meta: {
+        inferred: 'true',
+        ...(liveness.pid === undefined ? {} : { pid: String(liveness.pid) }),
+        ...footprintMeta(this.footprint.take(agent.agentId)),
+      },
     })
     logEvent('agent_exited', {
       agentId: agent.agentId,
@@ -1686,6 +1743,7 @@ export class Supervisor implements TeleportHost {
         ...(outcome.code === null ? {} : { code: String(outcome.code) }),
         ...(outcome.signal === null ? {} : { signal: outcome.signal }),
         ...(outcome.inferred ? { inferred: 'true' } : {}),
+        ...footprintMeta(this.footprint.take(entry.agentId)),
       },
     })
     logEvent('agent_exited', {
@@ -1744,6 +1802,7 @@ export class Supervisor implements TeleportHost {
         ...(outcome.signal === null ? {} : { signal: outcome.signal }),
         ...(outcome.inferred ? { inferred: 'true' } : {}),
         ...(failed === undefined ? {} : { failed: 'true' }),
+        ...footprintMeta(this.footprint.take(agentId)),
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
@@ -1885,6 +1944,67 @@ export class Supervisor implements TeleportHost {
     if (!outcome.ok) this.notifyUnreported(agentId, name, spawner, tail)
   }
 
+  /** CC-1671 S2: what is running now and what each profile has cost. */
+  agentCosts(): AgentCosts {
+    const running = this.core.agents
+      .roster()
+      .filter(agent => agent.state !== 'exited')
+      .map(agent => ({
+        name: agent.name,
+        profile: agent.profile,
+        role: agent.workRole ?? 'other',
+        ...this.footprint.peek(agent.agentId),
+      }))
+    return { running, estimates: this.costTable().rows() }
+  }
+
+  private costTable(): CostTable {
+    return new CostTable(exitFootprints(this.core.events.agentEvents()))
+  }
+
+  /** CC-1671 S1: samples each live local agent's process tree on an unref'd interval. Linux reads /proc. */
+  startFootprintSampling(everyMs = FOOTPRINT_INTERVAL_MS): void {
+    this.stopFootprint?.()
+    if (process.platform !== 'linux') return
+    const roster = {
+      agents: () => this.core.agents.roster(),
+      launcherPid,
+      hostPid: (name: string) => this.core.registry.hostPidFor(name),
+      isRemote: (agent: AgentIdentity) => remoteHostOf(agent) !== undefined,
+    }
+    this.stopFootprint = startFootprintSampling(this.footprint, () => footprintTargets(roster), everyMs)
+  }
+
+  /** CC-1678: retires exited workers whose PR is done on an unref'd interval; without Shepherd's reads it never runs. */
+  startMergedRetire(everyMs = MERGED_RETIRE_EVERY_MS): void {
+    this.stopMergedRetire?.()
+    const skip = this.shepherdSkip
+    if (skip === undefined) return
+    const reads = passPrReads(readPrState)
+    const pass = (): Promise<void> => this.retireMergedPass(skip, reads())
+    this.stopMergedRetire = startMergedRetireSweep(pass, everyMs)
+  }
+
+  private async retireMergedPass(skip: ShepherdSkipPort, readPr: PrRead): Promise<void> {
+    const treeHold = this.burndownTreeHold
+    const results = await retireMerged({
+      roster: () => this.core.agents.roster(),
+      events: () => this.core.events.agentEvents(),
+      current: agentId => this.core.agents.get(agentId),
+      tracked: agentId => this.live.has(agentId),
+      parking: agentId => this.parking.has(agentId),
+      presence: agent => this.namePresence(agent),
+      lastReport: agent => this.lastReportText(agent),
+      treeHold: tree => treeHold?.(tree),
+      skip,
+      readPr,
+      park: (agentId, prHead) => this.parkById(agentId, { checkProcesses: true, prHead }),
+      retire: agentId => this.retireById(agentId, 'agent-chat', { keepBranch: true }),
+    })
+    for (const { action, ...detail } of results)
+      logEvent(action === 'retired' ? 'merged_retired' : 'merged_retire_kept', detail)
+  }
+
   /** CC-1669 S2: checks for idle print hosts with waiting mail on an unref'd interval. */
   startIdlePrintWake(everyMs = IDLE_PRINT_WAKE_EVERY_MS): void {
     clearInterval(this.idlePrintTimer)
@@ -2006,6 +2126,7 @@ export class Supervisor implements TeleportHost {
           code:
             | 'spawn_rate_limit'
             | MachineRefusalCode
+            | AdmissionRefusalCode
             | SeatBudgetRefusalCode
             | typeof REVIEWER_ACCOUNT_LIMIT
             | typeof ACCOUNT_EXHAUSTED
@@ -2074,14 +2195,47 @@ export class Supervisor implements TeleportHost {
    * Checked right after preflight's cheap gates and first of the stateful ones:
    * the human at the CLI is exempt, same reasoning as checkCwd's exemption — they
    * hold no registry entry to be rate-limited by and reaching the socket already
-   * means being the local user. Retryable (CC-717): the window slides, so the
-   * same spawn succeeds once older attempts age out.
+   * means being the local user. Retryable (CC-717): the same spawn succeeds once
+   * one of the requester's launches registers or exits.
    */
   private rateRefusal(req: SpawnRequest): SpawnOutcome | undefined {
     if (req.requestedBy === HUMAN) return undefined
-    const rate = this.spawnRateBudget.check(req.requestedBy)
+    const rate = this.spawnSlots.check(req.requestedBy)
     if (rate.ok) return undefined
     return this.refuse(req, rate.reason, { code: 'spawn_rate_limit', retryable: true })
+  }
+
+  /** CC-1671 S3: whether this profile's p90, on top of the readings and recent admissions, clears the limits. */
+  private predictedRefusal(
+    readers: PredictedCostReaders,
+    estimate: AgentCostEstimate,
+  ): Extract<AdmissionDecision, { ok: false }> | undefined {
+    const memory = readers.readMemoryFree()
+    const cpuPressure = readers.readCpuPressure?.() ?? null
+    const decision = predictedCostDecision(
+      { memory, totalMemoryKb: readers.totalMemoryKb(), cpuPressure, cpuCount: readers.cpuCount() },
+      estimate,
+      this.spawnSlots.reserved(),
+      readers.limits(),
+    )
+    return decision.ok ? undefined : decision
+  }
+
+  /** CC-1671 S3: the burst guard and the slot are one synchronous step, so concurrent spawns cannot overshoot. */
+  private holdLaunchSlot(req: SpawnRequest, agentId: string, profile: string): SpawnOutcome | undefined {
+    const rateLimited = this.rateRefusal(req)
+    if (rateLimited) return rateLimited
+    const readers = this.predictedCost
+    if (readers === undefined) return void this.spawnSlots.hold(req.requestedBy, agentId)
+    const role = req.workRole ?? inferWorkRole(profile, req.name)
+    const estimate = this.costTable().estimate(profile, role)
+    const predicted = this.predictedRefusal(readers, estimate)
+    if (predicted) {
+      const { code, retryable, reason } = predicted
+      return this.refuse(req, reason, { code, retryable })
+    }
+    const reservation = { rssKb: estimate.rssKb.p90, cpuCores: estimate.cpuCores.p90 }
+    return void this.spawnSlots.hold(req.requestedBy, agentId, reservation)
   }
 
   /** CC-406, CC-1670: refuses at the headless-agent total, below the memory-free floor or under CPU pressure. */
@@ -2208,7 +2362,12 @@ export class Supervisor implements TeleportHost {
     if (this.seatBudget === undefined) return undefined
     let read: SeatSpawnRead
     try {
-      read = this.seatBudget.read({ name: req.name, spawner: req.requestedBy, configDir, now: new Date() })
+      read = this.seatBudget.read({
+        name: req.name,
+        spawner: this.seatSpawner(req),
+        configDir,
+        now: new Date(),
+      })
     } catch (err) {
       logEvent('seat_spawn_gate_failed', {
         name: req.name,
@@ -2225,6 +2384,20 @@ export class Supervisor implements TeleportHost {
     const verdict = seatSpawnGate({ ...read.input, model: profile.model, role })
     logEvent('seat_spawn_gate', { name: req.name, allow: verdict.allow, reason: verdict.reason })
     return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
+  }
+
+  /**
+   * TP-4560: Shepherd spawns a successor over the CLI, so `human` does not say whose work it continues. The seat
+   * gate reads the spawner recorded for the agent the successor's chain started from; unrecorded, `human` stands.
+   */
+  private seatSpawner(req: SpawnRequest): string {
+    if (req.requestedBy !== HUMAN) return req.requestedBy
+    const origin = fixRoundRoot(req.predecessor ?? req.name)
+    if (origin === req.name) return HUMAN
+    const agent = this.core.agents
+      .roster({ includeRetired: true })
+      .find(a => a.name === origin && a.origin === 'spawned')
+    return agent?.spawnedBy ?? HUMAN
   }
 
   /** CC-1078: refuses a reviewer spawn into an account at or past its five_hour ceiling; a reader failure lets it through. */
@@ -2523,8 +2696,16 @@ export class Supervisor implements TeleportHost {
     return { profile: { ...profile, warnings: [...(profile.warnings ?? []), warning] }, startsRoot: false }
   }
 
-  /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
-  private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
+  /**
+   * CC-163: what the TARGET profile's role allows, checked once the profile is loaded. CC-1675: a
+   * depth refusal names the seat-policy entry that would have made the requester a root.
+   */
+  private checkRole(
+    req: SpawnRequest,
+    profile: AgentProfile,
+    coordinatorDepth: number,
+    requester: Requester,
+  ): string | undefined {
     if (req.remoteControl && roleOf(profile) === 'worker')
       return (
         `profile "${profile.name}" is a worker and cannot run with Remote Control; only a ` +
@@ -2532,8 +2713,9 @@ export class Supervisor implements TeleportHost {
       )
     if (coordinatorDepth > MAX_COORDINATOR_DEPTH)
       return (
-        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}; spawn a ` +
-        'worker profile instead, or ask the human to start this coordinator'
+        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}, and ` +
+        `${seatRootGap(loadSeatPolicy(), req.requestedBy, requester.profile)}, so it is not a root seat; ` +
+        'spawn a worker profile instead, ask the owner to add that entry, or ask the human to start this coordinator'
       )
     return undefined
   }
@@ -2760,7 +2942,7 @@ export class Supervisor implements TeleportHost {
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
       ...(requester.seat === undefined ? {} : { seat: requester.seat }),
     })
-    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth)
+    const roleBlocked = this.checkRole(req, profile, startsRoot ? 0 : lineage.coordinatorDepth, requester)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
@@ -2879,8 +3061,12 @@ export class Supervisor implements TeleportHost {
     if (predecessor !== undefined && 'error' in predecessor) return this.refuse(req, predecessor.error)
     if (predecessor?.warning !== undefined) warnings.push(predecessor.warning)
 
-    if (!this.semaphore.acquire(agentId))
+    const unadmitted = this.holdLaunchSlot(req, agentId, profile.name)
+    if (unadmitted) return unadmitted
+    if (!this.semaphore.acquire(agentId)) {
+      this.spawnSlots.release(agentId)
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
+    }
     const executionId = this.shadow.open(agentId, account.dir)
 
     try {
@@ -2896,6 +3082,7 @@ export class Supervisor implements TeleportHost {
       })
     } catch (err) {
       this.semaphore.release(agentId)
+      this.spawnSlots.release(agentId)
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
       if (!this.live.has(agentId)) await this.abandonLaunch(req, agentId, reason)
@@ -3704,7 +3891,7 @@ export class Supervisor implements TeleportHost {
     try {
       const spawn = {
         name: req.name,
-        spawner: req.requestedBy,
+        spawner: this.seatSpawner(req),
         configDir: defaultConfigDir(),
         now: new Date(),
       }
@@ -4184,10 +4371,12 @@ export class Supervisor implements TeleportHost {
     const check = req.noFixRoundCheck === true ? undefined : this.shepherdSkip
     const fixRound = check && (await fixRoundBlocker(check, identity, target))
     if (fixRound) return { ok: false, reason: fixRound }
+    const { prHead } = req
     const parked = await parkWorktree(
       target,
       () => this.parkBlockerFor(identity.agentId, target),
       identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
+      prHead && (() => Promise.resolve([prHead])),
     )
     this.parking.delete(identity.agentId)
     if (!parked.ok) return parked
@@ -5854,6 +6043,8 @@ export class Supervisor implements TeleportHost {
     for (const timer of this.reattached.values()) clearTimeout(timer)
     clearTimeout(this.readmitSweep)
     clearInterval(this.idlePrintTimer)
+    this.stopFootprint?.()
+    this.stopMergedRetire?.()
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
       if (entry.attachCeiling) clearTimeout(entry.attachCeiling)

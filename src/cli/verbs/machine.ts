@@ -3,6 +3,13 @@ import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { resolveMachineHoldOperators } from '../../config.js'
 import { home, logPath, operatorHoldPath } from '../../paths.js'
+import type {
+  AgentCostEstimate,
+  AgentCosts,
+  CostMetric,
+  RunningAgentCost,
+  ServerMessage,
+} from '../../protocol.js'
 import {
   defaultAutonomyRoot,
   readDoc,
@@ -91,7 +98,61 @@ export const machineStatusVerb = defineVerb({
   },
 })
 
+const gib = (kb: number): string => `${(kb / 1024 ** 2).toFixed(1)}G`
+const pair = ({ median, p90 }: CostMetric, show: (value: number) => string): string =>
+  `${show(median)}/${show(p90)}`
+const count = (value: number): string => String(Math.round(value))
+const decimal = (value: number): string => value.toFixed(1)
+
+function runningLine(agent: RunningAgentCost): string {
+  const { name, profile, role, cpuSeconds, rssPeakKb, childrenPeak, tmpFilesPeak } = agent
+  const measured =
+    cpuSeconds === undefined || rssPeakKb === undefined
+      ? 'no sample yet'
+      : `cpu ${Math.round(cpuSeconds)}s, rss ${gib(rssPeakKb)}, children ${childrenPeak ?? 0}` +
+        (tmpFilesPeak === undefined ? '' : `, tmp files ${tmpFilesPeak}`)
+  return `  ${name} (${profile}, ${role}): ${measured}`
+}
+
+function estimateLine(estimate: AgentCostEstimate): string {
+  const { profile, role, exits, source, rssKb, cpuCores, children, tmpFiles } = estimate
+  return (
+    `  ${profile}, ${role}: rss ${pair(rssKb, gib)}, cores ${pair(cpuCores, decimal)}, ` +
+    `children ${pair(children, count)}, tmp files ${pair(tmpFiles, count)} (${exits} exits, ${source})`
+  )
+}
+
+/** Each measure reads median/p90. */
+export function renderAgentCosts(costs: AgentCosts): string[] {
+  return [
+    `running: ${costs.running.length}`,
+    ...costs.running.map(runningLine),
+    'cost by profile and role, median/p90:',
+    ...(costs.estimates.length === 0 ? ['  no measured exits yet'] : costs.estimates.map(estimateLine)),
+  ]
+}
+
+export const machineCostsVerb = defineVerb({
+  name: 'machine.costs',
+  description:
+    "what is running and what it costs (CC-1671): each live agent's CPU, peak RSS, children and TMPDIR " +
+    'files so far, then the median and p90 of each per profile and role over their last exits. Linux ' +
+    'only; an agent reads "no sample yet" until the broker has sampled it',
+  args: z.object({ json: z.boolean().optional() }),
+  result: Report,
+  cli: { options: { json: { long: '--json', description: 'one object: running[], estimates[]' } } },
+  async run({ json }, ctx) {
+    const reply = (await ctx.withBroker(b =>
+      b.request({ t: 'agents', costs: true }, 'agents_result'),
+    )) as Extract<ServerMessage, { t: 'agents_result' }>
+    if (reply.costs === undefined)
+      return { ok: false, lines: [], errors: ['this broker reports no costs; restart it to update'] }
+    return { ok: true, lines: json === true ? [JSON.stringify(reply.costs)] : renderAgentCosts(reply.costs) }
+  },
+})
+
 export function addMachineCommands(program: Commander): void {
   const machine = program.command('machine').description('operator HOLDs, owner stops and the machine stop')
   addVerb(machine, machineStatusVerb)
+  addVerb(machine, machineCostsVerb)
 }

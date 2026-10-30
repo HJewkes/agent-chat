@@ -117,6 +117,8 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   listener.serve(socketServer)
   socketServer.startLifecycleVerifier()
   socketServer.startIdlePrintWake()
+  if (!isEphemeralHome(home())) socketServer.startFootprintSampling()
+  if (!isEphemeralHome(home())) socketServer.startMergedRetire()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
   const stopOrphanSweep = startOrphanSweep(
@@ -352,6 +354,13 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
         readMemoryFree: () => readMemoryFree(),
         readCpuPressure: () => readCpuPressure(),
         readHeadroom: () => readHostHeadroom(),
+        limits: resolveMachineLimits,
+      },
+      predictedCost: {
+        readMemoryFree: () => readMemoryFree(),
+        readCpuPressure: () => readCpuPressure(),
+        totalMemoryKb: () => os.totalmem() / 1024,
+        cpuCount: () => os.availableParallelism(),
         limits: resolveMachineLimits,
       },
       repoVisibility: repoVisibilityReader(),
