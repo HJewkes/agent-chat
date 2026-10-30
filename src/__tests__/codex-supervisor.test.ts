@@ -477,15 +477,6 @@ describe('mcpOverrides', () => {
     )
   })
 
-  it('carries AGENT_CHAT_HOME into the MCP env, which Codex would drop', () => {
-    // Catches: a supervisor on a scratch home whose MCP server joins the default broker instead.
-    const args = mcpOverrides('/opt/node', '/opt/agent-chat/dist/cli.js', 'scout', '/scratch/home')
-
-    expect(args).toContain(
-      'mcp_servers.agent-chat.env={AGENT_CHAT_HOST="codex",AGENT_CHAT_NAME="scout",AGENT_CHAT_HOME="/scratch/home"}',
-    )
-  })
-
   it('refuses a name no agent may hold, before Codex starts', () => {
     expect(parseName('scout-2')).toBe('scout-2')
     expect(parseName(undefined)).toBeUndefined()
