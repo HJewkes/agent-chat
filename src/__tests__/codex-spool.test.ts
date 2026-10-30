@@ -1,13 +1,17 @@
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { codexHostDir } from '../paths.js'
+import { afterEach, describe, expect, it } from 'vitest'
+import { codexHostDir, codexPendingDir } from '../paths.js'
 import { chatInbox } from '../server/commands/chat-inbox.js'
 import {
+  adoptCodexHost,
+  CODEX_KEEP_ENV,
   codexInboxSpoolDir,
+  codexKeepName,
+  parkCodexHost,
+  readCodexHostStamp,
   resolveInboxSpool,
-  retireCodexHostOnExit,
   spoolRecord,
   type SpoolRecord,
 } from '../server/inbox-spool.js'
@@ -29,7 +33,8 @@ const record = (msgId: string): SpoolRecord => ({
   text: `note ${msgId}`,
 })
 
-const spooled = (dir: string): string[] => fs.readdirSync(dir).filter(name => name.endsWith('.json'))
+const spooled = (dir: string): string[] =>
+  fs.existsSync(dir) ? fs.readdirSync(dir).filter(name => name.endsWith('.json')) : []
 
 describe('resolveInboxSpool for a Codex host', () => {
   it('spools under the Codex pid with no agentId, no opt-in and an interactive argv', () => {
@@ -115,17 +120,119 @@ describe('the Codex spool on disk', () => {
     fs.rmSync(codexHostDir(CODEX_PID + 1), { recursive: true, force: true })
   })
 
-  it('removes the Codex host dir when the server exits', () => {
-    // Arrange
+  it('removes the Codex host dir of an unnamed host when the server exits', () => {
+    // Catches: an unnamed host, which no later session can claim, leaving its records behind.
     const dir = codexInboxSpoolDir(CODEX_PID + 2)
-    spoolRecord(dir, record('msg-1'))
     const proc = new EventEmitter()
-    retireCodexHostOnExit(CODEX_PID + 2, proc)
+    adoptCodexHost(CODEX_PID + 2, undefined, proc)
+    spoolRecord(dir, record('msg-1'))
 
-    // Act
     proc.emit('exit', 0)
 
-    // Assert
     expect(fs.existsSync(codexHostDir(CODEX_PID + 2))).toBe(false)
+  })
+})
+
+describe('parking a named Codex host (CC-1683)', () => {
+  const HOST = CODEX_PID + 10
+  const NAME = 'cc1683-spool'
+  const DEAD = 70_999
+  const hostInbox = codexInboxSpoolDir(HOST)
+  const pending = codexPendingDir(NAME)
+
+  afterEach(() => {
+    fs.rmSync(codexHostDir(HOST), { recursive: true, force: true })
+    fs.rmSync(pending, { recursive: true, force: true })
+  })
+
+  const claim = (holder: number, msgId: string): void => {
+    spoolRecord(hostInbox, record(msgId))
+    const name = spooled(hostInbox).find(file => file.endsWith(`-${msgId}.json`)) ?? ''
+    fs.mkdirSync(path.join(hostInbox, '.claimed'), { recursive: true })
+    fs.renameSync(path.join(hostInbox, name), path.join(hostInbox, '.claimed', `${holder}-${name}`))
+  }
+
+  it('moves waiting records and dead claims to the name, and removes the host dir', () => {
+    // Catches: the original bug, the exit handler deleting what the supervisor returned.
+    const proc = new EventEmitter()
+    adoptCodexHost(HOST, NAME, proc, { isAlive: () => false })
+    spoolRecord(hostInbox, record('waiting'))
+    claim(DEAD, 'claimed')
+
+    proc.emit('exit', 137)
+
+    expect(
+      spooled(pending)
+        .map(name => name.replace(/^\d+-\d+-/, ''))
+        .sort(),
+    ).toEqual(['claimed.json', 'waiting.json'])
+    expect(fs.existsSync(codexHostDir(HOST))).toBe(false)
+  })
+
+  it('leaves a claim whose holder lives, and the dir it sits in, for that holder', () => {
+    // Catches: the MCP server taking a record the supervisor may yet deliver, which sends it twice.
+    claim(DEAD, 'in-flight')
+
+    parkCodexHost(HOST, NAME, { isAlive: pid => pid === DEAD })
+
+    expect(fs.existsSync(pending)).toBe(false)
+    expect(fs.readdirSync(path.join(hostInbox, '.claimed'))).toHaveLength(1)
+  })
+
+  it('keeps the dir when a record could not move', () => {
+    // Catches: removing the host dir after a failed rename, which loses the record.
+    spoolRecord(hostInbox, record('stuck'))
+    const refusing = {
+      ...fs,
+      renameSync: () => {
+        throw Object.assign(new Error('refused'), { code: 'EACCES' })
+      },
+    } as typeof fs
+
+    parkCodexHost(HOST, NAME, { fs: refusing })
+
+    expect(spooled(hostInbox)).toHaveLength(1)
+  })
+
+  it("a stranger reusing the pid parks a dead owner's dir under that owner, not itself", () => {
+    // Catches: a reused pid inheriting records, when both the owner's exit handler and supervisor died.
+    const dead = new EventEmitter()
+    adoptCodexHost(HOST, NAME, dead, { pid: DEAD })
+    spoolRecord(hostInbox, record('stale'))
+
+    adoptCodexHost(HOST, 'cc1683-stranger', new EventEmitter(), { isAlive: () => false })
+
+    expect(spooled(pending)).toHaveLength(1)
+    expect(spooled(hostInbox)).toEqual([])
+    expect(readCodexHostStamp(HOST)).toEqual({ mcpPid: process.pid, keepAs: 'cc1683-stranger' })
+    expect(fs.existsSync(codexPendingDir('cc1683-stranger'))).toBe(false)
+  })
+
+  it("an unnamed stranger drops an unnamed dead owner's records instead of reading them", () => {
+    // Catches: the unnamed path, which has no pending dir, leaving records for the new owner.
+    adoptCodexHost(HOST, undefined, new EventEmitter(), { pid: DEAD })
+    spoolRecord(hostInbox, record('stale'))
+
+    adoptCodexHost(HOST, undefined, new EventEmitter(), { isAlive: () => false })
+
+    expect(spooled(hostInbox)).toEqual([])
+  })
+
+  it('leaves the dir of a live sibling server alone', () => {
+    // Catches: a second server on a multi-thread host wiping the first one's spool.
+    adoptCodexHost(HOST, NAME, new EventEmitter(), { pid: DEAD })
+    spoolRecord(hostInbox, record('live'))
+
+    adoptCodexHost(HOST, undefined, new EventEmitter(), { isAlive: () => true })
+
+    expect(spooled(hostInbox)).toHaveLength(1)
+    expect(readCodexHostStamp(HOST)?.mcpPid).toBe(DEAD)
+  })
+
+  it('takes the keep name only when it is a valid agent name', () => {
+    // Catches: an env value walking out of the pending root.
+    expect(codexKeepName({ [CODEX_KEEP_ENV]: 'scout' })).toBe('scout')
+    expect(codexKeepName({ [CODEX_KEEP_ENV]: '../escape' })).toBeUndefined()
+    expect(codexKeepName({})).toBeUndefined()
   })
 })
