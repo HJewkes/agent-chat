@@ -1,4 +1,5 @@
 import type { MachineStop, MachineStopReadings } from './stops.js'
+import { HEADROOM_RESOURCES, HEADROOM_SHORT_LABELS, type HeadroomReadings } from '../host-headroom.js'
 
 /**
  * CC-957: every stop an operator or the owner has put on the machine, in one document, so a
@@ -336,6 +337,13 @@ export function machineStopStatus(input: StopInputs): MachineStopStatus {
   return { at: input.now.toISOString(), stopped: any, holds, ownerStops, machine, errors }
 }
 
+/** CC-1265: `/tmp inodes 13%, /tmp bytes 20%, disk 40%`, with `?` for a reading that failed. */
+const headroomReadingsText = (readings: HeadroomReadings): string =>
+  HEADROOM_RESOURCES.map(resource => {
+    const reading = readings[resource]
+    return `${HEADROOM_SHORT_LABELS[resource]} ${'usedPercent' in reading ? reading.usedPercent : '?'}%`
+  }).join(', ')
+
 export function renderMachineStopStatus(status: MachineStopStatus): string[] {
   const { machine } = status
   return [
@@ -344,7 +352,7 @@ export function renderMachineStopStatus(status: MachineStopStatus): string[] {
     ...status.ownerStops.map(s => `owner stop ${s.seat}: ${s.reason}`),
     `readings: memory ${machine.memoryFreePercent ?? '?'}% free, load5 ${machine.load5 ?? '?'}, ` +
       `swap ${machine.swapUsedPercent ?? '?'}% used, pressure level ${machine.pressureLevel ?? '?'}, ` +
-      `CPU pressure ${machine.cpuPressurePercent ?? '?'}%`,
+      `CPU pressure ${machine.cpuPressurePercent ?? '?'}%, ${headroomReadingsText(machine.headroom)}`,
     ...(machine.stop === null ? [] : [`machine stop: ${machine.stop}`]),
     ...status.errors.map(e => `unreadable: ${e}`),
   ]

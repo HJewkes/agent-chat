@@ -11,13 +11,16 @@ import {
   DEFAULT_MACHINE_TMP_INODES_PERCENT,
   type MachineLimits,
 } from './agents/machine-guard.js'
-import type { HeadroomLimits } from './agents/host-headroom.js'
+import type { HeadroomLimits, HeadroomResource } from './agents/host-headroom.js'
 import {
   DEFAULT_MACHINE_STOP_CPU_PRESSURE_PERCENT,
+  DEFAULT_MACHINE_STOP_DISK_BYTES_PERCENT,
   DEFAULT_MACHINE_STOP_LOAD5,
   DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT,
   DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
   DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT,
+  DEFAULT_MACHINE_STOP_TMP_BYTES_PERCENT,
+  DEFAULT_MACHINE_STOP_TMP_INODES_PERCENT,
   type MachineStopLimits,
 } from './agents/seats/stops.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
@@ -65,6 +68,9 @@ export interface AgentChatConfig {
   machineTmpInodesPercent?: unknown
   machineTmpBytesPercent?: unknown
   machineDiskBytesPercent?: unknown
+  machineStopTmpInodesPercent?: unknown
+  machineStopTmpBytesPercent?: unknown
+  machineStopDiskBytesPercent?: unknown
   machineStopMemoryFreePercent?: unknown
   machineStopLoad5?: unknown
   machineStopSwapUsedPercent?: unknown
@@ -470,32 +476,34 @@ export function resolveMachineLimits(): MachineLimits {
       readConfig().machineCpuPressurePercent,
       DEFAULT_MACHINE_CPU_PRESSURE_PERCENT,
     ),
-    headroom: resolveSpawnHeadroomLimits(readConfig()),
+    headroom: headroomLimitsFrom(readConfig(), SPAWN_HEADROOM_KEYS),
   }
 }
 
-/** CC-1265: the spawn gate's /tmp and disk-root used-percent limits; null in config.json disables one. */
-function resolveSpawnHeadroomLimits(config: AgentChatConfig): HeadroomLimits {
-  const limit = (configKey: string, value: unknown, fallback: number) => ({
-    percent: percentOrNullFrom(configKey, value, fallback),
+type HeadroomKeys = Record<HeadroomResource, readonly [keyof AgentChatConfig & string, number]>
+
+const SPAWN_HEADROOM_KEYS: HeadroomKeys = {
+  tmp_inodes: ['machineTmpInodesPercent', DEFAULT_MACHINE_TMP_INODES_PERCENT],
+  tmp_bytes: ['machineTmpBytesPercent', DEFAULT_MACHINE_TMP_BYTES_PERCENT],
+  disk_bytes: ['machineDiskBytesPercent', DEFAULT_MACHINE_DISK_BYTES_PERCENT],
+}
+
+const STOP_HEADROOM_KEYS: HeadroomKeys = {
+  tmp_inodes: ['machineStopTmpInodesPercent', DEFAULT_MACHINE_STOP_TMP_INODES_PERCENT],
+  tmp_bytes: ['machineStopTmpBytesPercent', DEFAULT_MACHINE_STOP_TMP_BYTES_PERCENT],
+  disk_bytes: ['machineStopDiskBytesPercent', DEFAULT_MACHINE_STOP_DISK_BYTES_PERCENT],
+}
+
+/** CC-1265: /tmp and disk-root used-percent limits from config.json; null disables one. */
+function headroomLimitsFrom(config: AgentChatConfig, keys: HeadroomKeys): HeadroomLimits {
+  const limit = ([configKey, fallback]: HeadroomKeys[HeadroomResource]) => ({
+    percent: percentOrNullFrom(configKey, config[configKey], fallback),
     configKey,
   })
   return {
-    tmp_inodes: limit(
-      'machineTmpInodesPercent',
-      config.machineTmpInodesPercent,
-      DEFAULT_MACHINE_TMP_INODES_PERCENT,
-    ),
-    tmp_bytes: limit(
-      'machineTmpBytesPercent',
-      config.machineTmpBytesPercent,
-      DEFAULT_MACHINE_TMP_BYTES_PERCENT,
-    ),
-    disk_bytes: limit(
-      'machineDiskBytesPercent',
-      config.machineDiskBytesPercent,
-      DEFAULT_MACHINE_DISK_BYTES_PERCENT,
-    ),
+    tmp_inodes: limit(keys.tmp_inodes),
+    tmp_bytes: limit(keys.tmp_bytes),
+    disk_bytes: limit(keys.disk_bytes),
   }
 }
 
@@ -524,6 +532,7 @@ export function resolveMachineStopLimits(): MachineStopLimits {
       DEFAULT_MACHINE_STOP_CPU_PRESSURE_PERCENT,
     ),
     pressureLevel: pressureLevelFrom(config.machineStopPressureLevel),
+    headroom: headroomLimitsFrom(config, STOP_HEADROOM_KEYS),
   }
 }
 

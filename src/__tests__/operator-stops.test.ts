@@ -16,6 +16,7 @@ import {
 import type { MachineStopReadings } from '../agents/seats/stops.js'
 import { liveStopInputs, machineStatusReport } from '../cli/verbs/machine.js'
 import { configPath, home, logPath, operatorHoldPath } from '../paths.js'
+import { CLEAR_HEADROOM } from './helpers/headroom.js'
 
 /**
  * Every hold, lift, stop-file and owner-stop case runs through the live readers (`liveStopInputs`,
@@ -47,6 +48,7 @@ const CALM: MachineStopReadings = {
   swapUsedPercent: 0,
   pressureLevel: 1,
   cpuPressurePercent: 0,
+  headroom: CLEAR_HEADROOM,
 }
 const liveInputs = (now: Date): StopInputs => liveStopInputs(now, CALM)
 
@@ -745,6 +747,7 @@ describe('machine stop readings and output', () => {
       swapUsedPercent: 10,
       pressureLevel: 1,
       cpuPressurePercent: 0,
+      headroom: CLEAR_HEADROOM,
     },
     machineStop: null,
     ...over,
@@ -757,6 +760,7 @@ describe('machine stop readings and output', () => {
       swapUsedPercent: 10,
       pressureLevel: 1,
       cpuPressurePercent: 0,
+      headroom: CLEAR_HEADROOM,
     }
     const machineStop = { ...readings, reason: 'machine under pressure: load5 40 (limit 28)' }
 
@@ -767,16 +771,41 @@ describe('machine stop readings and output', () => {
   })
 
   it('prints CPU pressure on the readings line, and ? when it is unread (CC-1670)', () => {
-    const readings = { memoryFreePercent: 80, load5: 4, swapUsedPercent: 10, pressureLevel: 1 }
+    const readings = {
+      memoryFreePercent: 80,
+      load5: 4,
+      swapUsedPercent: 10,
+      pressureLevel: 1,
+      headroom: CLEAR_HEADROOM,
+    }
     const read = machineStatusReport(inputs({ readings: { ...readings, cpuPressurePercent: 2.4 } }), false)
     const unread = machineStatusReport(inputs({ readings: { ...readings, cpuPressurePercent: null } }), false)
 
     expect(read.lines).toContain(
-      'readings: memory 80% free, load5 4, swap 10% used, pressure level 1, CPU pressure 2.4%',
+      'readings: memory 80% free, load5 4, swap 10% used, pressure level 1, CPU pressure 2.4%, /tmp inodes 13%, /tmp bytes 20%, disk 40%',
     )
     expect(unread.lines).toContain(
-      'readings: memory 80% free, load5 4, swap 10% used, pressure level 1, CPU pressure ?%',
+      'readings: memory 80% free, load5 4, swap 10% used, pressure level 1, CPU pressure ?%, /tmp inodes 13%, /tmp bytes 20%, disk 40%',
     )
+  })
+
+  it('prints each headroom reading, and ? for one that failed (CC-1265)', () => {
+    const readings = {
+      memoryFreePercent: 80,
+      load5: 4,
+      swapUsedPercent: 10,
+      pressureLevel: 1,
+      cpuPressurePercent: 2,
+      headroom: {
+        ...CLEAR_HEADROOM,
+        tmp_inodes: { usedPercent: 82 },
+        disk_bytes: { error: 'statfs /: boom' },
+      },
+    }
+
+    const report = machineStatusReport(inputs({ readings }), false)
+
+    expect(report.lines).toContainEqual(expect.stringContaining('/tmp inodes 82%, /tmp bytes 20%, disk ?%'))
   })
 
   it('reports a clear machine with every list empty and the readings', () => {
@@ -793,6 +822,7 @@ describe('machine stop readings and output', () => {
         swapUsedPercent: 10,
         pressureLevel: 1,
         cpuPressurePercent: 0,
+        headroom: CLEAR_HEADROOM,
         stop: null,
       },
       errors: [],

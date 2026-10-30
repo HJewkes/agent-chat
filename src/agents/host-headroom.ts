@@ -75,10 +75,17 @@ export function readHostHeadroom(
   return { tmp_inodes: tmp.inodes, tmp_bytes: tmp.bytes, disk_bytes: disk.bytes }
 }
 
-const RESOURCES: readonly HeadroomResource[] = ['tmp_inodes', 'tmp_bytes', 'disk_bytes']
+export const HEADROOM_RESOURCES: readonly HeadroomResource[] = ['tmp_inodes', 'tmp_bytes', 'disk_bytes']
+
+/** Platform-free labels for a one-line reading, where the disk path would only add width. */
+export const HEADROOM_SHORT_LABELS: Record<HeadroomResource, string> = {
+  tmp_inodes: `${TMP_PATH} inodes`,
+  tmp_bytes: `${TMP_PATH} bytes`,
+  disk_bytes: 'disk',
+}
 
 export function headroomBreaches(readings: HeadroomReadings, limits: HeadroomLimits): HeadroomBreach[] {
-  return RESOURCES.flatMap(resource => {
+  return HEADROOM_RESOURCES.flatMap(resource => {
     const reading = readings[resource]
     const { percent, configKey } = limits[resource]
     if (!('usedPercent' in reading) || percent === null || reading.usedPercent < percent) return []

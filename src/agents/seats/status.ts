@@ -39,6 +39,7 @@ import {
 import { accountReading, lastGoodReading } from './watchdog.js'
 import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
+import { HEADROOM_RESOURCES, HEADROOM_SHORT_LABELS } from '../host-headroom.js'
 import {
   agentRows,
   roleOfProfile,
@@ -748,12 +749,24 @@ function cpuPressureText({ someAvg60, limit, skipped, error }: MachineStatus['cp
   return [`CPU pressure ${someAvg60}%/${limit ?? 'off'}${limit === null ? '' : '%'}${high}`]
 }
 
+/** CC-1265: each /tmp and disk reading against its spawn limit, `HOLD` at or over it. */
+function headroomTexts(headroom: MachineStatus['headroom']): string[] {
+  return HEADROOM_RESOURCES.map(resource => {
+    const { usedPercent, limit, error } = headroom[resource]
+    const label = HEADROOM_SHORT_LABELS[resource]
+    if (usedPercent === null) return unread(label, error)
+    const hold = limit !== null && usedPercent >= limit ? ' HOLD' : ''
+    return `${label} ${usedPercent}%/${limit === null ? 'off' : `${limit}%`}${hold}`
+  })
+}
+
 function machineLine({
   headlessAgents,
   memoryFree,
   cpuPressure,
   swap,
   fullSuiteSlots,
+  headroom,
 }: MachineStatus): string {
   const atCap = headlessAgents.live !== null && headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
   const memory =
@@ -766,6 +779,7 @@ function machineLine({
     memory,
     ...cpuPressureText(cpuPressure),
     swapText,
+    ...headroomTexts(headroom),
     `suite slots ${fullSuiteSlots.inUse}/${fullSuiteSlots.total}`,
   ]
   return line('machine', parts.join(', '))
@@ -844,6 +858,16 @@ function agentLines(status: SeatStatus, brief: boolean): string[] {
 const briefNone = ({ nextSpawnPool }: BudgetStatus): string =>
   nextSpawnPool === null ? 'none' : `none; next spawn: pool ${nextSpawnPool}`
 
+/**
+ * CC-1265: what holds dispatch, in order: the seat machine stop, then the spawn guard's
+ * refusal (a full /tmp refuses spawns before it stops seats), then the budget stop.
+ */
+function stopText({ machineStop, machine, budget }: SeatStatus): string | null {
+  if (machineStop !== null) return machineStop.reason
+  if (machine.holding !== null) return `spawns refused: ${machine.holding}`
+  return budget.stop
+}
+
 /** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
 export function renderBrief(status: SeatStatus): string[] {
   const { budget, inbox, parked } = status
@@ -851,7 +875,7 @@ export function renderBrief(status: SeatStatus): string[] {
     `seat ${status.seat} at ${status.at}`,
     ...agentLines(status, true),
     line('pool', poolReadingText(budget)),
-    line('stop', status.machineStop?.reason ?? budget.stop ?? briefNone(budget)),
+    line('stop', stopText(status) ?? briefNone(budget)),
     line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
     ...(parked === null ? [] : [line('parked', String(parked.count)), ...waitingPermissionLines(status)]),
   ]
@@ -864,7 +888,7 @@ export function renderStatus(status: SeatStatus): string[] {
     ...agentLines(status, false),
     ...selfLines(status.self),
     budgetLine(budget),
-    line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
+    line('stop', stopText(status) ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
     ...pacingLines(budget),
     ...paceLines(status),

@@ -234,7 +234,7 @@ export interface MachineStatus {
   fullSuiteSlots: { inUse: number; total: number }
   /** CC-1265: each resource's used percent against its spawn limit; null when unread. */
   headroom: Record<HeadroomResource, { usedPercent: number | null; limit: number | null; error?: string }>
-  /** What a headless spawn would be refused for now, or null; names the resource that holds spawns. */
+  /** The machine resource (memory, /tmp, disk, CPU) refusing every spawn now, or null; the headless cap is not one. */
   holding: string | null
 }
 
@@ -256,7 +256,7 @@ function cpuPressureStatus(cpu: CpuPressureReading, limit: number | null): Machi
 }
 
 const holdingReason = (readings: MachineReadings, limits: MachineLimits): string | null => {
-  const decision = machineDecision(readings, limits, true)
+  const decision = machineDecision(readings, limits, false)
   return decision.ok ? null : decision.reason
 }
 

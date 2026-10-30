@@ -9,6 +9,12 @@ import {
   type SpendCaps,
 } from '../burndown/budget-gate.js'
 import { NO_DISPATCH_PREFIX } from '../burndown/no-dispatch.js'
+import {
+  describeBreach,
+  headroomBreaches,
+  type HeadroomLimits,
+  type HeadroomReadings,
+} from '../host-headroom.js'
 import type { WatchdogDoc } from './io.js'
 import { isJournalText } from './journal-line.js'
 
@@ -333,6 +339,9 @@ export const DEFAULT_MACHINE_STOP_LOAD5 = 28
 export const DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT = 60
 export const DEFAULT_MACHINE_STOP_PRESSURE_LEVEL = 2
 export const DEFAULT_MACHINE_STOP_CPU_PRESSURE_PERCENT = 40
+export const DEFAULT_MACHINE_STOP_TMP_INODES_PERCENT = 80
+export const DEFAULT_MACHINE_STOP_TMP_BYTES_PERCENT = 95
+export const DEFAULT_MACHINE_STOP_DISK_BYTES_PERCENT = 95
 
 export interface MachineStopLimits {
   /** Stop below this share of memory free. */
@@ -345,6 +354,8 @@ export interface MachineStopLimits {
   pressureLevel: number
   /** CC-1670: stop at or above this CPU PSI "some avg60"; null disables the trigger. */
   cpuPressurePercent: number | null
+  /** CC-1265: stop at or above each resource's used percent, above the spawn gate's limits; null disables one. */
+  headroom: HeadroomLimits
 }
 
 /** A reading that could not be taken is null, and a null reading never stops a seat. */
@@ -355,6 +366,8 @@ export interface MachineStopReadings {
   pressureLevel: number | null
   /** CPU PSI "some avg60"; null on macOS, which has no PSI. */
   cpuPressurePercent: number | null
+  /** CC-1265: /tmp and disk-root used percent; an error reading never stops a seat. */
+  headroom: HeadroomReadings
 }
 
 export interface MachineStop extends MachineStopReadings {
@@ -389,10 +402,11 @@ function machineStopBreaches(readings: MachineStopReadings, limits: MachineStopL
       load5 !== null && limits.load5 !== null && load5 > limits.load5,
       `load5 ${load5} (limit ${limits.load5})`,
     ),
+    ...headroomBreaches(readings.headroom, limits.headroom).map(b => describeBreach(b)),
   ]
 }
 
-/** CC-431, CC-492, CC-1670: a machine under memory, swap, pressure level, CPU pressure or load holds every seat; each breach names its reading. */
+/** CC-431, CC-492, CC-1670, CC-1265: a machine under memory, swap, pressure level, CPU pressure, load or disk headroom holds every seat; each breach names its reading. */
 export function machineStop(readings: MachineStopReadings, limits: MachineStopLimits): MachineStop | null {
   const breaches = machineStopBreaches(readings, limits)
   if (breaches.length === 0) return null
