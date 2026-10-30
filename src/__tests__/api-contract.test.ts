@@ -84,6 +84,9 @@ const KINDS_AT_FREEZE = [
   'seat_ask_denied',
   // CC-1455, added through this test. A print-mode session's inbox hook receipt; rendered generically. Not subscribable.
   'inbox_shown',
+  // CC-1680, added through this test. Read receipts for chat_inbox and Codex delivery; rendered generically. Not subscribable.
+  'inbox_read',
+  'delivered_to_thread',
 ]
 
 describe('SSE event names cover every EventKind', () => {

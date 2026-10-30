@@ -404,6 +404,10 @@ export const EVENT_KINDS = [
   'seat_ask_denied',
   // CC-1455: a print-mode session's inbox hook showed these spooled msgIds. Written by the hook, never by the broker.
   'inbox_shown',
+  // CC-1680: the broker returned these msgIds from chat_inbox; `waitMs` is the oldest one's age. Not subscribable.
+  'inbox_read',
+  // CC-1680: the Codex supervisor handed a spooled message to its thread. Written by `codex run`, never the broker.
+  'delivered_to_thread',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]

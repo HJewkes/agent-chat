@@ -1,9 +1,11 @@
 import os from 'node:os'
 import type { Command } from 'commander'
 import { startCodexAppServer } from '../../codex/app-server-client.js'
-import { superviseCodex } from '../../codex/supervisor.js'
+import { superviseCodex, type ThreadDelivery } from '../../codex/supervisor.js'
 import { AGENT_NAME_PATTERN } from '../../launch-identity.js'
+import { EventLog } from '../../broker/event-log.js'
 import { cliEntry } from '../../paths.js'
+import type { AppendInput } from '../../broker/event-store.js'
 import type { ClientMessage, ServerMessage } from '../../protocol.js'
 import { withBroker } from '../client.js'
 
@@ -67,6 +69,37 @@ export async function reportWakeCapped(
   }
 }
 
+/** CC-1680: the receipt for one message handed to the thread, written straight into events.db like the inbox hook's. */
+export function recordDelivered(
+  log: { append(input: AppendInput): unknown },
+  actor: string,
+  delivery: ThreadDelivery,
+): void {
+  log.append({
+    kind: 'delivered_to_thread',
+    actor,
+    ref: delivery.threadId,
+    meta: {
+      msgId: delivery.msgId,
+      mode: delivery.mode,
+      ...(delivery.latencyMs === undefined ? {} : { latencyMs: String(delivery.latencyMs) }),
+    },
+  })
+}
+
+function writeDelivered(actor: string, delivery: ThreadDelivery): void {
+  try {
+    const log = new EventLog()
+    try {
+      recordDelivered(log, actor, delivery)
+    } finally {
+      log.close()
+    }
+  } catch {
+    // A receipt must never cost the delivery it describes.
+  }
+}
+
 function parseWakeCap(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined
   const cap = Number(raw)
@@ -90,6 +123,7 @@ async function runCodex(codexArgs: string[], options: RunOptions): Promise<void>
     cwd: process.cwd(),
     wakeCap,
     onWakeCapped: (hostPids, cap) => void reportWakeCapped(hostPids, cap),
+    onDelivered: delivery => writeDelivered(options.name ?? 'codex', delivery),
   })
 }
 

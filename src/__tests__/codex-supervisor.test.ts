@@ -3,9 +3,17 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mcpOverrides, parseName, reportWakeCapped } from '../cli/verbs/codex-run.js'
+import { mcpOverrides, parseName, recordDelivered, reportWakeCapped } from '../cli/verbs/codex-run.js'
+import type { AppendInput } from '../broker/event-store.js'
 import { startCodexAppServer, type CodexAppServer } from '../codex/app-server-client.js'
-import { DeliveryLoop, PEER_HEADER, spoolFinder, spoolHostPid, superviseCodex } from '../codex/supervisor.js'
+import {
+  DeliveryLoop,
+  PEER_HEADER,
+  spoolFinder,
+  spoolHostPid,
+  superviseCodex,
+  type ThreadDelivery,
+} from '../codex/supervisor.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 import { codexInboxSpoolDir, spoolRecord } from '../server/inbox-spool.js'
 
@@ -49,8 +57,14 @@ async function fake(...flags: string[]): Promise<CodexAppServer> {
   return server
 }
 
-function spoolMessage(msgId: string, text: string): void {
-  spoolRecord(spool, { kind: 'message', msgId, meta: { from: 'scout', msg_id: msgId }, text })
+function spoolMessage(msgId: string, text: string, at?: number): void {
+  spoolRecord(spool, {
+    kind: 'message',
+    msgId,
+    ...(at === undefined ? {} : { at }),
+    meta: { from: 'scout', msg_id: msgId },
+    text,
+  })
 }
 
 interface Sent {
@@ -108,6 +122,42 @@ describe('codex run delivery', () => {
     expect(text.indexOf('first note')).toBeGreaterThan(-1)
     expect(waiting()).toEqual([])
     expect(claimedLeft()).toEqual([])
+  })
+
+  it('reports each message handed to the thread with its latency and mode', async () => {
+    // Catches: no receipt, a latency read off the wrong clock, or a steer reported as a start (CC-1680).
+    const server = await fake('--steers-to-complete', '5')
+    const delivered: ThreadDelivery[] = []
+    const loop = loopFor(server, { now: () => 10_000, onDelivered: d => delivered.push(d) })
+    spoolMessage('m-1', 'wake up', 7_500)
+    await loop.kick()
+    spoolMessage('m-2', 'mid-turn note', 9_000)
+    await loop.kick()
+
+    expect(delivered).toEqual([
+      { msgId: 'm-1', threadId: THREAD, latencyMs: 2_500, mode: 'start' },
+      { msgId: 'm-2', threadId: THREAD, latencyMs: 1_000, mode: 'steer' },
+    ])
+  })
+
+  it('writes the delivery receipt as a delivered_to_thread row', () => {
+    const appended: AppendInput[] = []
+
+    recordDelivered({ append: input => appended.push(input) }, 'scout', {
+      msgId: 'm-1',
+      threadId: THREAD,
+      latencyMs: 2_500,
+      mode: 'steer',
+    })
+
+    expect(appended).toEqual([
+      {
+        kind: 'delivered_to_thread',
+        actor: 'scout',
+        ref: THREAD,
+        meta: { msgId: 'm-1', mode: 'steer', latencyMs: '2500' },
+      },
+    ])
   })
 
   it('steers the active turn while busy', async () => {
