@@ -23,6 +23,7 @@ import {
   swapPercent,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
+import { readHostHeadroom } from '../../agents/host-headroom.js'
 import {
   resolveMachineLimits,
   resolveMachineStopLimits,
@@ -634,6 +635,7 @@ function readMachineStatus(agents: AgentIdentity[]): MachineStatus {
     memory: readMemoryFree(),
     cpuPressure: readCpuPressure(),
     swap: readSwapUsage(),
+    headroom: readHostHeadroom(),
   }
   return machineStatus(readings, resolveMachineLimits(), slotUsage(suiteSlotDeps()))
 }

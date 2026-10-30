@@ -106,6 +106,7 @@ import {
   type MachineLimits,
   type MemoryReading,
 } from './machine-guard.js'
+import type { HeadroomReadings } from './host-headroom.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder, lexicalCwdRefusal } from './spawn-cwd.js'
 import {
   callerHomeFor,
@@ -1349,6 +1350,7 @@ const reviewerRewriteWarning = (root: string): string =>
 export interface MachineGuardReaders {
   readMemoryFree: () => MemoryReading
   readCpuPressure: () => CpuPressureReading
+  readHeadroom: () => HeadroomReadings
   limits: () => MachineLimits
 }
 
@@ -2140,12 +2142,15 @@ export class Supervisor implements TeleportHost {
     if (this.machineGuard === undefined) return undefined
     const memory = this.machineGuard.readMemoryFree()
     if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
+    const headroom = this.machineGuard.readHeadroom()
+    for (const [reader, reading] of Object.entries(headroom))
+      if ('error' in reading) logEvent('machine_guard_reader_failed', { reader, error: reading.error })
     const cpuPressure = this.machineGuard.readCpuPressure()
     if (cpuPressure !== null && 'error' in cpuPressure)
       logEvent('machine_guard_reader_failed', { reader: 'cpu_pressure', error: cpuPressure.error })
     const liveHeadless = countLiveHeadless(this.core.agents.roster())
     const decision = machineDecision(
-      { liveHeadless, memory, cpuPressure },
+      { liveHeadless, memory, cpuPressure, headroom },
       this.machineGuard.limits(),
       surface === 'headless',
     )

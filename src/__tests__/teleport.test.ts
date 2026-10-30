@@ -24,6 +24,7 @@ import { staleGuardOutput } from '../cli/verbs/stale-session-guard.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { MachineLimits, MemoryReading } from '../agents/machine-guard.js'
+import { CLEAR_HEADROOM, SPAWN_HEADROOM_LIMITS } from './helpers/headroom.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import type { JournalEntry } from '../agents/seats/journal-line.js'
 import type { SeatTeleportDeps } from '../agents/seats/teleport-state.js'
@@ -1094,12 +1095,22 @@ describe('a successor that does not start (CC-402)', () => {
     launcherUp = false
     itermDownFor = 0
     memory = { freePercent: 60 }
-    limits = { headlessAgents: 10, memoryFreePercent: 15, cpuPressurePercent: 40 }
+    limits = {
+      headlessAgents: 10,
+      memoryFreePercent: 15,
+      cpuPressurePercent: 40,
+      headroom: SPAWN_HEADROOM_LIMITS,
+    }
     supervisor = new Supervisor(core, {
       countdownMs: COUNTDOWN_MS,
       seatJournal: entry => journal.push(entry),
       launcherRunning: async () => launcherUp,
-      machineGuard: { readMemoryFree: () => memory, readCpuPressure: () => null, limits: () => limits },
+      machineGuard: {
+        readMemoryFree: () => memory,
+        readCpuPressure: () => null,
+        readHeadroom: () => CLEAR_HEADROOM,
+        limits: () => limits,
+      },
       surface: {
         platform: 'darwin',
         spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
