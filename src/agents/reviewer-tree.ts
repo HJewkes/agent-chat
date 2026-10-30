@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { LaunchPlan } from '@titan-design/agent-surface'
 import { AGENT_NAME_PATTERN } from '../launch-identity.js'
 import { realTmpFs, type TmpFs } from './agent-tmpdir.js'
+import { gitMarkerAt } from '../git-marker.js'
 import { canonicalPath } from './spawn-cwd.js'
 
 /**
@@ -46,12 +47,9 @@ export function isReviewerTreeName(name: string): boolean {
 export function primaryCheckoutOf(cwd: string): string | undefined {
   let dir = canonicalPath(cwd)
   for (;;) {
-    try {
-      const stat = fs.statSync(path.join(dir, '.git'))
-      return stat.isDirectory() ? dir : undefined
-    } catch {
-      // No .git here; keep climbing.
-    }
+    const marker = gitMarkerAt(dir)
+    if (marker === 'dir') return dir
+    if (marker === 'file') return undefined
     const parent = path.dirname(dir)
     if (parent === dir) return undefined
     dir = parent

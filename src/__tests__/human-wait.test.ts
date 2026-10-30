@@ -331,6 +331,38 @@ describe('readDirtyPaths', () => {
     expect(await readDirtyPaths(repo)).toBeUndefined()
   })
 
+  it('has nothing dirty under an empty .git directory with no repo above it (CC-1685)', async () => {
+    const outer = tempDir()
+    fs.mkdirSync(path.join(outer, '.git'))
+    const plain = path.join(outer, 'plain')
+    fs.mkdirSync(plain)
+
+    expect(await readDirtyPaths(plain)).toEqual([])
+  })
+
+  it('is unreadable, not clean, under a .git file that is not a gitdir pointer (CC-1685)', async () => {
+    const outer = tempDir()
+    fs.writeFileSync(path.join(outer, '.git'), 'junk\n')
+
+    expect(await readDirtyPaths(outer)).toBeUndefined()
+  })
+
+  it.skipIf(process.getuid?.() === 0)(
+    'is unreadable, not clean, under a .git directory it cannot read',
+    async () => {
+      const outer = tempDir()
+      const dotGit = path.join(outer, '.git')
+      fs.mkdirSync(dotGit)
+      fs.writeFileSync(path.join(dotGit, 'HEAD'), 'ref: refs/heads/main\n')
+      fs.chmodSync(dotGit, 0o000)
+      try {
+        expect(await readDirtyPaths(outer)).toBeUndefined()
+      } finally {
+        fs.chmodSync(dotGit, 0o700)
+      }
+    },
+  )
+
   it('is unreadable when the cwd no longer exists', async () => {
     expect(await readDirtyPaths(path.join(tempDir(), 'gone'))).toBeUndefined()
   })
