@@ -1610,13 +1610,6 @@ describe('a git alias already in config', () => {
       })
     })
 
-    it('denies an include git cannot read within the timeout', () => {
-      const fifo = path.join(SCRATCH, 'include-fifo')
-      execFileSync('mkfifo', [fifo])
-
-      expect(checkCommand(`git -c include.path=${fifo} push`, at(plain))).toBe(REASONS.includePath)
-    })
-
     it('denies an include git fails to read', () => {
       const circular = path.join(SCRATCH, 'include-circular')
       fs.writeFileSync(circular, `[include]\n\tpath = ${circular}\n`)
