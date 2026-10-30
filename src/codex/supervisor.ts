@@ -1,9 +1,15 @@
 import nodeFs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { logEvent } from '../broker/log.js'
 import { drainInbox, releaseClaims, type Drained } from '../inbox-spool/drain.js'
 import { codexHostDir, codexPendingDir } from '../paths.js'
-import { codexInboxSpoolDir, parkCodexHost, readCodexHostStamp } from '../server/inbox-spool.js'
+import {
+  codexInboxSpoolDir,
+  parkCodexHost,
+  readCodexHostStamp,
+  sweepCodexPending,
+} from '../server/inbox-spool.js'
 import { psParentOf, type ParentOf } from '../server/host.js'
 import { isAlive } from '../suite-slots.js'
 import {
@@ -20,8 +26,14 @@ import {
  * is user-role input, never developer, so it never outranks the user.
  *
  * A record is claimed by `drain.ts` and deleted only after the RPC succeeded;
- * on any error its claim is renamed back so the next drain carries it.
+ * on any error its claim is renamed back so the next drain carries it. Delivery
+ * is therefore at-least-once: a crash after the RPC and before the release repeats
+ * it, and no marker can close that window, since one written before the RPC loses
+ * the record to the same crash and one written after has the same gap (CC-1684).
  */
+
+const say = (log: ((line: string) => void) | undefined, line: string): void =>
+  (log ?? (l => process.stderr.write(`agent-chat codex run: ${l}\n`)))(line)
 
 export const PEER_HEADER =
   'agent-chat messages that arrived for this session. Each is from the peer named in from, ' +
@@ -178,7 +190,7 @@ export class DeliveryLoop {
   }
 
   private log(line: string): void {
-    ;(this.deps.log ?? (l => process.stderr.write(`agent-chat codex run: ${l}\n`)))(line)
+    say(this.deps.log, line)
   }
 }
 
@@ -238,7 +250,9 @@ export interface SuperviseOptions {
   cwd: string
   wakeCap?: number | undefined
   /** `--name`: this run drains that name's pending dir and parks its own spool there (CC-1683). */
-  keepAs?: string | undefined
+  keepAs: string
+  /** Sweep pending dirs unused for this long at start; null keeps them (CC-1684). */
+  pendingTtlMs?: number | null
   spoolDirs?: () => string[]
   rescanMs?: number
   log?: ((line: string) => void) | undefined
@@ -288,8 +302,15 @@ function keepUndelivered(hostSpools: string[], keepAs: string, log: SuperviseOpt
   for (const dir of hostSpools) parkCodexHost(spoolHostPid(dir), keepAs)
   const kept = countRecords(codexPendingDir(keepAs))
   if (kept === 0) return
-  const line = `${kept} undelivered record(s) kept for the next run named ${keepAs}`
-  ;(log ?? (l => process.stderr.write(`agent-chat codex run: ${l}\n`)))(line)
+  say(log, `${kept} undelivered record(s) kept for the next run named ${keepAs}`)
+}
+
+/** A name that never runs again has no run of its own to clear it, so any run does. */
+function sweepPending(ttlMs: number, keepAs: string, log: SuperviseOptions['log']): void {
+  for (const { name, records } of sweepCodexPending(ttlMs, keepAs)) {
+    logEvent('codex_pending_swept', { name, records })
+    say(log, `swept the pending dir of ${name}: ${records} undelivered record(s) past their age limit`)
+  }
 }
 
 /**
@@ -298,16 +319,15 @@ function keepUndelivered(hostSpools: string[], keepAs: string, log: SuperviseOpt
  * so an approval prompt would otherwise fail the tool call it gates.
  */
 export async function superviseCodex(options: SuperviseOptions): Promise<number> {
-  const { server } = options
+  const { server, keepAs, pendingTtlMs = null } = options
+  if (pendingTtlMs !== null) sweepPending(pendingTtlMs, keepAs, options.log)
   const thread = { cwd: options.cwd, approvalPolicy: 'never' }
   const { threadId } =
     options.resume === undefined
       ? await server.threadStart(thread)
       : await server.threadResume(options.resume, thread)
-  const { keepAs } = options
   const hostSpools = options.spoolDirs ?? spoolFinder(server.pid ?? -1)
-  const spoolDirs = (): string[] =>
-    keepAs === undefined ? hostSpools() : [codexPendingDir(keepAs), ...hostSpools()]
+  const spoolDirs = (): string[] => [codexPendingDir(keepAs), ...hostSpools()]
   const onWakeCapped = (cap: number): void => options.onWakeCapped?.(hostSpools().map(spoolHostPid), cap)
   const loop = new DeliveryLoop({
     server,
@@ -331,6 +351,6 @@ export async function superviseCodex(options: SuperviseOptions): Promise<number>
   const exit = await server.exited
   stop()
   await loop.settled()
-  if (keepAs !== undefined) keepUndelivered(hostSpools(), keepAs, options.log)
+  keepUndelivered(hostSpools(), keepAs, options.log)
   return exitCodeOf(exit)
 }

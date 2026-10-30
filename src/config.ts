@@ -63,6 +63,8 @@ export interface AgentChatConfig {
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
   noticeTtlHours?: unknown
+  /** CC-1684: `null` keeps `codex-pending/<name>` dirs for good. */
+  codexPendingTtlHours?: unknown
   ghWriteGapSeconds?: unknown
   reportBatchSeconds?: unknown
   paneColours?: unknown
@@ -430,6 +432,15 @@ export const DEFAULT_NOTICE_TTL_HOURS = 72
 /** `noticeTtlHours` in `config.json`, in milliseconds; read per query so an edit needs no broker restart. */
 export function resolveNoticeTtlMs(): number {
   return positiveIntegerFrom('noticeTtlHours', DEFAULT_NOTICE_TTL_HOURS) * 3_600_000
+}
+
+/** How long `codex-pending/<name>` waits for its name to run again (CC-1684). */
+export const DEFAULT_CODEX_PENDING_TTL_HOURS = 336
+
+/** `codexPendingTtlHours` in `config.json`, in milliseconds; `null` turns the sweep off. Read per run. */
+export function resolveCodexPendingTtlMs(): number | null {
+  if (readConfig().codexPendingTtlHours === null) return null
+  return positiveIntegerFrom('codexPendingTtlHours', DEFAULT_CODEX_PENDING_TTL_HOURS) * 3_600_000
 }
 
 /** Minimum spacing between two `agent-chat gh-write` calls machine-wide (CC-253). */

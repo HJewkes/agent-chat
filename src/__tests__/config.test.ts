@@ -15,6 +15,8 @@ import {
   resolveMachineLimits,
   resolveMachineStopLimits,
   resolveNoticeTtlMs,
+  resolveCodexPendingTtlMs,
+  DEFAULT_CODEX_PENDING_TTL_HOURS,
   resolvePermissionHookTimeout,
   resolvePoolProbe,
   resolvePaceControllerMode,
@@ -409,6 +411,30 @@ describe('resolvePermissionHookTimeout', () => {
     writeConfigJson({ permissionHookTimeoutSeconds: 'soon' })
 
     expect(resolvePermissionHookTimeout()).toBe(DEFAULT_PERMISSION_HOOK_TIMEOUT_S)
+  })
+})
+
+describe('resolveCodexPendingTtlMs', () => {
+  it('defaults when the key is missing', () => {
+    expect(resolveCodexPendingTtlMs()).toBe(DEFAULT_CODEX_PENDING_TTL_HOURS * 3_600_000)
+  })
+
+  it('reads hours from config.json', () => {
+    writeConfigJson({ codexPendingTtlHours: 6 })
+
+    expect(resolveCodexPendingTtlMs()).toBe(6 * 3_600_000)
+  })
+
+  it('reads null as the sweep turned off', () => {
+    writeConfigJson({ codexPendingTtlHours: null })
+
+    expect(resolveCodexPendingTtlMs()).toBeNull()
+  })
+
+  it('falls back on a value that is not a positive integer', () => {
+    writeConfigJson({ codexPendingTtlHours: 0 })
+
+    expect(resolveCodexPendingTtlMs()).toBe(DEFAULT_CODEX_PENDING_TTL_HOURS * 3_600_000)
   })
 })
 

@@ -2,8 +2,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mcpOverrides, parseName, recordDelivered, reportWakeCapped } from '../cli/verbs/codex-run.js'
+import {
+  addCodexCommands,
+  mcpOverrides,
+  parseName,
+  recordDelivered,
+  reportWakeCapped,
+} from '../cli/verbs/codex-run.js'
 import type { AppendInput } from '../broker/event-store.js'
 import { startCodexAppServer, type CodexAppServer } from '../codex/app-server-client.js'
 import {
@@ -14,9 +21,10 @@ import {
   superviseCodex,
   type ThreadDelivery,
 } from '../codex/supervisor.js'
+import { drainInbox } from '../inbox-spool/drain.js'
 import { codexHostDir, codexPendingDir } from '../paths.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
-import { codexInboxSpoolDir, spoolRecord } from '../server/inbox-spool.js'
+import { codexInboxSpoolDir, parkCodexHost, spoolRecord } from '../server/inbox-spool.js'
 
 /**
  * CC-1523 (codex-listen S4b): the delivery state machine of `agent-chat codex run`,
@@ -306,6 +314,7 @@ describe('superviseCodex', () => {
     const code = await superviseCodex({
       server,
       cwd: scratch,
+      keepAs: 'cc1684-unused',
       spoolDirs: () => [spool],
       rescanMs: 20,
       log: () => {},
@@ -322,6 +331,7 @@ describe('superviseCodex', () => {
     const running = superviseCodex({
       server,
       cwd: scratch,
+      keepAs: 'cc1684-unused',
       resume: THREAD,
       spoolDirs: () => [],
       rescanMs: 20,
@@ -419,6 +429,105 @@ describe('a named run across an app-server death (CC-1683)', () => {
     expect(JSON.stringify(sent())).not.toContain('m-mine')
     expect(pendingRecords()).toHaveLength(1)
   })
+
+  async function runUntilDrained(): Promise<void> {
+    const server = await fake()
+    const running = superviseOnce(server, () => [])
+    await vi.waitFor(() => expect(pendingRecords()).toEqual([]))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    await server.close('SIGTERM')
+    await running
+  }
+
+  it('repeats a delivery once after a crash between the RPC and the release, and no more', async () => {
+    // Catches: a repeat that loses the msg_id, or a record that goes round on every later run (CC-1684).
+    const DEAD = 73_999
+    const crashed = await fake()
+    spoolToHost('m-window')
+    const drained = drainInbox(hostSpool, { pid: DEAD })
+    const { threadId } = await crashed.threadStart({ cwd: scratch, approvalPolicy: 'never' })
+    await crashed.turnStart({ threadId, input: [{ type: 'text', text: drained.blocks.join('\n') }] })
+    parkCodexHost(HOST_PID, NAME, { isAlive: () => false })
+
+    await runUntilDrained()
+    await runUntilDrained()
+
+    const carrying = sent().filter(m => JSON.stringify(m.params.input ?? '').includes('m-window'))
+    expect(carrying.map(m => m.method)).toEqual(['turn/start', 'turn/start'])
+    for (const message of carrying) expect(message.params.input?.[0]?.text).toContain('msg_id="m-window"')
+    expect(pendingRecords()).toEqual([])
+  })
+})
+
+describe('sweeping pending dirs at the start of a run (CC-1684)', () => {
+  const OWN = 'cc1684-own'
+  const OLD = 'cc1684-old'
+  const HOUR_MS = 3_600_000
+  const lines: string[] = []
+
+  afterEach(() => {
+    lines.length = 0
+    for (const name of [OWN, OLD]) fs.rmSync(codexPendingDir(name), { recursive: true, force: true })
+  })
+
+  function park(name: string, msgId: string): void {
+    const dir = codexPendingDir(name)
+    spoolRecord(dir, { kind: 'message', msgId, meta: { from: 'scout', msg_id: msgId }, text: msgId })
+    const longAgo = new Date(Date.now() - 100 * HOUR_MS)
+    fs.utimesSync(dir, longAgo, longAgo)
+  }
+
+  async function runOnce(pendingTtlMs: number | null): Promise<void> {
+    const server = await fake()
+    const running = superviseCodex({
+      server,
+      cwd: scratch,
+      keepAs: OWN,
+      pendingTtlMs,
+      spoolDirs: () => [],
+      rescanMs: 20,
+      log: line => lines.push(line),
+    })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    await server.close('SIGTERM')
+    await running
+  }
+
+  it("sweeps another name's old dir with a line, and still delivers its own old record", async () => {
+    // Catches: no sweep wired into the run, a silent one, or a name sweeping what it was about to get.
+    park(OLD, 'm-old')
+    park(OWN, 'm-own')
+
+    await runOnce(HOUR_MS)
+
+    expect(fs.existsSync(codexPendingDir(OLD))).toBe(false)
+    expect(lines.filter(line => line.includes(`pending dir of ${OLD}`))).toHaveLength(1)
+    expect(lines.join()).toContain('1 undelivered record(s)')
+    expect(JSON.stringify(sent())).toContain('m-own')
+  })
+
+  it('sweeps nothing when the age is null', async () => {
+    // Catches: null read as zero, which would sweep every dir.
+    park(OLD, 'm-old')
+
+    await runOnce(null)
+
+    expect(fs.existsSync(codexPendingDir(OLD))).toBe(true)
+    expect(lines).toEqual([])
+  })
+})
+
+describe('codex run without --name (CC-1684)', () => {
+  it('refuses before any Codex starts', async () => {
+    // Catches: an unnamed run, whose records nothing could ever come back for.
+    const program = new Command().exitOverride().configureOutput({ writeErr: () => undefined })
+    addCodexCommands(program, 'test')
+    program.commands.forEach(command => command.commands.forEach(verb => verb.exitOverride()))
+
+    await expect(
+      program.parseAsync(['codex', 'run', '--codex', '/nonexistent/codex'], { from: 'user' }),
+    ).rejects.toMatchObject({ code: 'commander.missingMandatoryOptionValue' })
+  })
 })
 
 describe('spoolFinder', () => {
@@ -479,7 +588,6 @@ describe('mcpOverrides', () => {
 
   it('refuses a name no agent may hold, before Codex starts', () => {
     expect(parseName('scout-2')).toBe('scout-2')
-    expect(parseName(undefined)).toBeUndefined()
     expect(() => parseName('../Scout')).toThrow(/--name/)
   })
 })
