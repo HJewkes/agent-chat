@@ -184,7 +184,16 @@ import {
   type NamePresence,
   type RetireScope,
 } from './isolation/retire-finished.js'
+import type { MergedPr } from './isolation/merged-pr.js'
+import { readPrState } from './isolation/pr-state.js'
 import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
+import {
+  MERGED_RETIRE_EVERY_MS,
+  passPrReads,
+  retireMerged,
+  startMergedRetireSweep,
+  type PrRead,
+} from './isolation/retire-merged.js'
 import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-reviewer-at-report.js'
 import { parkImplementerAtExit, type ImplementerParkPort } from './isolation/park-implementer-at-exit.js'
 import { fixRoundBlocker, type ShepherdSkipPort } from './isolation/shepherd-skip.js'
@@ -968,6 +977,8 @@ export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'
   checkProcesses?: boolean
   /** CC-1470: skip the Shepherd fix-round check, for Shepherd itself: its own park would wait on its own status. */
   noFixRoundCheck?: boolean
+  /** CC-1678: a done PR's head, which backs HEAD where a merge deleted the branch on origin. Broker-internal. */
+  prHead?: MergedPr
 }
 
 export interface ResumeRequest {
@@ -1396,6 +1407,7 @@ export class Supervisor implements TeleportHost {
   private readonly predictedCost: PredictedCostReaders | undefined
   private readonly footprint: FootprintSampler
   private stopFootprint: (() => void) | undefined
+  private stopMergedRetire: (() => void) | undefined
   private readonly drainState = new DrainState()
   private readonly settleMs: number
   private readonly attachMs: number
@@ -1961,6 +1973,36 @@ export class Supervisor implements TeleportHost {
       isRemote: (agent: AgentIdentity) => remoteHostOf(agent) !== undefined,
     }
     this.stopFootprint = startFootprintSampling(this.footprint, () => footprintTargets(roster), everyMs)
+  }
+
+  /** CC-1678: retires exited workers whose PR is done on an unref'd interval; without Shepherd's reads it never runs. */
+  startMergedRetire(everyMs = MERGED_RETIRE_EVERY_MS): void {
+    this.stopMergedRetire?.()
+    const skip = this.shepherdSkip
+    if (skip === undefined) return
+    const reads = passPrReads(readPrState)
+    const pass = (): Promise<void> => this.retireMergedPass(skip, reads())
+    this.stopMergedRetire = startMergedRetireSweep(pass, everyMs)
+  }
+
+  private async retireMergedPass(skip: ShepherdSkipPort, readPr: PrRead): Promise<void> {
+    const treeHold = this.burndownTreeHold
+    const results = await retireMerged({
+      roster: () => this.core.agents.roster(),
+      events: () => this.core.events.agentEvents(),
+      current: agentId => this.core.agents.get(agentId),
+      tracked: agentId => this.live.has(agentId),
+      parking: agentId => this.parking.has(agentId),
+      presence: agent => this.namePresence(agent),
+      lastReport: agent => this.lastReportText(agent),
+      treeHold: tree => treeHold?.(tree),
+      skip,
+      readPr,
+      park: (agentId, prHead) => this.parkById(agentId, { checkProcesses: true, prHead }),
+      retire: agentId => this.retireById(agentId, 'agent-chat', { keepBranch: true }),
+    })
+    for (const { action, ...detail } of results)
+      logEvent(action === 'retired' ? 'merged_retired' : 'merged_retire_kept', detail)
   }
 
   /** CC-1669 S2: checks for idle print hosts with waiting mail on an unref'd interval. */
@@ -4329,10 +4371,12 @@ export class Supervisor implements TeleportHost {
     const check = req.noFixRoundCheck === true ? undefined : this.shepherdSkip
     const fixRound = check && (await fixRoundBlocker(check, identity, target))
     if (fixRound) return { ok: false, reason: fixRound }
+    const { prHead } = req
     const parked = await parkWorktree(
       target,
       () => this.parkBlockerFor(identity.agentId, target),
       identity.state === 'detached' || req.checkProcesses ? this.cwdLister : undefined,
+      prHead && (() => Promise.resolve([prHead])),
     )
     this.parking.delete(identity.agentId)
     if (!parked.ok) return parked
@@ -6000,6 +6044,7 @@ export class Supervisor implements TeleportHost {
     clearTimeout(this.readmitSweep)
     clearInterval(this.idlePrintTimer)
     this.stopFootprint?.()
+    this.stopMergedRetire?.()
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
       if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
