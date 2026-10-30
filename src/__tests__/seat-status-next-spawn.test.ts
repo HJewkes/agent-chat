@@ -80,7 +80,7 @@ function deps(mode: PoolPickMode, pace: Record<string, PacePool>): StatusDeps {
     scored: () => {
       throw new Error('not scored here')
     },
-    machine: () => ({}) as MachineStatus,
+    machine: () => ({ holding: null }) as MachineStatus,
     machineStop: () => null,
     nextSpawn: {
       mode,
