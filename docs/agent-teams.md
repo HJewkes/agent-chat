@@ -1849,6 +1849,17 @@ spawn`, `npx agent-chat agent spawn`, an absolute path, a script file that
   exits; a launch that does neither is ended at the attach ceiling. The refusal
   is the retryable `spawn_rate_limit`. The human at the CLI is exempt for the
   same reason `checkCwd` does. Launches on another host take no slot.
+- **Crash loops (CC-1671):** handled where an agent is relaunched, per identity,
+  never by throttling (`agents/crash-loop.ts`). A launch counts when it ends in
+  a non-zero exit or a signal within `crashLoopSeconds` of starting (default
+  30), or never registers. After `crashLoopLaunches` in a row (default 3) the
+  `agent_exited` row carries the mark with the last exit and the output tail,
+  and the spawner gets one notice. `null` on either key turns this off. From
+  then on an automated relaunch is refused at once with the non-retryable
+  `crash_looping`: the broker's own resumes, the seat watchdog, Shepherd and
+  burndown. Nothing sleeps, so other spawns are unaffected. A resume or spawn
+  by hand runs and clears the mark. Exits the broker caused and inferred exits
+  do not count, so a pane agent, whose exit is always inferred, is not covered.
 - **Predicted cost (CC-1671):** just before the slot is taken, a local spawn
   must clear the machine guard's limits with the profile's p90 added: free
   memory less the p90 RSS stays at or above `machineMemoryFreePercent`, and CPU

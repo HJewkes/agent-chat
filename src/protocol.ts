@@ -85,6 +85,7 @@ export interface SpawnResultFields {
     | 'machine_memory_floor'
     | 'machine_predicted_memory'
     | 'machine_predicted_cpu'
+    | 'crash_looping'
     | 'machine_cpu_pressure'
     | 'machine_resource_headroom'
     | 'seat_budget_stop'
@@ -754,9 +755,9 @@ export const isAgentTeleportReason = (value: unknown): value is (typeof AGENT_TE
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
 
-export const WAKE_SOURCES = ['watchdog', 'shepherd', 'console'] as const
+export const WAKE_SOURCES = ['watchdog', 'shepherd', 'console', 'burndown'] as const
 
-/** CC-203, CC-436, CC-1507: marks a send or resume the seat watchdog, Shepherd or titan-console made, so its event row is not read as the human typing. */
+/** CC-203, CC-436, CC-1507: marks a send or resume the seat watchdog, Shepherd, titan-console or a burndown tick made, so its event row is not read as the human typing. */
 export type WakeSource = (typeof WAKE_SOURCES)[number]
 
 /** A frame's `source` is untrusted wire input, so anything but a known source is dropped. */
@@ -766,8 +767,8 @@ export const wakeSource = (value: unknown): WakeSource | undefined =>
 export const LAUNCHERS = ['seat-watchdog', 'shepherd'] as const
 
 /**
- * CC-1466: the automation that ran a CLI spawn or resume as the human. Display and audit only: the row's
- * actor stays the human, and no gate reads it.
+ * CC-1466: the automation that ran a CLI spawn or resume as the human. The row's actor stays the human.
+ * CC-1671 S4 is the one gate that reads it, to stop automation relaunching a crash-looping agent.
  */
 export type Launcher = (typeof LAUNCHERS)[number]
 
@@ -1784,6 +1785,16 @@ export interface AgentIdentity {
    * terminal — and only the roster needs to say WHICH kind, which it does without
    * every consumer of `AgentLifecycle` growing a case for it.
    */
+  /** CC-1671 S4: launches in a row that crashed; absent at zero. */
+  crashStreak?: number
+  /** CC-1671 S4: set once the streak reaches its limit, so nothing automated relaunches it. A hand resume clears it. */
+  crashLoop?: {
+    count: number
+    code: number | null
+    signal?: string
+    stderrTail?: string
+    at: number
+  }
   exit?: {
     code: number | null
     summary: string

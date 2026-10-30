@@ -8,6 +8,7 @@ import {
   resolveAccountRotation,
   resolveAgentSlots,
   resolveCoordinatorGrantableTools,
+  resolveCrashLoop,
   resolveContextHintPolicy,
   resolveFullSuiteSlots,
   resolveGitShellAliases,
@@ -675,5 +676,23 @@ describe('resolveAccountRotation', () => {
     writeConfigJson({ accountRotation: { enabled: 'no', ceilingPct: 140, exclude: ['personal'] } })
 
     expect(resolveAccountRotation()).toEqual({ enabled: true, ceilingPct: 90, exclude: ['personal'] })
+  })
+})
+
+describe('crash-loop limits (CC-1671 S4)', () => {
+  it('defaults to 30 seconds and 3 launches', () => {
+    expect(resolveCrashLoop()).toEqual({ seconds: 30, launches: 3 })
+  })
+
+  it('reads both keys, and null turns either off', () => {
+    writeConfigJson({ crashLoopSeconds: 45, crashLoopLaunches: null })
+
+    expect(resolveCrashLoop()).toEqual({ seconds: 45, launches: null })
+  })
+
+  it('falls back on a value that is not a positive whole number', () => {
+    writeConfigJson({ crashLoopSeconds: 0, crashLoopLaunches: 'three' })
+
+    expect(resolveCrashLoop()).toEqual({ seconds: 30, launches: 3 })
   })
 })

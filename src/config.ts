@@ -39,6 +39,11 @@ import {
 } from './agents/process-guard.js'
 import { PROFILE_DRIFT_MODES, type ProfileDriftMode } from './agents/profile-baseline.js'
 import { DEFAULT_ROTATION, type RotationConfig } from './agents/account-rotation.js'
+import {
+  DEFAULT_CRASH_LOOP_LAUNCHES,
+  DEFAULT_CRASH_LOOP_SECONDS,
+  type CrashLoopLimits,
+} from './agents/crash-loop.js'
 
 export interface AgentChatConfig {
   /** Path to a coordinator document; its `state_dir` relocates the autonomy root. */
@@ -73,6 +78,10 @@ export interface AgentChatConfig {
   machineStopDiskBytesPercent?: unknown
   machineStopMemoryFreePercent?: unknown
   machineStopLoad5?: unknown
+  /** CC-1671 S4: a crash this soon after launch counts; `null` turns the crash-loop stop off. */
+  crashLoopSeconds?: unknown
+  /** CC-1671 S4: crashes in a row before respawning stops; `null` turns the crash-loop stop off. */
+  crashLoopLaunches?: unknown
   machineStopSwapUsedPercent?: unknown
   machineStopPressureLevel?: unknown
   fullSuiteSlots?: unknown
@@ -504,6 +513,16 @@ function headroomLimitsFrom(config: AgentChatConfig, keys: HeadroomKeys): Headro
     tmp_inodes: limit(keys.tmp_inodes),
     tmp_bytes: limit(keys.tmp_bytes),
     disk_bytes: limit(keys.disk_bytes),
+  }
+}
+
+/** CC-1671 S4: read at each exit, so an edit needs no restart. */
+export function resolveCrashLoop(): CrashLoopLimits {
+  const { crashLoopSeconds: seconds, crashLoopLaunches: launches } = readConfig()
+  return {
+    seconds: seconds === null ? null : positiveIntegerFrom('crashLoopSeconds', DEFAULT_CRASH_LOOP_SECONDS),
+    launches:
+      launches === null ? null : positiveIntegerFrom('crashLoopLaunches', DEFAULT_CRASH_LOOP_LAUNCHES),
   }
 }
 

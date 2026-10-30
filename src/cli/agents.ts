@@ -290,6 +290,8 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     // TP-4132: only on retired rows, so the default listing, which has none, keeps its shape.
     ...(agent.state === 'retired' ? { retired: true } : {}),
     inferred: agent.exit?.inferred === true,
+    // CC-1671 S4: only while marked, so every other row keeps its shape.
+    ...(agent.crashLoop === undefined ? {} : { crashLoop: agent.crashLoop }),
     spawnedAt: new Date(agent.spawnedAt).toISOString(),
     // CC-1577: only once an exit is recorded, so a live row keeps its shape; the numeric field stays internal.
     ...(agent.exitedAt === undefined ? {} : { exitedAt: new Date(agent.exitedAt).toISOString() }),

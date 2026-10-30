@@ -2028,7 +2028,9 @@ describe('burndown tick wakes the decider', () => {
 
     await tickBroker(client).resume('decider', 'wake up')
 
-    expect(sent).toEqual([{ t: 'resume', name: 'decider', surface: 'headless', message: 'wake up' }])
+    expect(sent).toEqual([
+      { t: 'resume', name: 'decider', surface: 'headless', message: 'wake up', source: 'burndown' },
+    ])
   })
 
   it('does not wake for a question younger than 5 minutes', async () => {
