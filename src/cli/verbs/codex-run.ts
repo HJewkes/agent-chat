@@ -12,20 +12,23 @@ import { withBroker } from '../client.js'
 /**
  * `-c` overrides that put agent-chat's MCP server, marked as a Codex host, under the app-server.
  * A `name` goes in its env as `AGENT_CHAT_NAME`, which it registers under before any turn (CC-1545).
+ * Codex passes MCP children only a short allowlist of variables, so `AGENT_CHAT_HOME` must go in
+ * here too: without it the server joins the default broker and spools where the supervisor never looks.
  */
-export function mcpOverrides(nodePath: string, entry: string, name?: string): string[] {
+export function mcpOverrides(nodePath: string, entry: string, name?: string, home?: string): string[] {
   const toml = (value: unknown): string => JSON.stringify(value)
   const named = name === undefined ? '' : `,AGENT_CHAT_NAME=${toml(name)}`
+  const homed = home === undefined ? '' : `,AGENT_CHAT_HOME=${toml(home)}`
   return [
     `mcp_servers.agent-chat.command=${toml(nodePath)}`,
     `mcp_servers.agent-chat.args=${toml([entry, 'mcp'])}`,
-    `mcp_servers.agent-chat.env={AGENT_CHAT_HOST="codex"${named}}`,
+    `mcp_servers.agent-chat.env={AGENT_CHAT_HOST="codex"${named}${homed}}`,
   ].flatMap(override => ['-c', override])
 }
 
 export const appServerArgs = (codexArgs: readonly string[], name?: string): string[] => [
   'app-server',
-  ...mcpOverrides(process.execPath, cliEntry(), name),
+  ...mcpOverrides(process.execPath, cliEntry(), name, process.env.AGENT_CHAT_HOME),
   ...codexArgs,
 ]
 
