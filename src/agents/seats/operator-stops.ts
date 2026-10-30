@@ -343,7 +343,8 @@ export function renderMachineStopStatus(status: MachineStopStatus): string[] {
     ...status.holds.map(h => `hold (${h.kind}) by ${h.by} since ${h.since}: ${h.reason}`),
     ...status.ownerStops.map(s => `owner stop ${s.seat}: ${s.reason}`),
     `readings: memory ${machine.memoryFreePercent ?? '?'}% free, load5 ${machine.load5 ?? '?'}, ` +
-      `swap ${machine.swapUsedPercent ?? '?'}% used, pressure level ${machine.pressureLevel ?? '?'}`,
+      `swap ${machine.swapUsedPercent ?? '?'}% used, pressure level ${machine.pressureLevel ?? '?'}, ` +
+      `CPU pressure ${machine.cpuPressurePercent ?? '?'}%`,
     ...(machine.stop === null ? [] : [`machine stop: ${machine.stop}`]),
     ...status.errors.map(e => `unreadable: ${e}`),
   ]

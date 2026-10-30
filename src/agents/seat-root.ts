@@ -67,6 +67,18 @@ export const policySeat = (policy: SeatPolicy, name: string): SeatPolicyEntry | 
 export const startsSeatRoot = (policy: SeatPolicy, name: string, profile: string): boolean =>
   policySeat(policy, name)?.launchProfiles.includes(profile) === true
 
+/**
+ * CC-1675: why a requester named `name`, running `profile`, is not a seat root, naming the policy
+ * entry the owner would add. A listed entry means the connection failed the rest of the proof.
+ */
+export function seatRootGap(policy: SeatPolicy, name: string, profile: string): string {
+  const entry = policySeat(policy, name)
+  if (entry === undefined) return `"${name}" is not a seat in ${seatPolicyPath()}`
+  if (!entry.launchProfiles.includes(profile))
+    return `seat "${name}" in ${seatPolicyPath()} does not list profile "${profile}" in its launchProfiles`
+  return `seat "${name}" is in ${seatPolicyPath()}, but this connection did not prove it holds the seat's launch`
+}
+
 /** The refusal for a root seat's spawn of a profile outside its ceiling. */
 export function ceilingRefusal(seat: string, entry: SeatPolicyEntry, profile: string): string | undefined {
   if (entry.ceiling.includes(profile)) return undefined
