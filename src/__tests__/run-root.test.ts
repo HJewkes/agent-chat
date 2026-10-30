@@ -78,6 +78,41 @@ describe('the sweep at the start of a run', () => {
     expect(fs.existsSync(fresh)).toBe(true)
   })
 
+  it('keeps a fresh root whose owner-pid is still empty', () => {
+    const root = fs.mkdtempSync(path.join(base, 'agent-chat-test-run-'))
+    fs.writeFileSync(path.join(root, 'owner-pid'), '')
+
+    expect(sweepDeadRuns([base])).toEqual([])
+    expect(fs.existsSync(root)).toBe(true)
+  })
+
+  it('sweeps a day-old root whose owner-pid is garbage', () => {
+    const root = fs.mkdtempSync(path.join(base, 'agent-chat-test-run-'))
+    fs.writeFileSync(path.join(root, 'owner-pid'), 'garbage')
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    fs.utimesSync(root, twoDaysAgo, twoDaysAgo)
+    const fresh = fs.mkdtempSync(path.join(base, 'agent-chat-test-run-'))
+    fs.writeFileSync(path.join(fresh, 'owner-pid'), '0')
+
+    expect(sweepDeadRuns([base])).toEqual([root])
+    expect(fs.existsSync(root)).toBe(false)
+    expect(fs.existsSync(fresh)).toBe(true)
+  })
+
+  it('skips a symlinked root and leaves its target untouched', () => {
+    const target = fs.mkdtempSync(path.join(base, 'elsewhere-'))
+    const keep = path.join(target, 'keep.txt')
+    fs.writeFileSync(keep, 'x')
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    fs.utimesSync(target, twoDaysAgo, twoDaysAgo)
+    const link = path.join(base, 'agent-chat-test-run-link')
+    fs.symlinkSync(target, link)
+
+    expect(sweepDeadRuns([base])).toEqual([])
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(keep, 'utf8')).toBe('x')
+  })
+
   it('leaves dirs that are not run roots alone', () => {
     const other = path.join(base, 'unrelated')
     fs.mkdirSync(other)
