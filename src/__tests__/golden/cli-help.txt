@@ -1097,6 +1097,10 @@ Commands:
                     memory, load, swap and pressure readings against the machine stop. `stopped` is
                     a hold, the machine stop or a source that cannot be read; an owner stop holds
                     only its own seat
+  costs [options]   what is running and what it costs (CC-1671): each live agent's CPU, peak RSS,
+                    children and TMPDIR files so far, then the median and p90 of each per profile
+                    and role over their last exits. Linux only; an agent reads "no sample yet" until
+                    the broker has sampled it
   help [command]    display help for command
 
 === agent-chat machine status
@@ -1115,6 +1119,17 @@ only its own seat
 Options:
   --json      one object: at, stopped, holds[{kind, by, since, reason, msgId?, seats?}], ownerStops,
               machine, errors
+  -h, --help  display help for command
+
+=== agent-chat machine costs
+Usage: agent-chat machine costs [options]
+
+what is running and what it costs (CC-1671): each live agent's CPU, peak RSS, children and TMPDIR
+files so far, then the median and p90 of each per profile and role over their last exits. Linux
+only; an agent reads "no sample yet" until the broker has sampled it
+
+Options:
+  --json      one object: running[], estimates[]
   -h, --help  display help for command
 
 === agent-chat host

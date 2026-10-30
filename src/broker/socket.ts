@@ -2410,6 +2410,7 @@ export class SocketServer {
             ? { agents: core.agents.roster({ includeRetired: msg.includeRetired ?? false }) }
             : viewRoster(core.agents.roster({ includeRetired: true }), msg.view)),
           slots: this.supervisor.slotUsage(),
+          ...(msg.costs === true ? { costs: this.supervisor.agentCosts() } : {}),
         })
       case 'teleport':
         void this.handleTeleport(conn, msg)
