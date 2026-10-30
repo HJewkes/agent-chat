@@ -8,7 +8,8 @@ push. What has shipped:
   make no `<channel>` claim.
 - **S2.** Every push to a Codex host is also written to a spool keyed on the Codex pid,
   `<state>/codex-hosts/<hostPid>/inbox`. `chat_inbox` clears what it returns, and the
-  directory goes when the server exits.
+  directory goes when the server exits (under `codex run --name`, its records move first;
+  see S4).
 - **S3.** A hook that tells the model what waits in that spool (below).
 - **S4.** `agent-chat codex run`, a supervisor that delivers that spool into the thread,
   waking an idle session (below).
@@ -97,6 +98,13 @@ options go to `codex app-server`.
 - **Approval policy `never`.** The thread is started or resumed with
   `approvalPolicy: "never"`. The supervisor declines every request the app-server sends
   it, so an approval prompt would fail the tool call it gates.
+- **A dead app-server loses nothing under `--name`.** Whatever is undelivered when the
+  app-server dies moves to `<state>/codex-pending/<name>`, and the next `codex run --name
+<name>` delivers it once, into its own thread. The pid dir always goes, so a later Codex
+  on that pid inherits nothing. A run without `--name` has no identity to come back as: its
+  records go with the pid dir, and only `chat_inbox` still reads them. A crash between the
+  RPC succeeding and the claim being released repeats that delivery, and nothing expires
+  the pending dir of a name that never runs again.
 - **Exit.** The supervisor exits with the app-server's exit code, or 128 plus the signal
   number when a signal ended it. SIGINT and SIGTERM are forwarded to the app-server.
 

@@ -258,9 +258,14 @@ async function startSupervisor(name, env, mockPort, hooks = false) {
 }
 
 const spoolRoot = env => path.join(env.AGENT_CHAT_HOME, 'codex-hosts')
+const HOST_GONE = '(host dir is gone)'
 const spoolListing = (env, pid) => {
   const dir = path.join(spoolRoot(env), String(pid))
-  return fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).map(String) : ['(host dir is gone)']
+  return fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).map(String) : [HOST_GONE]
+}
+const pendingRecords = (env, name) => {
+  const dir = path.join(env.AGENT_CHAT_HOME, 'codex-pending', name)
+  return fs.existsSync(dir) ? fs.readdirSync(dir).filter(file => file.endsWith('.json')) : []
 }
 
 async function idleWakeAndSpoolKey(mock, peer, env) {
@@ -387,13 +392,23 @@ async function failurePath(mock, peer, env) {
   const exit = await Promise.race([run.child.closed, sleep(20_000).then(() => 'still running')])
   await sleep(1_000)
   const after = spoolListing(env, native.pid)
-  const kept = after.some(name => name.endsWith('.json'))
+  const kept = pendingRecords(env, run.name)
   const nonZero = exit !== 'still running' && exit.code !== 0
-  check('failure path', kept && nonZero, [
+  const next = await startSupervisor(run.name, env, mock.port)
+  await until(() => requestsWith(mock, marker)[0], 20_000, 'the kept record').catch(() => null)
+  await sleep(6_000)
+  const carrying = requestsWith(mock, marker)
+  const copies = carrying.length > 0 ? countIn(carrying.at(-1), marker) : 0
+  const left = pendingRecords(env, run.name)
+  await stopRun(next)
+  const pass = kept.length > 0 && after[0] === HOST_GONE && nonZero && copies === 1 && left.length === 0
+  check('failure path', pass, [
     `spool before the kill: ${before.join(' ')}`,
-    `spool after the kill: ${after.join(' ')}`,
+    `pid dir after the kill: ${after.join(' ')}`,
+    `pending for ${run.name} after the kill: ${kept.join(' ')}`,
     `supervisor exit: ${JSON.stringify(exit)}`,
     `supervisor stderr: ${run.child.stderrText.trim().split('\n').at(-1)?.slice(0, 140)}`,
+    `next run: marker copies in the model input ${copies}, requests carrying it ${carrying.length}, pending left ${left.length}`,
   ])
 }
 

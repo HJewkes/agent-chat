@@ -32,9 +32,10 @@ import { ContextHinter, withHint } from './context-hint.js'
 import { readWait } from './human-wait.js'
 import { ParkAdvisor, readParkBudget } from './park-advisor.js'
 import {
+  adoptCodexHost,
+  codexKeepName,
   launchedInPrintMode,
   resolveInboxSpool,
-  retireCodexHostOnExit,
   spoolRecord,
   type SpoolDeps,
 } from './inbox-spool.js'
@@ -599,7 +600,8 @@ export async function startMcpServer(): Promise<void> {
     hostPid: host.hostPid,
     harness: host.harness,
   })
-  if (host.harness === 'codex' && host.hostPid !== undefined) retireCodexHostOnExit(host.hostPid)
+  if (host.harness === 'codex' && host.hostPid !== undefined)
+    adoptCodexHost(host.hostPid, codexKeepName(process.env))
   const spawned = launched && spoolDir ? { ...launched, inboxSpool: true as const } : launched
   const { deliver, deliverSystemEvents } = channelDelivery(
     params => void mcp.notification({ method: 'notifications/claude/channel', params }),

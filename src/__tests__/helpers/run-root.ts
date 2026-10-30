@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { canonicalPath } from '../../agents/spawn-cwd.js'
 
 /**
  * The per-run temp root global-setup.ts makes (CC-900), and the sweep that removes roots a killed
@@ -16,10 +17,21 @@ const MAX_BASE_LENGTH = 32
 /** A root from before owner files has no pid to check, so only age marks it dead. */
 const UNOWNED_STALE_MS = 24 * 60 * 60 * 1000
 
-/** `$TMPDIR` when it is short enough for socket paths, else a short dir on disk. */
-export function runBase(tmpdir = os.tmpdir(), home = os.homedir()): string {
+/**
+ * True when `dir` or an ancestor holds a `.git` of any kind. Specs treat a temp dir as outside any
+ * repository, and the repo probes walk up, so even an empty stray `/tmp/.git` breaks them (CC-1682).
+ */
+export function hasGitAbove(dir: string): boolean {
+  const real = canonicalPath(dir)
+  const parent = path.dirname(real)
+  return fs.existsSync(path.join(real, '.git')) || (parent !== real && hasGitAbove(parent))
+}
+
+/** `$TMPDIR` when it is short enough for socket paths and outside any checkout, else a short dir on disk. */
+export function runBase(tmpdir = os.tmpdir(), home = os.homedir(), inCheckout = hasGitAbove): string {
   const candidates = [tmpdir, path.join(home, '.cache', 'ac-test'), LEGACY_BASE]
-  return candidates.find(dir => dir.length <= MAX_BASE_LENGTH) ?? tmpdir
+  const short = candidates.filter(dir => dir.length <= MAX_BASE_LENGTH)
+  return short.find(dir => !inCheckout(dir)) ?? short[0] ?? tmpdir
 }
 
 export function createRunRoot(base: string, ownerPid = process.pid): string {

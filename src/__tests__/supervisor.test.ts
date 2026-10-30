@@ -233,6 +233,8 @@ describe('spawning', () => {
     })
 
     it('does not let .. climb out to the root of the temp area', async () => {
+      // The run root may sit under the real home (~/.cache/ac-test), where the climb lands in a workspace.
+      vi.spyOn(os, 'homedir').mockReturnValue(workspace())
       const sup = withStubbedSurface()
       const shared = workspace()
       core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: shared, pid: 1 })

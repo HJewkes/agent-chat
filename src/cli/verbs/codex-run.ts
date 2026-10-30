@@ -7,17 +7,19 @@ import { EventLog } from '../../broker/event-log.js'
 import { cliEntry } from '../../paths.js'
 import type { AppendInput } from '../../broker/event-store.js'
 import type { ClientMessage, ServerMessage } from '../../protocol.js'
+import { CODEX_KEEP_ENV } from '../../server/inbox-spool.js'
 import { withBroker } from '../client.js'
 
 /**
  * `-c` overrides that put agent-chat's MCP server, marked as a Codex host, under the app-server.
- * A `name` goes in its env as `AGENT_CHAT_NAME`, which it registers under before any turn (CC-1545).
+ * A `name` goes in its env as `AGENT_CHAT_NAME`, which it registers under before any turn (CC-1545),
+ * and as the name its undelivered records are kept under when the Codex dies (CC-1683).
  * Codex passes MCP children only a short allowlist of variables, so `AGENT_CHAT_HOME` must go in
  * here too: without it the server joins the default broker and spools where the supervisor never looks.
  */
 export function mcpOverrides(nodePath: string, entry: string, name?: string, home?: string): string[] {
   const toml = (value: unknown): string => JSON.stringify(value)
-  const named = name === undefined ? '' : `,AGENT_CHAT_NAME=${toml(name)}`
+  const named = name === undefined ? '' : `,AGENT_CHAT_NAME=${toml(name)},${CODEX_KEEP_ENV}=${toml(name)}`
   const homed = home === undefined ? '' : `,AGENT_CHAT_HOME=${toml(home)}`
   return [
     `mcp_servers.agent-chat.command=${toml(nodePath)}`,
@@ -112,11 +114,12 @@ function parseWakeCap(raw: string | undefined): number | undefined {
 
 async function runCodex(codexArgs: string[], options: RunOptions): Promise<void> {
   const wakeCap = parseWakeCap(options.wakeCap)
+  const name = parseName(options.name)
   const server = await startCodexAppServer({
     cwd: process.cwd(),
     env: process.env,
     executablePath: options.codex,
-    args: appServerArgs(codexArgs, parseName(options.name)),
+    args: appServerArgs(codexArgs, name),
   })
   const forward = (signal: NodeJS.Signals) => () => void server.close(signal)
   process.once('SIGINT', forward('SIGINT')).once('SIGTERM', forward('SIGTERM'))
@@ -125,6 +128,7 @@ async function runCodex(codexArgs: string[], options: RunOptions): Promise<void>
     resume: options.resume,
     cwd: process.cwd(),
     wakeCap,
+    keepAs: name,
     onWakeCapped: (hostPids, cap) => void reportWakeCapped(hostPids, cap),
     onDelivered: delivery => writeDelivered(options.name ?? 'codex', delivery),
   })
