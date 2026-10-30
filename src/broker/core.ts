@@ -172,11 +172,18 @@ export class BrokerCore<C = Conn> {
 
   /**
    * CC-1554: a resume, a resumed session attaching, or the human's first word to a park
-   * teleport's successor can unpark an agent; its held mail is then pushed in order. A
-   * retired agent's is dropped, since it stays in the inbox and nothing will wake it.
+   * teleport's successor can unpark an agent, as can that successor's own peer work; its
+   * held mail is then pushed in order. A retired agent's is dropped, since it stays in the
+   * inbox and nothing will wake it.
    */
   private flushParkedMail(input: AppendInput): void {
-    const agentId = this.parkedMail.size === 0 ? undefined : this.agentOfRow(input)
+    if (this.parkedMail.size === 0) return
+    this.flushMailOf(this.agentOfRow(input))
+    if (input.kind === 'agent_spawned' || input.kind === 'message')
+      this.flushMailOf(this.agentConnectedAs(input.actor))
+  }
+
+  private flushMailOf(agentId: string | undefined): void {
     const held = agentId === undefined ? undefined : this.parkedMail.get(agentId)
     if (agentId === undefined || held === undefined) return
     const hold = pushHoldFor(this.events, this.agents, agentId)
@@ -191,7 +198,11 @@ export class BrokerCore<C = Conn> {
   /** The agent a row's resume or attach names, or else the one connected under its target. */
   private agentOfRow(input: AppendInput): string | undefined {
     if (input.kind === 'agent_resumed' || input.kind === 'agent_attached') return input.ref
-    const conn = input.target === undefined ? undefined : this.registry.connFor(input.target)
+    return input.target === undefined ? undefined : this.agentConnectedAs(input.target)
+  }
+
+  private agentConnectedAs(name: string): string | undefined {
+    const conn = this.registry.connFor(name)
     return conn === undefined ? undefined : this.registry.entryFor(conn)?.agentId
   }
 

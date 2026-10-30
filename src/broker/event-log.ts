@@ -607,6 +607,16 @@ export class EventLog implements EventStore {
     return row !== undefined
   }
 
+  startedPeerWorkSince(name: string, since: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM events WHERE actor = ? AND ts >= ? AND target NOT IN (?, ?)
+         AND kind IN ('agent_spawned', 'message') LIMIT 1`,
+      )
+      .get(name, since, name, HUMAN)
+    return row !== undefined
+  }
+
   /** CC-1056: every block and unblock row up to `until`, oldest first, for pairing into intervals. */
   seatBlockRows(since: number, until: number): LoggedEventRow[] {
     const rows = this.db
