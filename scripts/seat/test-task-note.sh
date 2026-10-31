@@ -10,7 +10,7 @@ TASK=$ACTIVE_ROOT/demo/tasks/D-1.yml
 
 fresh() {
   rm -rf "$ACTIVE_ROOT" "$W"/task-note-*.lock; mkdir -p "$ACTIVE_ROOT"
-  active-work new --title t demo >/dev/null 2>&1; active-work task add demo --title x >/dev/null 2>&1
+  active-work new --title t demo >/dev/null 2>&1; active-work task add demo --title x --done-when "the scratch task note round trip is observed in the demo workspace" >/dev/null 2>&1
 }
 notes() { python3 -c 'import sys,yaml; v=yaml.safe_load(open(sys.argv[1])).get("notes"); print(type(v).__name__+":"+repr(v))' "$TASK"; }
 check() { # name, expected notes repr
