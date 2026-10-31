@@ -63,6 +63,10 @@ main checkout that a fresh worktree wouldn't see.
 If the ticket rests on an assumption you haven't verified, name it and ask the agent
 to check it before building on it — testing beats assuming.
 
+An audit or planning brief names a cap on new tasks per run (default 10) and sends the
+rest to a report for the coordinator to triage. This is guidance only: nothing in code
+counts tasks per run, so the brief is the only place the cap lives.
+
 ### Which Claude account the agent spends
 
 A spawned agent runs on **your** account, not the broker's. Its `CLAUDE_CONFIG_DIR` is
