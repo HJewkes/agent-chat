@@ -29,6 +29,15 @@ const initiative = {
   autonomy: { mode: 'burndown' as const, lanes: 1, accounts: [], grants: [] },
 }
 
+describe('eligibility of a draft task', () => {
+  it('refuses a draft-tagged task that has a done_when and accepts the same task untagged', () => {
+    const draft = { ...task('D-1', 1), tags: ['draft'] }
+
+    expect(taskRefusal(draft, [], new Set())).toEqual({ kind: 'reserved-tag', reason: 'tagged draft' })
+    expect(taskRefusal(task('D-1', 1), [], new Set())).toBeUndefined()
+  })
+})
+
 describe('eligibility under release backoff', () => {
   it('refuses only the held task and leaves a task with no release record eligible', () => {
     const held = backoffHeld(ledger, NOW)
