@@ -89,6 +89,8 @@ export interface Refusal {
 }
 
 export const RESERVED_TAGS = ['human-only', 'blocked', 'needs-decision']
+/** A draft is stored as status open plus this tag, so status alone cannot keep it from dispatch. */
+const DRAFT_TAG = 'draft'
 
 /**
  * CC-1121: a queued slice waits on whatever holds its parent task's row: a missing or closed parent, the
@@ -197,7 +199,7 @@ export function taskRefusal(
     return { kind: 'no-done-when', reason: 'no done_when, so no return contract' }
   const wanted = isBriefer(task)
   if (task.estimate === undefined && !wanted) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
-  const reserved = task.tags.filter(tag => RESERVED_TAGS.includes(tag))
+  const reserved = task.tags.filter(tag => RESERVED_TAGS.includes(tag) || tag === DRAFT_TAG)
   if (reserved.length > 0) return { kind: 'reserved-tag', reason: `tagged ${reserved.join(', ')}` }
   if (claimed.has(task.id)) return { kind: 'claimed', reason: 'held in the burndown claim ledger' }
   const hold = held.get(task.id)
