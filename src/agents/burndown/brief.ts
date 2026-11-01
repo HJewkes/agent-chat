@@ -267,7 +267,7 @@ function workerScope(t: TaskBrief): string {
  * and CC-1303 the planner budget by 50 for that sentence's 34-byte slice form.
  */
 export const WORKER_BRIEF_MAX_BYTES = 13_200
-export const PLANNER_BRIEF_MAX_BYTES = 11_850
+export const PLANNER_BRIEF_MAX_BYTES = 12_100
 export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
@@ -358,6 +358,7 @@ export function briefWriterBrief(t: TaskBrief): string {
     taskContext(t),
     '## The plan file contains',
     PLAN_PARTS,
+    forecastRequirement(t.taskId),
     slicesRequirement(),
     '## Constraints',
     UNATTENDED,
