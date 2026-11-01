@@ -294,6 +294,13 @@ const PLAN_PARTS = [
   '6. Ordered dispatch: sequential and parallel slices, with overlapping files named.',
 ].join('\n')
 
+function forecastRequirement(taskId: string): string {
+  return (
+    `Before part 1, run \`titan-miner throughput forecast --parent ${taskId} --json\` and quote its p50 and p80 implementer agent-hours and USD in the plan. ` +
+    'If the command fails or the parent has no history, write "no forecast" instead of guessing.'
+  )
+}
+
 function slicesRequirement(): string {
   return (
     'The plan must also hold one fenced block tagged `burndown-slices` with a JSON array, one entry per slice ' +
@@ -324,6 +331,7 @@ export function plannerBrief(t: TaskBrief): string {
     taskContext(t),
     '## The plan file contains',
     PLAN_PARTS,
+    forecastRequirement(t.taskId),
     slicesRequirement(),
     '## Constraints',
     UNATTENDED,

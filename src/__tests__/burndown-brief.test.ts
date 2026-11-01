@@ -150,6 +150,14 @@ describe('brief writer brief (CC-939)', () => {
     }
   })
 
+  it('tells the planner to quote the throughput forecast for the parent id (CC-1694)', () => {
+    const brief = plannerBrief(task())
+
+    expect(brief).toContain('titan-miner throughput forecast --parent CC-900 --json')
+    expect(brief).toContain('p50 and p80 implementer agent-hours and USD')
+    expect(brief).toContain('"no forecast"')
+  })
+
   it('makes a publish its own dep-linked task in both plan briefs (CC-987)', () => {
     for (const brief of [plannerBrief(task()), briefWriterBrief(task())]) {
       expect(brief).toContain('its own task tagged ops:publish')
