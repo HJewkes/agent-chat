@@ -20,6 +20,7 @@
     "pretest": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json && npm run typecheck:dashboard",
     "test": "node dist/cli.js suite-slot -- vitest run",
+    "test:affected": "node dist/cli.js suite-slot -- vitest run --changed ${TEST_AFFECTED_BASE:-origin/main}",
     "audit:spawn-doors": "node scripts/spawn-door-audit.mjs",
     "verify": "npm run format:check && npm run audit:spawn-doors && npm run typecheck && npm run build && node dist/cli.js suite-slot -- vitest run",
     "format": "prettier --write .",

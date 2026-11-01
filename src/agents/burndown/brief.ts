@@ -204,9 +204,9 @@ function reportContract(reportTo: string, lines: string): string {
 const WORKER_REPORT = '`Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, then `PR: <url>`'
 
 const MACHINE_RULE =
-  'Machine rule, over any verify steps above: run named tests and the scoped pre-push checks above only, as ' +
-  "`timeout 300 npx vitest run <files> --testTimeout=20000` (or the repo's equivalent); " +
-  "never the full suite, `npm run verify` or the repo's whole verify chain, and never `run_in_background`."
+  "Machine rule, over any verify steps above: run the scoped pre-push checks above and the repo's `test:affected` script, or named test files as " +
+  "`timeout 300 npx vitest run <files> --testTimeout=20000` (or the repo's equivalent), only; " +
+  "never the bare full suite, `npm run verify` or the repo's whole verify chain, and never `run_in_background`."
 
 /** A slice registers with `--slice` so its merge notes the task instead of closing it. */
 function shepherdStep(t: TaskBrief): string {

@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 import { configDefaults, defineConfig } from 'vitest/config'
 
 import { FORKS_FILES } from './src/__tests__/forks-files.js'
@@ -18,6 +20,11 @@ export default defineConfig({
     // Owns the temp state dirs setup-env.ts creates, and removes them after the run.
     globalSetup: ['src/__tests__/global-setup.ts'],
     maxWorkers: MAX_WORKERS,
+    // `--changed` reruns everything when one of these moves. Absolute, because an unrooted `**` does not
+    // match under a dot directory such as `.worktrees/`, where workers run.
+    forceRerunTriggers: ['package.json', 'package-lock.json', 'vitest.config.ts', 'tsconfig*.json'].map(
+      name => fileURLToPath(new URL(`./${name}`, import.meta.url)),
+    ),
     projects: [
       {
         test: {
