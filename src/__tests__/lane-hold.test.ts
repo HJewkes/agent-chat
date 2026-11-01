@@ -43,7 +43,7 @@ const statusAt = (file: string | undefined, now: Date) =>
 
 describe('machine hold and lift', () => {
   it('refuses a caller that is not a machine hold operator, writing nothing', () => {
-    const { state, deps } = world('some-coord')
+    const { state, deps } = world('seat-x')
 
     const report = hold(deps)
 
@@ -55,7 +55,7 @@ describe('machine hold and lift', () => {
     const { state, deps } = world()
     hold(deps)
 
-    const report = machineLiftReport({}, { ...deps, caller: 'some-coord' })
+    const report = machineLiftReport({}, { ...deps, caller: 'seat-x' })
 
     expect(report.ok).toBe(false)
     expect(state.file).toBeDefined()
@@ -135,7 +135,13 @@ describe('the broker enforces a lane hold', () => {
     fs.mkdirSync(path.dirname(operatorHoldPath()), { recursive: true })
     fs.writeFileSync(
       operatorHoldPath(),
-      JSON.stringify({ by: 'ops', since: NOW.toISOString(), reason: 'load spike', lanes, until: until.toISOString() }),
+      JSON.stringify({
+        by: 'ops',
+        since: NOW.toISOString(),
+        reason: 'load spike',
+        lanes,
+        until: until.toISOString(),
+      }),
     )
     expect(home).toBeTruthy()
   }
@@ -147,7 +153,10 @@ describe('the broker enforces a lane hold', () => {
 
     const outcome = await h.spawnAgent('alpha-w1', { requestedBy: 'alpha-coord' })
 
-    expect(outcome).toMatchObject({ ok: false, reason: expect.stringContaining('lane alpha-coord is on hold') })
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('lane alpha-coord is on hold'),
+    })
   })
 
   it('refuses a spawn from a worker the held lane spawned, through a chain', async () => {

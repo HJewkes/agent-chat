@@ -1101,6 +1101,12 @@ Commands:
                     children and TMPDIR files so far, then the median and p90 of each per profile
                     and role over their last exits. Linux only; an agent reads "no sample yet" until
                     the broker has sampled it
+  hold [options]    hold named lanes (CC-1692): the broker refuses agent_spawn and agent_resume from
+                    those lanes and from the workers they spawned until --until or `machine lift`;
+                    other lanes are unaffected. Kept in the stop file, listed by `machine status`.
+                    Only config.json's machineHoldOperators may hold
+  lift [options]    lift a lane hold (CC-1692): the named lanes, or every lane without --lanes. Only
+                    config.json's machineHoldOperators may lift
   help [command]    display help for command
 
 === agent-chat machine status
@@ -1131,6 +1137,29 @@ only; an agent reads "no sample yet" until the broker has sampled it
 Options:
   --json      one object: running[], estimates[]
   -h, --help  display help for command
+
+=== agent-chat machine hold
+Usage: agent-chat machine hold [options]
+
+hold named lanes (CC-1692): the broker refuses agent_spawn and agent_resume from those lanes and
+from the workers they spawned until --until or `machine lift`; other lanes are unaffected. Kept in
+the stop file, listed by `machine status`. Only config.json's machineHoldOperators may hold
+
+Options:
+  --lanes <value>   comma-separated lane (seat) names to hold
+  --until <value>   ISO time the hold ends
+  --reason <value>  why, shown in the refusal and in machine status
+  -h, --help        display help for command
+
+=== agent-chat machine lift
+Usage: agent-chat machine lift [options]
+
+lift a lane hold (CC-1692): the named lanes, or every lane without --lanes. Only config.json's
+machineHoldOperators may lift
+
+Options:
+  --lanes <value>  comma-separated lanes to lift (default: all)
+  -h, --help       display help for command
 
 === agent-chat host
 Usage: agent-chat host [options] [command]
