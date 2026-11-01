@@ -267,7 +267,7 @@ function workerScope(t: TaskBrief): string {
  * and CC-1303 the planner budget by 50 for that sentence's 34-byte slice form.
  */
 export const WORKER_BRIEF_MAX_BYTES = 13_200
-export const PLANNER_BRIEF_MAX_BYTES = 11_850
+export const PLANNER_BRIEF_MAX_BYTES = 12_100
 export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
@@ -293,6 +293,13 @@ const PLAN_PARTS = [
   '5. Risks and unverified assumptions, each with how the implementer checks it.',
   '6. Ordered dispatch: sequential and parallel slices, with overlapping files named.',
 ].join('\n')
+
+function forecastRequirement(taskId: string): string {
+  return (
+    `Before part 1, run \`titan-miner throughput forecast --parent ${taskId} --json\` and quote its p50 and p80 implementer agent-hours and USD in the plan. ` +
+    'If the command fails or the parent has no history, write "no forecast" instead of guessing.'
+  )
+}
 
 function slicesRequirement(): string {
   return (
@@ -324,6 +331,7 @@ export function plannerBrief(t: TaskBrief): string {
     taskContext(t),
     '## The plan file contains',
     PLAN_PARTS,
+    forecastRequirement(t.taskId),
     slicesRequirement(),
     '## Constraints',
     UNATTENDED,
@@ -350,6 +358,7 @@ export function briefWriterBrief(t: TaskBrief): string {
     taskContext(t),
     '## The plan file contains',
     PLAN_PARTS,
+    forecastRequirement(t.taskId),
     slicesRequirement(),
     '## Constraints',
     UNATTENDED,
