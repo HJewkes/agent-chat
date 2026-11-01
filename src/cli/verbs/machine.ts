@@ -1,6 +1,8 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
+import { requiredString } from '../../args.js'
 import { resolveMachineHoldOperators } from '../../config.js'
 import { home, logPath, operatorHoldPath } from '../../paths.js'
 import type {
@@ -26,6 +28,7 @@ import {
   type StopInputs,
 } from '../../agents/seats/operator-stops.js'
 import type { MachineStopReadings } from '../../agents/seats/stops.js'
+import { laneHoldExpired, parseLanes, readLaneHold, type LaneHold } from '../../agents/seats/lane-hold.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { readMachineStop, readMachineStopReadings } from './seats.js'
 
@@ -98,6 +101,140 @@ export const machineStatusVerb = defineVerb({
   },
 })
 
+/** What `hold` and `lift` act on, injected so a test never touches the real stop file or environment. */
+export interface LaneHoldDeps {
+  /** The agent running the verb: AGENT_CHAT_NAME, absent for a shell that is not an agent. */
+  caller: string | undefined
+  operators: readonly string[]
+  now: Date
+  read(): string | undefined
+  write(text: string): void
+  remove(): void
+}
+
+const refusedUnlessOperator = (deps: LaneHoldDeps, verb: string): Report | undefined =>
+  deps.caller !== undefined && deps.operators.includes(deps.caller)
+    ? undefined
+    : {
+        ok: false,
+        lines: [],
+        errors: [
+          `machine ${verb} is for machineHoldOperators (${deps.operators.join(', ')}); ` +
+            `${deps.caller === undefined ? 'this shell has no AGENT_CHAT_NAME' : `${deps.caller} is not one`}`,
+        ],
+      }
+
+/** The live lane hold, or an error when the stop file holds something a lane verb must not overwrite. */
+function currentLaneHold(deps: LaneHoldDeps): LaneHold | undefined | { error: string } {
+  const text = deps.read()
+  if (text === undefined) return undefined
+  const hold = readLaneHold(text)
+  if (hold === undefined)
+    return { error: 'the stop file holds a machine-wide hold or is unreadable; leaving it' }
+  return laneHoldExpired(hold, deps.now.getTime()) ? undefined : hold
+}
+
+export function machineHoldReport(
+  args: { lanes: string; until: string; reason: string },
+  deps: LaneHoldDeps,
+): Report {
+  const refused = refusedUnlessOperator(deps, 'hold')
+  if (refused) return refused
+  const until = new Date(args.until)
+  if (!Number.isFinite(until.getTime()) || until.getTime() <= deps.now.getTime())
+    return {
+      ok: false,
+      lines: [],
+      errors: [`--until must be an ISO time in the future, not "${args.until}"`],
+    }
+  if (args.reason.trim() === '') return { ok: false, lines: [], errors: ['--reason must say why'] }
+  const lanes = parseLanes(args.lanes)
+  const held = currentLaneHold(deps)
+  if (held !== undefined && 'error' in held) return { ok: false, lines: [], errors: [held.error] }
+  const merged = [...new Set([...(held?.lanes ?? []), ...lanes])]
+  const hold: LaneHold = {
+    by: deps.caller ?? '',
+    since: held?.since ?? deps.now.toISOString(),
+    reason: args.reason.trim(),
+    lanes: merged,
+    until: until.toISOString(),
+  }
+  deps.write(`${JSON.stringify(hold, null, 2)}\n`)
+  return { ok: true, lines: [`hold on ${merged.join(', ')} until ${hold.until}`] }
+}
+
+export function machineLiftReport(args: { lanes?: string | undefined }, deps: LaneHoldDeps): Report {
+  const refused = refusedUnlessOperator(deps, 'lift')
+  if (refused) return refused
+  const held = currentLaneHold(deps)
+  if (held !== undefined && 'error' in held) return { ok: false, lines: [], errors: [held.error] }
+  if (held === undefined) {
+    deps.remove()
+    return { ok: true, lines: ['no lane hold to lift'] }
+  }
+  const lifted = args.lanes === undefined ? held.lanes : parseLanes(args.lanes)
+  const left = held.lanes.filter(lane => !lifted.includes(lane))
+  if (left.length === 0) deps.remove()
+  else deps.write(`${JSON.stringify({ ...held, lanes: left }, null, 2)}\n`)
+  return { ok: true, lines: [left.length === 0 ? 'lane hold lifted' : `still held: ${left.join(', ')}`] }
+}
+
+function liveLaneHoldDeps(): LaneHoldDeps {
+  const file = operatorHoldPath()
+  return {
+    caller: process.env.AGENT_CHAT_NAME || undefined,
+    operators: resolveMachineHoldOperators(),
+    now: new Date(),
+    read: () => readTextIfPresent(file),
+    write(text) {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const tmp = `${file}.${process.pid}.tmp`
+      fs.writeFileSync(tmp, text, { mode: 0o600 })
+      fs.renameSync(tmp, file)
+    },
+    remove: () => fs.rmSync(file, { force: true }),
+  }
+}
+
+export const machineHoldVerb = defineVerb({
+  name: 'machine.hold',
+  description:
+    'hold named lanes (CC-1692): the broker refuses agent_spawn and agent_resume from those lanes and ' +
+    'from the workers they spawned until --until or `machine lift`; other lanes are unaffected. Kept in ' +
+    "the stop file, listed by `machine status`. Only config.json's machineHoldOperators may hold",
+  args: z.object({
+    lanes: requiredString('lanes'),
+    until: requiredString('until'),
+    reason: requiredString('reason'),
+  }),
+  result: Report,
+  cli: {
+    options: {
+      lanes: { long: '--lanes', description: 'comma-separated lane (seat) names to hold' },
+      until: { long: '--until', description: 'ISO time the hold ends' },
+      reason: { long: '--reason', description: 'why, shown in the refusal and in machine status' },
+    },
+  },
+  async run(args) {
+    return machineHoldReport(args, liveLaneHoldDeps())
+  },
+})
+
+export const machineLiftVerb = defineVerb({
+  name: 'machine.lift',
+  description:
+    "lift a lane hold (CC-1692): the named lanes, or every lane without --lanes. Only config.json's " +
+    'machineHoldOperators may lift',
+  args: z.object({ lanes: z.string().optional() }),
+  result: Report,
+  cli: {
+    options: { lanes: { long: '--lanes', description: 'comma-separated lanes to lift (default: all)' } },
+  },
+  async run(args) {
+    return machineLiftReport(args, liveLaneHoldDeps())
+  },
+})
+
 const gib = (kb: number): string => `${(kb / 1024 ** 2).toFixed(1)}G`
 const pair = ({ median, p90 }: CostMetric, show: (value: number) => string): string =>
   `${show(median)}/${show(p90)}`
@@ -155,4 +292,6 @@ export function addMachineCommands(program: Commander): void {
   const machine = program.command('machine').description('operator HOLDs, owner stops and the machine stop')
   addVerb(machine, machineStatusVerb)
   addVerb(machine, machineCostsVerb)
+  addVerb(machine, machineHoldVerb)
+  addVerb(machine, machineLiftVerb)
 }

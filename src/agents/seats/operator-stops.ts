@@ -1,4 +1,5 @@
 import type { MachineStop, MachineStopReadings } from './stops.js'
+import { laneHoldExpired, readLaneHold } from './lane-hold.js'
 import { HEADROOM_RESOURCES, HEADROOM_SHORT_LABELS, type HeadroomReadings } from '../host-headroom.js'
 
 /**
@@ -38,6 +39,10 @@ export interface OperatorHold {
   msgId?: string
   /** A fan-out hold's seats not yet lifted by DM; absent for a broadcast hold, which no DM lifts. */
   seats?: string[]
+  /** CC-1692: a lane hold's lanes; the machine itself is not stopped, only these lanes' spawns and resumes. */
+  lanes?: string[]
+  /** CC-1692: ISO time a lane hold ends. */
+  until?: string
 }
 
 export interface OwnerStop {
@@ -47,7 +52,7 @@ export interface OwnerStop {
 
 export interface MachineStopStatus {
   at: string
-  /** True when an operator hold or the machine stop applies, or a source could not be read. Owner stops hold one seat each, so they do not count. */
+  /** True when a machine-wide operator hold (not a lane hold) or the machine stop applies, or a source could not be read. Owner stops hold one seat each, so they do not count. */
   stopped: boolean
   holds: OperatorHold[]
   ownerStops: OwnerStop[]
@@ -266,8 +271,17 @@ function withoutGoneSeats(hold: OpenHold, gone: (seat: string) => boolean): Open
 }
 
 /** The stop file's hold, or an error naming what is wrong with it; an absent file is undefined. */
-export function fileHold(text: string | undefined): OperatorHold | { error: string } | undefined {
+export function fileHold(
+  text: string | undefined,
+  nowMs: number = Date.now(),
+): OperatorHold | { error: string } | undefined {
   if (text === undefined) return undefined
+  const lane = readLaneHold(text)
+  if (lane !== undefined) {
+    if (laneHoldExpired(lane, nowMs)) return undefined
+    const { by, since, reason, lanes, until } = lane
+    return { kind: 'file', by, since, reason, lanes, until }
+  }
   let doc: unknown
   try {
     doc = JSON.parse(text)
@@ -323,7 +337,7 @@ function goneSeat(stopped: Record<string, string>, seatNames: () => string[]): (
 export function machineStopStatus(input: StopInputs): MachineStopStatus {
   const errors: string[] = []
   if (input.chat === undefined) errors.push('events.db cannot be read, so broadcast HOLDs are unknown')
-  const file = fileHold(tryRead(input.stopFile, errors, 'stop file'))
+  const file = fileHold(tryRead(input.stopFile, errors, 'stop file'), input.now.getTime())
   if (file !== undefined && 'error' in file) errors.push(file.error)
   const stopped = tryRead(input.ownerStops, errors, 'seat-watchdog.json') ?? {}
   const gone = goneSeat(stopped, input.seatNames)
@@ -333,7 +347,7 @@ export function machineStopStatus(input: StopInputs): MachineStopStatus {
   ]
   const ownerStops = Object.entries(stopped).map(([seat, reason]) => ({ seat, reason }))
   const machine = { ...input.readings, stop: input.machineStop?.reason ?? null }
-  const any = holds.length > 0 || machine.stop !== null || errors.length > 0
+  const any = holds.some(hold => hold.lanes === undefined) || machine.stop !== null || errors.length > 0
   return { at: input.now.toISOString(), stopped: any, holds, ownerStops, machine, errors }
 }
 
@@ -348,7 +362,11 @@ export function renderMachineStopStatus(status: MachineStopStatus): string[] {
   const { machine } = status
   return [
     `machine ${status.stopped ? 'STOPPED' : 'clear'} at ${status.at}`,
-    ...status.holds.map(h => `hold (${h.kind}) by ${h.by} since ${h.since}: ${h.reason}`),
+    ...status.holds.map(
+      h =>
+        `hold (${h.kind}) by ${h.by} since ${h.since}: ${h.reason}` +
+        (h.lanes === undefined ? '' : ` [lanes ${h.lanes.join(', ')} until ${h.until}]`),
+    ),
     ...status.ownerStops.map(s => `owner stop ${s.seat}: ${s.reason}`),
     `readings: memory ${machine.memoryFreePercent ?? '?'}% free, load5 ${machine.load5 ?? '?'}, ` +
       `swap ${machine.swapUsedPercent ?? '?'}% used, pressure level ${machine.pressureLevel ?? '?'}, ` +
