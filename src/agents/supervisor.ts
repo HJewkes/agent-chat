@@ -227,7 +227,8 @@ import {
 import { canonicalRootOf, gitRootOf, isTrusted, trustGap } from './trust.js'
 import { launchedByBroker, stoppedAt } from './identity.js'
 import { inheritedProfile } from './teleport-config.js'
-import { agentDir, cliEntry, gitHooksDir, home, profilesDir } from '../paths.js'
+import { agentDir, cliEntry, gitHooksDir, home, operatorHoldPath, profilesDir } from '../paths.js'
+import { laneHoldRefusal } from './seats/lane-hold.js'
 import { logEvent } from '../broker/log.js'
 import { DrainState } from '../broker/drain.js'
 import { resolveCoordinatorGrantableTools, resolveCrashLoop, resolveProfileDriftMode } from '../config.js'
@@ -2996,6 +2997,8 @@ export class Supervisor implements TeleportHost {
       const { reason, ...cause } = drained
       return this.refuse(req, reason, cause)
     }
+    const laneHeld = this.laneHoldRefusal(req.requestedBy)
+    if (laneHeld) return this.refuse(req, laneHeld)
     const crashLooping = this.lineageCrashRefusal(req)
     if (crashLooping) return this.refuse(req, crashLooping, { code: CRASH_LOOP_REFUSAL, retryable: false })
     const rateLimited = this.rateRefusal(req)
@@ -4818,6 +4821,8 @@ export class Supervisor implements TeleportHost {
     await this.parkSettled(this.core.agents.byName(name)?.cwd)
     const drained = this.drainRefusal()
     if (drained) return { ok: false, ...drained }
+    const laneHeld = this.laneHoldRefusal(req.requestedBy ?? HUMAN)
+    if (laneHeld) return { ok: false, reason: laneHeld }
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
     const crashLooping = crashLoopRefusal(identity, req)
@@ -6109,6 +6114,17 @@ export class Supervisor implements TeleportHost {
 
   draining(now = Date.now()): { until: number } | undefined {
     return this.drainState.active(now)
+  }
+
+  /** CC-1692: the stop file's lane hold, read per call, so a hold and a lift act without a broker restart. */
+  private laneHoldRefusal(requester: string): string | undefined {
+    let text: string | undefined
+    try {
+      text = fs.readFileSync(operatorHoldPath(), 'utf8')
+    } catch {
+      return undefined
+    }
+    return laneHoldRefusal(text, Date.now(), requester, name => this.core.agents.byName(name)?.spawnedBy)
   }
 
   private drainRefusal():
