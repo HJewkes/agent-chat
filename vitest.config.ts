@@ -18,6 +18,14 @@ export default defineConfig({
     // Owns the temp state dirs setup-env.ts creates, and removes them after the run.
     globalSetup: ['src/__tests__/global-setup.ts'],
     maxWorkers: MAX_WORKERS,
+    // `--changed` reruns everything when one of these moves, since they alter every module's behaviour.
+    forceRerunTriggers: [
+      '**/package.json',
+      '**/package-lock.json',
+      '**/pnpm-lock.yaml',
+      '**/vitest.config.ts',
+      '**/tsconfig*.json',
+    ],
     projects: [
       {
         test: {
