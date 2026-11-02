@@ -332,6 +332,43 @@ describe('the status-line writer and this reader agree on a shape', () => {
     runWriter({ ...statusLinePayload, session_id: '../escaped' })
     expect(fs.existsSync(path.join(cacheDir, '..', 'escaped.json'))).toBe(false)
   })
+
+  it('leaves no temp file behind when the writer is terminated mid-write (TP-4728)', () => {
+    const realJq = execFileSync('sh', ['-c', 'command -v jq']).toString().trim()
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jq-stub-'))
+    // Passes the session-id lookup through; on the write it emits partial output
+    // and signals the script, as a superseded status-line redraw does.
+    fs.writeFileSync(
+      path.join(stubDir, 'jq'),
+      `#!/bin/sh\ncase "$*" in *--argjson*) printf partial; kill -TERM $PPID; exit 0 ;; esac\nexec "${realJq}" "$@"\n`,
+      { mode: 0o755 },
+    )
+    try {
+      try {
+        execFileSync(script, {
+          input: JSON.stringify(statusLinePayload),
+          env: { ...process.env, PATH: `${stubDir}:${process.env.PATH}`, AGENT_CHAT_STATUS_CACHE: cacheDir },
+        })
+      } catch {
+        // the script is expected to die on the signal
+      }
+      expect(fs.readdirSync(cacheDir).filter(f => f.startsWith('.') && f !== '.pruned')).toEqual([])
+    } finally {
+      fs.rmSync(stubDir, { recursive: true, force: true })
+    }
+  })
+
+  it('prunes temp files older than ten minutes and keeps fresh ones (TP-4728)', () => {
+    const stale = path.join(cacheDir, '.old-session.123')
+    const fresh = path.join(cacheDir, '.new-session.456')
+    fs.writeFileSync(stale, 'x')
+    fs.writeFileSync(fresh, 'x')
+    const old = new Date(Date.now() - 30 * 60_000)
+    fs.utimesSync(stale, old, old)
+    runWriter(statusLinePayload)
+    expect(fs.existsSync(stale)).toBe(false)
+    expect(fs.existsSync(fresh)).toBe(true)
+  })
 })
 
 describe('the CLI surface', () => {
