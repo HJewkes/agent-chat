@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { z } from 'zod'
 import { OPS } from './ops.js'
-import { lintSlices, sliceWarnings } from './slice-lint.js'
+import { lintSlices, sliceWarnings, type LintOptions } from './slice-lint.js'
 
 /**
  * Parses what a tick-spawned agent leaves behind: the first line of its final
@@ -129,7 +129,7 @@ export type SliceRead =
 const SLICES_BLOCK = /^```burndown-slices[ \t]*\n([\s\S]*?)^```[ \t]*$/m
 
 /** The planner's slices, or why the plan's `burndown-slices` block is missing, unreadable, or fails the lint. */
-export function readSlices(planText: string): SliceRead {
+export function readSlices(planText: string, opts: LintOptions = {}): SliceRead {
   const body = SLICES_BLOCK.exec(planText)?.[1]
   if (body === undefined) return { problems: ['plan has no burndown-slices block'] }
   let json: unknown
@@ -140,7 +140,7 @@ export function readSlices(planText: string): SliceRead {
   }
   const parsed = z.array(PlannedSlice).min(1).safeParse(json)
   if (!parsed.success) return { problems: parsed.error.issues.map(shapeProblem) }
-  const problems = lintSlices(parsed.data)
+  const problems = lintSlices(parsed.data, opts)
   if (problems.length > 0) return { problems }
   const slices = withDefaultRepo(parsed.data, planRepo(planText))
   return { slices, warnings: sliceWarnings(slices) }

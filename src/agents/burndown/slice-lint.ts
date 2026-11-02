@@ -12,16 +12,21 @@ import { acceptedHolder, type PlannedSlice } from './report.js'
 export const MAX_SLICE_POINTS = 3
 export const MAX_SLICE_LINES = 400
 
+/** `requireEstimate` is set only for a planner that just finished; a queued plan from before TP-4716 has none. */
+export interface LintOptions {
+  requireEstimate?: boolean
+}
+
 /** TP-4716: the review panel's line cap; a slice over it stops the implementer mid-work, so the plan splits it. */
-function lineEstimate(slice: PlannedSlice): string[] {
-  if (slice.est_lines === undefined) return [`slice ${slice.n}: no est_lines`]
+function lineEstimate(slice: PlannedSlice, opts: LintOptions): string[] {
+  if (slice.est_lines === undefined) return opts.requireEstimate ? [`slice ${slice.n}: no est_lines`] : []
   if (slice.est_lines <= MAX_SLICE_LINES) return []
   return [
     `slice ${slice.n}: est_lines ${slice.est_lines} is over the ${MAX_SLICE_LINES}-line cap; split it into (a) a pure module on main and (b) the wiring, stacked on (a)`,
   ]
 }
 
-type Rule = (slice: PlannedSlice, names: ReadonlySet<string>) => string[]
+type Rule = (slice: PlannedSlice, names: ReadonlySet<string>, opts: LintOptions) => string[]
 
 const RULES: Rule[] = [
   s => (s.points === undefined ? [`slice ${s.n}: no points`] : []),
@@ -29,7 +34,7 @@ const RULES: Rule[] = [
     s.points !== undefined && s.points > MAX_SLICE_POINTS
       ? [`slice ${s.n}: ${s.points} points, over the ${MAX_SLICE_POINTS}-point limit`]
       : [],
-  lineEstimate,
+  (s, _names, opts) => lineEstimate(s, opts),
   s => (s.doneWhen === undefined || s.doneWhen.trim() === '' ? [`slice ${s.n}: no doneWhen`] : []),
   s => (s.owns.length === 0 ? [`slice ${s.n}: owns no files`] : []),
   (s, names) =>
@@ -85,11 +90,11 @@ function repeatedScopes(slice: PlannedSlice): string[] {
 }
 
 /** One reason line per failing slice and rule; empty when every slice passes. */
-export function lintSlices(slices: readonly PlannedSlice[]): string[] {
+export function lintSlices(slices: readonly PlannedSlice[], opts: LintOptions = {}): string[] {
   const names = new Set(slices.map(s => s.n))
   return [
     ...duplicateNames(slices),
-    ...slices.flatMap(s => RULES.flatMap(rule => rule(s, names))),
+    ...slices.flatMap(s => RULES.flatMap(rule => rule(s, names, opts))),
     ...dependencyCycle(slices),
   ]
 }

@@ -90,7 +90,15 @@ describe('slice lint on est_lines (TP-4716)', () => {
     expect(lintSlices([sized(400)])).toEqual([])
   })
 
-  it('refuses a slice with no estimate', () => {
-    expect(lintSlices([sized(undefined)])).toEqual(['slice a: no est_lines'])
+  it('refuses a slice with no estimate on the fresh-plan path', () => {
+    expect(lintSlices([sized(undefined)], { requireEstimate: true })).toEqual(['slice a: no est_lines'])
+  })
+
+  it('passes a slice with no estimate when relinting a queued plan', () => {
+    expect(lintSlices([sized(undefined)])).toEqual([])
+  })
+
+  it('refuses 401 lines on the relint path too', () => {
+    expect(lintSlices([sized(401)], {})).toHaveLength(1)
   })
 })
