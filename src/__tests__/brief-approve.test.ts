@@ -262,7 +262,14 @@ describe('burndown brief approve', () => {
 describe('the tick auto-approves a proposed brief (CC-1234)', () => {
   const TODAY = '2026-10-13'
   const PROPOSED = `brief:proposed=${TODAY}`
-  const slice = { n: 'a', title: 'one slice', points: 2, doneWhen: 'tests pass', owns: ['src/a.ts'] }
+  const slice = {
+    n: 'a',
+    title: 'one slice',
+    points: 2,
+    est_lines: 100,
+    doneWhen: 'tests pass',
+    owns: ['src/a.ts'],
+  }
   const planWith = (slices: unknown[]): string =>
     `# Plan\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
   const LINTED = planWith([slice])

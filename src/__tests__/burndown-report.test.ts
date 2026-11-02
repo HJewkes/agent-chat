@@ -58,8 +58,8 @@ describe('burndown report parser', () => {
     const plan = [
       '# Plan',
       '```burndown-slices',
-      '[{ "n": "a", "title": "ledger", "points": 2, "doneWhen": "ledger test passes", "owns": ["src/a.ts"] },',
-      ' { "n": "b", "title": "tick", "points": 1, "doneWhen": "tick test passes", "dependsOn": ["a"], "owns": ["src/b.ts"] }]',
+      '[{ "n": "a", "title": "ledger", "points": 2, "est_lines": 100, "doneWhen": "ledger test passes", "owns": ["src/a.ts"] },',
+      ' { "n": "b", "title": "tick", "points": 1, "est_lines": 100, "doneWhen": "tick test passes", "dependsOn": ["a"], "owns": ["src/b.ts"] }]',
       '```',
     ].join('\n')
 
@@ -68,6 +68,7 @@ describe('burndown report parser', () => {
         n: 'a',
         title: 'ledger',
         points: 2,
+        est_lines: 100,
         doneWhen: 'ledger test passes',
         dependsOn: [],
         owns: ['src/a.ts'],
@@ -77,6 +78,7 @@ describe('burndown report parser', () => {
         n: 'b',
         title: 'tick',
         points: 1,
+        est_lines: 100,
         doneWhen: 'tick test passes',
         dependsOn: ['a'],
         owns: ['src/b.ts'],
@@ -98,7 +100,15 @@ describe('burndown report parser', () => {
 })
 
 describe('burndown lints planner slices (CC-631)', () => {
-  const good = { n: 'a', title: 'x', points: 2, doneWhen: 'a test passes', dependsOn: [], owns: ['src/a.ts'] }
+  const good = {
+    n: 'a',
+    title: 'x',
+    points: 2,
+    est_lines: 100,
+    doneWhen: 'a test passes',
+    dependsOn: [],
+    owns: ['src/a.ts'],
+  }
   const planOf = (...slices: object[]): string => `\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\``
 
   it('fails a slice over 3 points with one reason naming it', () => {
@@ -138,7 +148,10 @@ describe('burndown lints planner slices (CC-631)', () => {
   })
 
   it('gives one line per failing slice and rule across slices', () => {
-    const plan = planOf({ ...good, points: 4, owns: [] }, { ...good, n: 'b', dependsOn: ['q'] })
+    const plan = planOf(
+      { ...good, points: 4, est_lines: 100, owns: [] },
+      { ...good, n: 'b', dependsOn: ['q'] },
+    )
 
     expect(readSlices(plan).problems).toEqual([
       'slice a: 4 points, over the 3-point limit',
@@ -228,6 +241,7 @@ describe('burndown warns on dependsOn across disjoint owns (CC-1155)', () => {
     n,
     title: n,
     points: 1,
+    est_lines: 100,
     doneWhen: 'a test passes',
     dependsOn,
     owns,
@@ -287,6 +301,7 @@ describe('a plan Repo: header is the default slice repo (CC-1293)', () => {
     n: 'a',
     title: 'x',
     points: 1,
+    est_lines: 100,
     doneWhen: 'a test passes',
     dependsOn: [],
     owns: ['src/new.ts'],

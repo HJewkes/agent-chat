@@ -1122,7 +1122,15 @@ describe('planSeat brief gate (CC-925)', () => {
 
 describe('planSeat declared owns for brief:ready tasks (CC-952)', () => {
   const PLAN = '/tmp/alpha/sources/A-1-plan.md'
-  const SLICE = { n: 'a', title: 'x', points: 2, doneWhen: 'x renders.', dependsOn: [], owns: ['src/x.ts'] }
+  const SLICE = {
+    n: 'a',
+    title: 'x',
+    points: 2,
+    est_lines: 100,
+    doneWhen: 'x renders.',
+    dependsOn: [],
+    owns: ['src/x.ts'],
+  }
   const planText = '```burndown-slices\n' + JSON.stringify([SLICE]) + '\n```\n'
   const readPlan = (text: string | undefined) => () => ({ path: PLAN, text })
   const brief = (gate: 'shadow' | 'on', text: string | undefined, tags = ['brief:ready=2026-09-28']) =>
@@ -1421,7 +1429,7 @@ describe('planSeat ready-slice placement (CC-946)', () => {
 
   it('carries a slice repo from the plan into its claim', () => {
     const text =
-      '```burndown-slices\n[{"n":"a","title":"t","points":1,"doneWhen":"done","owns":["x.ts"],"repo":"alpha-docs"}]\n```\n'
+      '```burndown-slices\n[{"n":"a","title":"t","points": 1, "est_lines": 100,"doneWhen":"done","owns":["x.ts"],"repo":"alpha-docs"}]\n```\n'
     const { slices } = readSlices(text)
 
     expect(sliceClaims({ taskId: 'A-1', initiative: 'alpha' }, slices ?? [], NOW)[0]?.repo).toBe('alpha-docs')

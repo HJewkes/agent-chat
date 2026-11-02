@@ -14,6 +14,7 @@ const slice = (n: string, owns: string[] = [`${n}.ts`], dependsOn: string[] = []
   dependsOn,
   owns,
   points: 1,
+  est_lines: 100,
   doneWhen: `Slice ${n} test passes.`,
 })
 

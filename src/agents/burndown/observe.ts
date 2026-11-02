@@ -605,7 +605,7 @@ function withSlices(obs: Observation, claim: Claim, deps: ObserveDeps): Observat
   const planPath = obs.report?.plan ?? planPathFor(path.join(deps.root, claim.initiative), claim.taskId)
   const text = (deps.readFile ?? readFileOrUndefined)(planPath)
   if (text === undefined) return { ...obs, sliceProblems: [`no plan file at ${planPath}`] }
-  const read = readSlices(text)
+  const read = readSlices(text, { requireEstimate: true })
   return read.slices === undefined
     ? { ...obs, sliceProblems: read.problems }
     : { ...obs, slices: read.slices }

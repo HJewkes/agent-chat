@@ -6,7 +6,7 @@
  */
 
 import { PROBE_SANDBOX_RULE } from '../return-contract-blocks.js'
-import { MAX_SLICE_POINTS } from './slice-lint.js'
+import { MAX_SLICE_LINES, MAX_SLICE_POINTS } from './slice-lint.js'
 import { shepherdTarget, targetRef } from './shepherd.js'
 import type { StallCode } from './stall-code.js'
 
@@ -267,7 +267,7 @@ function workerScope(t: TaskBrief): string {
  * and CC-1303 the planner budget by 50 for that sentence's 34-byte slice form.
  */
 export const WORKER_BRIEF_MAX_BYTES = 13_200
-export const PLANNER_BRIEF_MAX_BYTES = 12_100
+export const PLANNER_BRIEF_MAX_BYTES = 12_500
 export const REVIEWER_BRIEF_MAX_BYTES = 2_750
 
 export function workerBrief(t: TaskBrief): string {
@@ -282,7 +282,7 @@ export function workerBrief(t: TaskBrief): string {
 }
 
 const SLICES_EXAMPLE =
-  '[{ "n": "a", "title": "...", "points": 2, "doneWhen": "...", "dependsOn": [], "owns": ["src/..."], "contracts": [{ "scope": "...", "op": "extend" }] }]'
+  '[{ "n": "a", "title": "...", "points": 2, "est_lines": 250, "doneWhen": "...", "dependsOn": [], "owns": ["src/..."], "contracts": [{ "scope": "...", "op": "extend" }] }]'
 
 const PLAN_PARTS = [
   '0. Inventory, before any design: for each need, the existing unit it reuses or the gap and its task id; for every model or tool call, the runtime path, credential and smoke check.',
@@ -306,6 +306,8 @@ function slicesRequirement(): string {
     'The plan must also hold one fenced block tagged `burndown-slices` with a JSON array, one entry per slice ' +
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
     'and depends only on slices in the block, without cycles. ' +
+    `Every slice sets \`est_lines\`, its estimated changed lines counted as the review panel counts them (test sidecars and changesets included); the lint refuses a slice over ${MAX_SLICE_LINES} lines or without one. ` +
+    'Pre-split a larger slice into (a) a pure module on main and (b) the wiring, stacked on (a). ' +
     'A slice whose owns share no file with a slice it depends on must say why in `dependsWhy`; otherwise leave `dependsOn` empty, so independent slices dispatch in parallel. ' +
     'A slice sharing a file with an open PR or dispatched slice on other lines may list it in `overlapsAccepted` as { pr or task+slice, path, why }, ' +
     'path an exact owns entry; any other overlap refuses. ' +

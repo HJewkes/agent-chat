@@ -58,7 +58,15 @@ const TASK: Task = {
   tags: [FRESH],
 }
 
-const SLICE = { n: 'a', title: 'x', points: 2, doneWhen: 'x renders.', dependsOn: [], owns: ['src/x.ts'] }
+const SLICE = {
+  n: 'a',
+  title: 'x',
+  points: 2,
+  est_lines: 100,
+  doneWhen: 'x renders.',
+  dependsOn: [],
+  owns: ['src/x.ts'],
+}
 const PLAN_TEXT = '```burndown-slices\n' + JSON.stringify([SLICE]) + '\n```\n'
 
 const plan = (text: string | undefined, patch: Partial<SeatPlanInputs> = {}) =>

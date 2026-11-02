@@ -8,6 +8,7 @@ const slice = (overlapsAccepted: AcceptedOverlap[]): PlannedSlice => ({
   n: 'a',
   title: 'x',
   points: 2,
+  est_lines: 100,
   doneWhen: 'edits line 3',
   dependsOn: [],
   owns: [INDEX],
@@ -73,5 +74,31 @@ describe('overlapsAccepted naming a ledger slice (CC-1303)', () => {
     ['both a pr and a slice', { pr: 1083, task: 'TP-9', slice: 'b', path: INDEX, why: 'x' }],
   ])('rejects an entry with %s at the schema', (_, entry) => {
     expect(readSlices(planWith(slice([entry as AcceptedOverlap]))).problems).toHaveLength(1)
+  })
+})
+
+describe('slice lint on est_lines (TP-4716)', () => {
+  const sized = (est_lines?: number): PlannedSlice => ({ ...slice([]), est_lines })
+
+  it('refuses 401 lines with the split message', () => {
+    expect(lintSlices([sized(401)])).toEqual([
+      'slice a: est_lines 401 is over the 400-line cap; split it into (a) a pure module on main and (b) the wiring, stacked on (a)',
+    ])
+  })
+
+  it('passes exactly 400 lines', () => {
+    expect(lintSlices([sized(400)])).toEqual([])
+  })
+
+  it('refuses a slice with no estimate on the fresh-plan path', () => {
+    expect(lintSlices([sized(undefined)], { requireEstimate: true })).toEqual(['slice a: no est_lines'])
+  })
+
+  it('passes a slice with no estimate when relinting a queued plan', () => {
+    expect(lintSlices([sized(undefined)])).toEqual([])
+  })
+
+  it('refuses 401 lines on the relint path too', () => {
+    expect(lintSlices([sized(401)], {})).toHaveLength(1)
   })
 })

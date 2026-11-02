@@ -6,6 +6,7 @@ const slice = (extra: Partial<PlannedSlice>): PlannedSlice => ({
   n: 'a',
   title: 'x',
   points: 2,
+  est_lines: 100,
   doneWhen: 'renders the widget',
   dependsOn: [],
   owns: ['src/x.ts'],

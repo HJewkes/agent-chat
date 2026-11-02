@@ -35,6 +35,7 @@ function planText(slices: SliceSpec[]): string {
     n: s.n,
     title: `slice ${s.n}`,
     points: 1,
+    est_lines: 100,
     doneWhen: 'Its test passes.',
     dependsOn: s.dependsOn ?? [],
     owns: s.owns,

@@ -307,6 +307,7 @@ describe('burndown plan --seat --scored from disk', () => {
           n: '1',
           title: 'Fix the broker',
           points: 1,
+          est_lines: 100,
           owns: ['src/broker/core.ts'],
           doneWhen: 'core.test.ts covers the fix',
         },

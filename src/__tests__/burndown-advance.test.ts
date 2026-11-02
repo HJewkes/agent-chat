@@ -324,9 +324,17 @@ describe('burndown phase machine', () => {
   it('stalls a planner whose plan file fails the lint with each reason line, read through observe', async () => {
     const planning = claim({ phase: 'planning', worktree: undefined })
     const slices = [
-      { n: 'a', title: 'x', points: 5, doneWhen: 'a test passes', owns: ['src/a.ts'] },
-      { n: 'b', title: 'y', points: 1, doneWhen: 'b test passes', owns: [] },
-      { n: 'c', title: 'z', points: 1, doneWhen: 'c test passes', dependsOn: ['q'], owns: ['src/c.ts'] },
+      { n: 'a', title: 'x', points: 5, est_lines: 100, doneWhen: 'a test passes', owns: ['src/a.ts'] },
+      { n: 'b', title: 'y', points: 1, est_lines: 100, doneWhen: 'b test passes', owns: [] },
+      {
+        n: 'c',
+        title: 'z',
+        points: 1,
+        est_lines: 100,
+        doneWhen: 'c test passes',
+        dependsOn: ['q'],
+        owns: ['src/c.ts'],
+      },
     ]
     const plan = `# Plan\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
     const row = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
