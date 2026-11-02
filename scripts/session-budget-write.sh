@@ -29,6 +29,15 @@ esac
 mkdir -p "$CACHE_DIR" 2>/dev/null || exit 0
 
 tmp="$CACHE_DIR/.$session_id.$$"
+# The status line kills a redraw that a newer one supersedes. A signal ends the
+# shell before the rm below runs, which left the temp file behind; the trap makes
+# the cleanup run on every exit path. Signal traps exit explicitly (130+) so the
+# shell does not carry on writing after the signal.
+trap 'rm -f "$tmp" 2>/dev/null' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 141' PIPE
+trap 'exit 143' TERM
 printf '%s' "$input" | jq -c --argjson now "$(date +%s)" '{
     session_id: .session_id,
     cwd: (.workspace.current_dir // .cwd // null),
@@ -64,6 +73,9 @@ rm -f "$tmp" 2>/dev/null
 stamp="$CACHE_DIR/.pruned"
 if [ ! -f "$stamp" ] || [ -n "$(find "$CACHE_DIR" -maxdepth 1 -name .pruned -mmin +60 2>/dev/null)" ]; then
     find "$CACHE_DIR" -maxdepth 1 -name '*.json' -mtime +1 -delete 2>/dev/null
+    # Temp files orphaned by writers that were killed before this script trapped
+    # signals. Live ones are younger than a redraw, so ten minutes is safe.
+    find "$CACHE_DIR" -maxdepth 1 -type f -name '.*.*' -mmin +10 -delete 2>/dev/null
     : >"$stamp" 2>/dev/null
 fi
 

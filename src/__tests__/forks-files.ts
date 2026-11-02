@@ -3,6 +3,7 @@
  * write fd, and the exec fails with ETXTBSY until that child execs (CC-462, CC-477).
  */
 export const EXEC_SCRIPT_FILES = [
+  'src/__tests__/budget.test.ts',
   'src/__tests__/gh-shim.test.ts',
   'src/__tests__/gh-shim-call-log.test.ts',
   'src/__tests__/gh-shim-rate-limit.test.ts',
