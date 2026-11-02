@@ -36,6 +36,7 @@ const slice = (n: string) => ({
   dependsOn: [],
   owns: [`${n}.ts`],
   points: 1,
+  est_lines: 100,
   doneWhen: `Slice ${n} test passes.`,
 })
 

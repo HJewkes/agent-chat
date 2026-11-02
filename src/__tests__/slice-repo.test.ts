@@ -183,6 +183,7 @@ describe('a plan Repo: header routes a new-file-only slice (CC-1293)', () => {
       n: 'a',
       title: 'shell startup',
       points: 1,
+      est_lines: 100,
       doneWhen: 'a test passes',
       dependsOn: [],
       owns: ['src/leak-guard/shell-startup.ts'],

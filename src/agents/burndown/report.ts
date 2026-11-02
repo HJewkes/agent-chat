@@ -108,6 +108,8 @@ const PlannedSlice = z.object({
   repo: z.string().optional(),
   points: z.number().optional(),
   doneWhen: z.string().optional(),
+  /** TP-4716: estimated changed lines as the review panel counts them (tests and changesets included). */
+  est_lines: z.number().optional(),
   contracts: z.array(Contract).default([]),
   /** CC-974: the ops the slice's doneWhen names; `[]` says its hits are subject matter. */
   ops: z.array(z.enum(OPS)).optional(),

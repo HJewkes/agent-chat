@@ -156,7 +156,9 @@ describe('a DONE+PR hand-off is fenced by the PR files (CC-1066)', () => {
   it('clears a PR-file stall once the plan widens the slice owns', async () => {
     const plan = [
       '```burndown-slices',
-      JSON.stringify([{ n: 'a', title: 't', points: 1, doneWhen: 'd', owns: ['src/a.ts', OUTSIDE] }]),
+      JSON.stringify([
+        { n: 'a', title: 't', points: 1, est_lines: 100, doneWhen: 'd', owns: ['src/a.ts', OUTSIDE] },
+      ]),
       '```',
     ].join('\n')
     const stalled = claim({ pr: PR, stallCode: 'outside-owns', stalledReason: `touches ${OUTSIDE}` })

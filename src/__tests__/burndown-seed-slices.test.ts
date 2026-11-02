@@ -46,6 +46,7 @@ const SLICES = [
     dependsOn: [],
     owns: ['src/ledger.ts'],
     points: 2,
+    est_lines: 100,
     doneWhen: 'Ledger test passes.',
     contracts: [{ scope: 'api:/v1/ledger', op: 'add' }],
   },
@@ -55,6 +56,7 @@ const SLICES = [
     dependsOn: ['a'],
     owns: ['src/tick.ts'],
     points: 1,
+    est_lines: 100,
     doneWhen: 'Tick test passes.',
   },
 ]
@@ -351,6 +353,7 @@ describe('carrying overlapsAccepted from the plan to the claim (CC-1259)', () =>
     dependsOn: [],
     owns: [INDEX, 'packages/authority/src/conditions.ts'],
     points: 2,
+    est_lines: 100,
     doneWhen: 'Conditions test passes.',
   }
   const queuedA: Claim = {

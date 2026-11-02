@@ -2202,7 +2202,14 @@ describe('burndown tick wakes the decider', () => {
 describe('burndown tick settles proposed briefs through one decider gate (CC-1234)', () => {
   const TODAY = '2026-09-26'
   const PROPOSED = `brief:proposed=${TODAY}`
-  const slice = { n: 'a', title: 'one slice', points: 2, doneWhen: 'tests pass', owns: ['src/a.ts'] }
+  const slice = {
+    n: 'a',
+    title: 'one slice',
+    points: 2,
+    est_lines: 100,
+    doneWhen: 'tests pass',
+    owns: ['src/a.ts'],
+  }
   const planWith = (slices: unknown[]): string =>
     `# Plan\n\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
   const LINTED = planWith([slice])
@@ -3166,7 +3173,8 @@ describe('burndown tick reads the real broker view and checkouts (CC-946)', () =
     seatPolicy()
     config({ seats: ['seat-t'] })
     seatInitiative({ 'DM-1': seatTask('DM-1') })
-    const slices = '[{"n":"a","title":"t","points":1,"doneWhen":"done","owns":["src/x.ts"]}]'
+    const slices =
+      '[{"n":"a","title":"t","points": 1, "est_lines": 100,"doneWhen":"done","owns":["src/x.ts"]}]'
     write(
       planPathFor(path.join(world, 'aw', 'demo'), 'DM-1'),
       `# plan\n\n\`\`\`burndown-slices\n${slices}\n\`\`\`\n`,
@@ -3377,6 +3385,7 @@ describe('burndown tick closes an all-released parent whose slices landed (CC-12
       dependsOn: [],
       owns: [`${n}.ts`],
       points: 1,
+      est_lines: 100,
       doneWhen: `${n} passes.`,
     }))
     write(

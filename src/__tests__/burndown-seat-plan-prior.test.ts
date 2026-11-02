@@ -93,8 +93,24 @@ const queued = (taskId: string, slice: string, owns: string[]): Claim =>
 const PLAN_TEXT = [
   '```burndown-slices',
   JSON.stringify([
-    { n: 'b', title: 'two', doneWhen: 'b ships', points: 2, dependsOn: [], owns: ['src/agents/x.ts'] },
-    { n: 'c', title: 'one', doneWhen: 'c ships', points: 1, dependsOn: [], owns: ['src/broker/x.ts'] },
+    {
+      n: 'b',
+      title: 'two',
+      doneWhen: 'b ships',
+      points: 2,
+      est_lines: 100,
+      dependsOn: [],
+      owns: ['src/agents/x.ts'],
+    },
+    {
+      n: 'c',
+      title: 'one',
+      doneWhen: 'c ships',
+      points: 1,
+      est_lines: 100,
+      dependsOn: [],
+      owns: ['src/broker/x.ts'],
+    },
   ]),
   '```',
   '',

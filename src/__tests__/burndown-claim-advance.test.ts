@@ -302,7 +302,7 @@ describe('burndown release --slice and link (CC-978)', () => {
       (slices: string[], ran: string[]): PlanReader =>
       () => ({
         path: '/plan.md',
-        text: `\`\`\`burndown-slices\n${JSON.stringify(slices.map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
+        text: `\`\`\`burndown-slices\n${JSON.stringify(slices.map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, est_lines: 100, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
         ranOffLedger: ran.map(n => `bd-cc-1-${n}`),
       })
 
@@ -374,7 +374,7 @@ describe('burndown release --slice and link (CC-978)', () => {
   describe('a released or unseeded slice re-linked to its open PR (CC-1141 b)', () => {
     const plan: PlanReader = () => ({
       path: '/plan.md',
-      text: `\`\`\`burndown-slices\n${JSON.stringify(['a', 'b', 'c'].map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
+      text: `\`\`\`burndown-slices\n${JSON.stringify(['a', 'b', 'c'].map(n => ({ n, title: n, dependsOn: [], owns: [`${n}.ts`], points: 1, est_lines: 100, doneWhen: `${n} passes.` })))}\n\`\`\`\n`,
     })
     const pulled = (patch: Partial<LinkedPull> = {}) => ({
       plan,

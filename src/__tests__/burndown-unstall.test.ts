@@ -45,7 +45,9 @@ const planOwning = (owns: string[]): PlanFile => ({
   path: '/plans/CC-1-plan.md',
   text: [
     '```burndown-slices',
-    JSON.stringify([{ n: 'a', title: 'slice a', points: 1, doneWhen: 'a is done', dependsOn: [], owns }]),
+    JSON.stringify([
+      { n: 'a', title: 'slice a', points: 1, est_lines: 100, doneWhen: 'a is done', dependsOn: [], owns },
+    ]),
     '```',
   ].join('\n'),
 })
@@ -55,8 +57,24 @@ const twoSlicePlan = (ownsA: string[]): PlanFile => ({
   text: [
     '```burndown-slices',
     JSON.stringify([
-      { n: 'a', title: 'slice a', points: 1, doneWhen: 'a is done', dependsOn: [], owns: ownsA },
-      { n: 'b', title: 'slice b', points: 1, doneWhen: 'b is done', dependsOn: ['a'], owns: ['src/c.ts'] },
+      {
+        n: 'a',
+        title: 'slice a',
+        points: 1,
+        est_lines: 100,
+        doneWhen: 'a is done',
+        dependsOn: [],
+        owns: ownsA,
+      },
+      {
+        n: 'b',
+        title: 'slice b',
+        points: 1,
+        est_lines: 100,
+        doneWhen: 'b is done',
+        dependsOn: ['a'],
+        owns: ['src/c.ts'],
+      },
     ]),
     '```',
   ].join('\n'),

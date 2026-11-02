@@ -10,6 +10,16 @@ import { acceptedHolder, type PlannedSlice } from './report.js'
  */
 
 export const MAX_SLICE_POINTS = 3
+export const MAX_SLICE_LINES = 400
+
+/** TP-4716: the review panel's line cap; a slice over it stops the implementer mid-work, so the plan splits it. */
+function lineEstimate(slice: PlannedSlice): string[] {
+  if (slice.est_lines === undefined) return [`slice ${slice.n}: no est_lines`]
+  if (slice.est_lines <= MAX_SLICE_LINES) return []
+  return [
+    `slice ${slice.n}: est_lines ${slice.est_lines} is over the ${MAX_SLICE_LINES}-line cap; split it into (a) a pure module on main and (b) the wiring, stacked on (a)`,
+  ]
+}
 
 type Rule = (slice: PlannedSlice, names: ReadonlySet<string>) => string[]
 
@@ -19,6 +29,7 @@ const RULES: Rule[] = [
     s.points !== undefined && s.points > MAX_SLICE_POINTS
       ? [`slice ${s.n}: ${s.points} points, over the ${MAX_SLICE_POINTS}-point limit`]
       : [],
+  lineEstimate,
   s => (s.doneWhen === undefined || s.doneWhen.trim() === '' ? [`slice ${s.n}: no doneWhen`] : []),
   s => (s.owns.length === 0 ? [`slice ${s.n}: owns no files`] : []),
   (s, names) =>

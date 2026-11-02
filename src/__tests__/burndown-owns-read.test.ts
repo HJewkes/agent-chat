@@ -46,7 +46,9 @@ const outsideStall = (patch: Partial<Claim> = {}): Claim =>
 const planText = (owns: string[]): string =>
   [
     '```burndown-slices',
-    JSON.stringify([{ n: 'a', title: 'slice a', points: 1, doneWhen: 'a is done', dependsOn: [], owns }]),
+    JSON.stringify([
+      { n: 'a', title: 'slice a', points: 1, est_lines: 100, doneWhen: 'a is done', dependsOn: [], owns },
+    ]),
     '```',
   ].join('\n')
 
