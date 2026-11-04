@@ -1,0 +1,12 @@
+[Unit]
+Description=agent-chat redeploy: staged build, quiet-window check, broker restart (CC-1695)
+
+[Service]
+Type=oneshot
+ExecStart=@REPO@/scripts/redeploy.sh
+WorkingDirectory=@REPO@
+Environment="PATH=@PATH@"
+# The restarted broker stays in this cgroup after the oneshot exits; only the script itself is ever killed.
+KillMode=process
+StandardOutput=append:%h/.agent-chat/redeploy.log
+StandardError=append:%h/.agent-chat/redeploy.log
