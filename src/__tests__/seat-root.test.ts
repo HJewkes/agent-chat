@@ -493,3 +493,77 @@ describe('without the policy', () => {
     expect(spawnRow(outcome.agentId)?.meta).not.toHaveProperty('seat_ceiling')
   })
 })
+
+describe('a second holder of the seat (CC-1698)', () => {
+  const liveSeatRows = (): number =>
+    core.events.agentEvents().filter(row => row.kind === 'agent_spawned' && row.target === SEAT).length
+
+  // Catches: dropping the name-lease check in preflight, which lets a second seat-named launch start.
+  it('is refused on a spawn, naming the current holder', async () => {
+    const holder = await seatAtDepth3()
+    const before = liveSeatRows()
+
+    const again = await spawn(SEAT, 'opus-coordinator', await launched('launcher-b', 'peer'))
+
+    expect(again.ok).toBe(false)
+    expect(again.reason).toContain(`held by ${holder.agentId}`)
+    expect(liveSeatRows()).toBe(before)
+  })
+
+  it('is refused on a spawn by the human too', async () => {
+    const holder = await seatAtDepth3()
+
+    const again = await spawn(SEAT, 'opus-coordinator')
+
+    expect(again.ok).toBe(false)
+    expect(again.reason).toContain(`held by ${holder.agentId}`)
+  })
+
+  // Catches: a resume that launches a second process while a newer holder is live.
+  it('is refused on a resume of the replaced holder, naming its successor', async () => {
+    const holder = await seatAtDepth3()
+    const result = await sup.teleport({
+      subject: {
+        agentId: holder.agentId,
+        name: SEAT,
+        cwd: tmp('seat-root-cwd-'),
+        hostPid: 9999,
+        host: os.hostname(),
+        tags: [],
+        subscriptions: [],
+      },
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    expect(result.ok, result.reason).toBe(true)
+    const successor = successorOf(holder.agentId)?.msgId as string
+    const before = liveSeatRows()
+
+    const resumed = await sup.resume(SEAT)
+
+    expect(resumed.ok).toBe(false)
+    expect(liveSeatRows()).toBe(before)
+    expect(resumed.reason ?? '').toContain(successor)
+  })
+
+  // Catches: the name lease refusing a teleport successor as if it were a second holder.
+  it('is not a teleport that replaces the holder, which still starts its successor', async () => {
+    const holder = await seatAtDepth3()
+    const result = await sup.teleport({
+      subject: {
+        agentId: holder.agentId,
+        name: SEAT,
+        cwd: tmp('seat-root-cwd-'),
+        hostPid: 9999,
+        host: os.hostname(),
+        tags: [],
+        subscriptions: [],
+      },
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(result.ok, result.reason).toBe(true)
+    expect(successorOf(holder.agentId)?.target).toBe(SEAT)
+  })
+})
