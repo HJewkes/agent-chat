@@ -1,0 +1,11 @@
+[Unit]
+Description=agent-chat broker, started on demand by the first client that finds none (CC-1695)
+
+[Service]
+Type=simple
+ExecStart=@NODE@ @CLI@ broker
+WorkingDirectory=%h/.agent-chat
+Environment="PATH=@PATH@"
+# The broker's agents and hosts share this cgroup; a broker exit must not take them with it.
+KillMode=process
+Restart=no

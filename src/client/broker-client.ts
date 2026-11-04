@@ -14,6 +14,7 @@ import {
 } from '../protocol.js'
 import { AGENT_ID_ENV, withoutLaunchIdentity } from '../launch-identity.js'
 import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
+import { defaultLauncherDeps, launchBroker } from './broker-launcher.js'
 import { RetryKeys } from './retry-keys.js'
 import { timeoutAdvice } from './timeout-advice.js'
 import { cliEntry, home, socketPath } from '../paths.js'
@@ -383,15 +384,17 @@ export class BrokerClient {
     })
   }
 
-  /** Starts a broker detached, so it outlives whichever session happened to spawn it. */
+  /** Starts a broker outside this session's process tree: through the user unit, else forked detached. */
   private spawnBroker(): void {
     fs.mkdirSync(home(), { recursive: true })
-    spawn(process.execPath, [cliEntry(), 'broker'], {
-      detached: true,
-      stdio: 'ignore',
-      cwd: home(),
-      env: withoutLaunchIdentity(process.env),
-    }).unref()
+    const spawnDirect = (): void =>
+      spawn(process.execPath, [cliEntry(), 'broker'], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: home(),
+        env: withoutLaunchIdentity(process.env),
+      }).unref()
+    void launchBroker(defaultLauncherDeps(spawnDirect))
   }
 
   /**
