@@ -1708,14 +1708,15 @@ export class Supervisor implements TeleportHost {
 
   /** CC-488: a `live` row is resumable only when no connection, launcher or session holds it; records the exit if so. */
   private async staleLiveRefusal(identity: AgentIdentity): Promise<string | undefined> {
+    const holder = `(agent ${identity.agentId})`
     if (this.core.registry.connFor(identity.name) !== undefined || this.live.has(identity.agentId))
-      return `${identity.name} is already live; message it instead`
+      return `${identity.name} is already live; message it instead ${holder}`
     const running = await this.launcherRunning(identity.agentId)
-    if (running === true) return `${identity.name} is already live: its run-agent is still running`
+    if (running === true) return `${identity.name} is already live: its run-agent is still running ${holder}`
     if (running === undefined)
-      return `${identity.name} is marked live and the process table could not be read, so it is not resumed`
+      return `${identity.name} is marked live and the process table could not be read, so it is not resumed ${holder}`
     const liveness = agentLiveness(identity, this.processProbe)
-    if (!liveness.dead) return `${identity.name} is already live: ${liveness.reason}`
+    if (!liveness.dead) return `${identity.name} is already live: ${liveness.reason} ${holder}`
     this.recordInferredExit(
       identity,
       liveness,
