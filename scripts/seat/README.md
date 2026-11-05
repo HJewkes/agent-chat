@@ -122,6 +122,11 @@ override the sibling scripts, for tests.
 - `merge` + `premerge`: retire together when break-glass `seat-merge` retires (CC-599, Shepherd
   as the normal merge path; TP-1626 decides whether premerge grows or Shepherd absorbs the
   case). `seat-merge` retires with them.
+- After a break-glass `seat-merge`, pipe the reviewer's verdict body to
+  `titan-factory shepherd follow-ups <repo>#<n> --task <init>/<ID> --head <sha>`. It files the
+  optional `Follow-ups:` block as open tasks tagged `follow-up:<parent>`, deduped by title, as
+  Shepherd's `sh-follow-ups` step does on its own path. `premerge` does not call it: it is a merge
+  gate and does not know the task id.
 - `pace`: retires when CC-742 lands and the charter says "read `agent-chat seats status`".
 - `log`: retires now that charter section 10 names `agent-chat seats log <seat> "<text>"`
   (CC-1058), which stamps the line with the machine clock. Removal itself stays with CC-1021 /
