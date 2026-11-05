@@ -17,8 +17,9 @@ import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
 import { defaultLauncherDeps, launchBroker } from './broker-launcher.js'
 import { RetryKeys } from './retry-keys.js'
 import { timeoutAdvice } from './timeout-advice.js'
-import { cliEntry, home, socketPath } from '../paths.js'
+import { cliEntry, home, logPath, socketPath } from '../paths.js'
 import { restartLockHolder } from '../broker/restart-lock.js'
+import { readPidFile } from '../broker/lifecycle.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 
@@ -73,6 +74,23 @@ export class BrokerTimeoutError extends Error {
     advice?: string,
   ) {
     super(`broker did not answer ${replyType}${advice === undefined ? '' : `: ${advice}`}`)
+  }
+}
+
+/** CC-1699: one broker.log line per client-side timeout, so the failures can be counted. Never throws. */
+function logRequestTimeout(caller: string | undefined, kind: ClientMessage['t'], timeoutMs: number): void {
+  try {
+    const row = {
+      ts: new Date().toISOString(),
+      event: 'client_request_timeout',
+      caller: caller ?? null,
+      kind,
+      timeoutMs,
+      brokerPid: readPidFile(),
+    }
+    fs.appendFileSync(logPath(), `${JSON.stringify(row)}\n`)
+  } catch {
+    // The timeout error is the signal; a log that cannot be written must not replace it.
   }
 }
 
@@ -477,13 +495,15 @@ export class BrokerClient {
       const rid = this.nextRid++
       // Cleared on reply, otherwise a resolved request would hold the event
       // loop open for the full timeout and delay short-lived CLI commands.
+      const timeoutMs = REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS
       const timer = setTimeout(() => {
         const index = queue.indexOf(waiter)
         if (index === -1) return
         queue.splice(index, 1)
         this.forgetTimedOut(rid)
+        logRequestTimeout(this.identity?.name, message.t, timeoutMs)
         reject(this.timeoutError(replyType, keyed, sentAt))
-      }, REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS)
+      }, timeoutMs)
 
       const waiter: Waiter = {
         rid,
