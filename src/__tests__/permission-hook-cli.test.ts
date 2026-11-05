@@ -41,7 +41,8 @@ function runHookWith(input: object, args: string[]): HookRun {
   let stdout = ''
   child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
   child.stdin.end(JSON.stringify(input))
-  return { done: new Promise(resolve => child.on('exit', code => resolve({ code, stdout }))) }
+  // 'close', not 'exit': 'exit' can fire before the last stdout chunk is read from the pipe.
+  return { done: new Promise(resolve => child.on('close', code => resolve({ code, stdout }))) }
 }
 
 /** Polls `inbox` until an APPR row whose preview carries `marker` appears, and returns its id. */
