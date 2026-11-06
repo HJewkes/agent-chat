@@ -80,4 +80,26 @@ describe('client request timeout log (CC-1699)', () => {
 
     expect(err.message).toBe('broker did not answer list_result')
   })
+
+  it('rotates an oversize broker.log through the shared logger before appending', async () => {
+    vi.resetModules()
+    process.env.AGENT_CHAT_BROKER_LOG_MAX_BYTES = '100'
+    fs.writeFileSync(path.join(home, 'broker.log'), 'x'.repeat(500))
+    const fresh = await import('../client/broker-client.js')
+    const rotating = new fresh.BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+      autoStart: false,
+    })
+    await rotating.connect()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const outcome = rotating.request({ t: 'list' }, 'list_result').catch((err: Error) => err)
+    await vi.advanceTimersByTimeAsync(5000)
+    await outcome
+    rotating.close()
+    delete process.env.AGENT_CHAT_BROKER_LOG_MAX_BYTES
+
+    expect(fs.readFileSync(path.join(home, 'broker.log.1'), 'utf8')).toBe('x'.repeat(500))
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'broker.log'), 'utf8')).event).toBe(
+      'client_request_timeout',
+    )
+  })
 })
