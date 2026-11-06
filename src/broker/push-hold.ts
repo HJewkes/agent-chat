@@ -14,7 +14,8 @@ const treeParked = (rows: readonly AgentEventRow[]): boolean =>
 
 /**
  * A successor of a `reason: park` teleport waits on the human (CC-135) until the human
- * answers or writes to it, or it is resumed.
+ * answers or writes to it, it is resumed, or it starts peer work. A prompt typed in its
+ * pane reaches no event row, so spawning or messaging a peer is the broker's evidence.
  */
 function teleportParked(
   events: EventStore,
@@ -26,7 +27,9 @@ function teleportParked(
   const handoff = events
     .agentEventsFor(teleportFrom)
     .findLast(row => row.kind === 'agent_handoff' && row.meta.successor === agentId)
-  return handoff?.meta.reason === 'park' && !events.humanContactSince(name, handoff.ts)
+  if (handoff?.meta.reason !== 'park' || events.humanContactSince(name, handoff.ts)) return false
+  const attached = rows.findLast(row => row.kind === 'agent_attached')
+  return attached === undefined || !events.startedPeerWorkSince(name, attached.ts)
 }
 
 /** The hold on pushes to `agentId`'s session, if it has one; an unknown id is never held. */
