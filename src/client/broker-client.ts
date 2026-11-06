@@ -17,9 +17,10 @@ import { requestFingerprint, type KeyedFrame } from '../protocol-fingerprint.js'
 import { defaultLauncherDeps, launchBroker } from './broker-launcher.js'
 import { RetryKeys } from './retry-keys.js'
 import { timeoutAdvice } from './timeout-advice.js'
-import { cliEntry, home, logPath, socketPath } from '../paths.js'
+import { cliEntry, home, socketPath } from '../paths.js'
 import { restartLockHolder } from '../broker/restart-lock.js'
 import { readPidFile } from '../broker/lifecycle.js'
+import { logEvent } from '../broker/log.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 
@@ -80,15 +81,12 @@ export class BrokerTimeoutError extends Error {
 /** CC-1699: one broker.log line per client-side timeout, so the failures can be counted. Never throws. */
 function logRequestTimeout(caller: string | undefined, kind: ClientMessage['t'], timeoutMs: number): void {
   try {
-    const row = {
-      ts: new Date().toISOString(),
-      event: 'client_request_timeout',
+    logEvent('client_request_timeout', {
       caller: caller ?? null,
       kind,
       timeoutMs,
       brokerPid: readPidFile(),
-    }
-    fs.appendFileSync(logPath(), `${JSON.stringify(row)}\n`)
+    })
   } catch {
     // The timeout error is the signal; a log that cannot be written must not replace it.
   }
