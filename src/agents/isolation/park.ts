@@ -5,6 +5,7 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import type { MergedPrReader } from './merged-pr.js'
+import { trackedOriginBranchesContaining } from './origin-holds.js'
 import { occupantOf } from './sweep.js'
 import { parkIgnoredFiles } from './unsaved-work.js'
 import {
@@ -139,13 +140,20 @@ const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i
  * CC-1064: GitHub's merged PRs on the branch HEAD is on, offered as local backing for a squash merge
  * whose head branch origin deleted. The package proves HEAD is in a candidate's local head commit and
  * reports its ref, which is the PR number; a malformed sha is dropped so the rest still count.
+ * CC-1581: also the PRs of origin branches whose tracking ref holds HEAD, since a Shepherd fixer's
+ * commits merge through its parent's PR and its own branch never has one.
  */
 const mergedPrBacking =
   (read: MergedPrReader, gitRoot: string): ParkLocalBackingReader =>
-  async ({ branch }) =>
-    (await read(gitRoot, branch).catch(() => []))
+  async ({ branch, head, worktree }) => {
+    const tracked = await trackedOriginBranchesContaining(worktree, head)
+    const branches = [branch, ...tracked.filter(b => b !== branch)]
+    const prs = await Promise.all(branches.map(b => read(gitRoot, b).catch(() => [])))
+    return prs
+      .flat()
       .filter(pr => OBJECT_ID.test(pr.headSha))
       .map(pr => ({ oid: pr.headSha, ref: String(pr.number) }))
+  }
 
 type Kept = { branch: string; containedIn?: string; mergedPr?: number }
 
