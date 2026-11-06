@@ -98,6 +98,8 @@ describe('client request timeout log (CC-1699)', () => {
     delete process.env.AGENT_CHAT_BROKER_LOG_MAX_BYTES
 
     expect(fs.readFileSync(path.join(home, 'broker.log.1'), 'utf8')).toBe('x'.repeat(500))
-    expect(JSON.parse(fs.readFileSync(path.join(home, 'broker.log'), 'utf8')).event).toBe('client_request_timeout')
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'broker.log'), 'utf8')).event).toBe(
+      'client_request_timeout',
+    )
   })
 })
