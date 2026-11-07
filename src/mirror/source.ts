@@ -79,7 +79,7 @@ class PostedEndorsements {
   async *tap(events: AsyncIterable<SourceEvent>): AsyncIterable<SourceEvent> {
     for await (const event of events) {
       if (event.type === 'opened') this.track(event.item)
-      else this.byId.delete(event.id)
+      else if (event.type === 'closed') this.byId.delete(event.id)
       yield event
     }
   }
@@ -237,7 +237,7 @@ async function pumpTail(
     const res = await request
     if (!res.ok || !res.body) throw new Error(`GET /events failed: ${res.status}`)
     for await (const frame of readSseFrames(res.body)) {
-      if (frame.event === 'reset') return handleReset(frame, options, channel)
+      if (frame.event === 'reset') return handleReset(frame, channel)
       if (frame.id === undefined) continue
       const event = toSourceEvent(JSON.parse(frame.data) as EventFrameData, options.machine)
       if (event) channel.push(event)
@@ -251,21 +251,13 @@ async function pumpTail(
 }
 
 /**
- * Sent instead of a replay when the gap exceeds `MAX_REPLAY_ROWS`. Reconciling
- * from `open()` recovers what is still open; the sentinel `closed` commits the
- * cursor past the gap with no id `applySourceEvent` will ever match, then the
- * throw restarts the source loop so `reconcile()` closes anything that shut
- * during the gap.
+ * Sent instead of a replay when the gap exceeds `MAX_REPLAY_ROWS`. `resync`
+ * makes the mirror reconcile against `open()` and commit the cursor past the
+ * gap; the throw then reconnects the tail, since the broker ends the stream.
  */
-async function handleReset(
-  frame: { data: string },
-  options: AgentChatSourceOptions,
-  channel: EventChannel,
-): Promise<void> {
+function handleReset(frame: { data: string }, channel: EventChannel): void {
   const reset = JSON.parse(frame.data) as ResetFrameData
-  const cursor = String(reset.latestId)
-  for (const item of await openQueue(options)) channel.push({ type: 'opened', item, cursor })
-  channel.push({ type: 'closed', id: '__reset__', outcome: 'resolved', cursor })
+  channel.push({ type: 'resync', cursor: String(reset.latestId) })
   channel.fail(new Error('sse reset'))
 }
 

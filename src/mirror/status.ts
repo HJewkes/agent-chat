@@ -87,6 +87,7 @@ export function trackBus(bus: MirrorBus, tracker: StatusTracker): MirrorBus {
   return {
     userId: bus.userId,
     send: (roomId, type, content, txnId) => bus.send(roomId, type, content, txnId),
+    messages: (roomId, options) => bus.messages(roomId, options),
     async *syncLoop(options) {
       for await (const batch of bus.syncLoop(options)) {
         tracker.noteSync()

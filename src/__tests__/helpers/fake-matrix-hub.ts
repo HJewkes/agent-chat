@@ -24,6 +24,7 @@ export class FakeMatrixHub {
       userId,
       send: async (_roomId, type, content, txnId) => this.send(userId, type, content, txnId),
       syncLoop: options => this.sync(options),
+      messages: async () => ({ chunk: [], start: '0' }),
     }
   }
 
@@ -72,7 +73,7 @@ export class FakeMatrixHub {
       if (from < this.timeline.length) {
         const events = this.timeline.slice(from)
         from = this.timeline.length
-        yield { since: String(from), events }
+        yield { since: String(from), events, limited: false }
         continue
       }
       await new Promise<void>(resolve => {

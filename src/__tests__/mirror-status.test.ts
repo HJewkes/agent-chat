@@ -153,18 +153,38 @@ describe('trackSource and trackBus', () => {
     clock = 200
     await events.next()
 
-    const batch: SyncBatch = { since: 's1', events: [] }
+    const batch: SyncBatch = { since: 's1', events: [], limited: false }
     const bus: MirrorBus = {
       userId: '@m:x',
       send: async () => ({ event_id: '$1' }),
       async *syncLoop() {
         yield batch
       },
+      messages: async () => ({ chunk: [], start: 't0' }),
     }
     clock = 300
     for await (const _ of trackBus(bus, tracker).syncLoop()) break
     controller.abort()
 
     expect(tracker.snapshot(0)).toMatchObject({ lastSourceEventAt: 200, lastSyncAt: 300 })
+  })
+
+  it('trackBus passes backfill reads through to the wrapped bus', async () => {
+    const calls: unknown[] = []
+    const page = { chunk: [], start: 't1', end: 't2' }
+    const bus: MirrorBus = {
+      userId: '@m:x',
+      send: async () => ({ event_id: '$1' }),
+      async *syncLoop() {},
+      messages: async (roomId, options) => {
+        calls.push([roomId, options])
+        return page
+      },
+    }
+
+    const result = await trackBus(bus, new StatusTracker()).messages('!r', { from: 't1', dir: 'b', limit: 5 })
+
+    expect(result).toBe(page)
+    expect(calls).toEqual([['!r', { from: 't1', dir: 'b', limit: 5 }]])
   })
 })

@@ -162,32 +162,40 @@ describe('toSourceEvent', () => {
 
 describe('toClientFrame', () => {
   it('maps each verdict to its wire frame', () => {
-    expect(toClientFrame('m1', { verdict: 'allow', resolutionEventId: 'r1' })).toEqual({
+    expect(toClientFrame('m1', { verdict: 'allow', resolutionEventId: 'r1', sender: '@owner:x' })).toEqual({
       t: 'approve_permission',
       msgId: 'm1',
       behavior: 'allow',
     })
-    expect(toClientFrame('m1', { verdict: 'deny', resolutionEventId: 'r1' })).toEqual({
+    expect(toClientFrame('m1', { verdict: 'deny', resolutionEventId: 'r1', sender: '@owner:x' })).toEqual({
       t: 'approve_permission',
       msgId: 'm1',
       behavior: 'deny',
     })
     expect(
-      toClientFrame('m1', { verdict: 'approve', resolutionEventId: 'r1' }, { text: 'ship it', to: 'bob' }),
+      toClientFrame(
+        'm1',
+        { verdict: 'approve', resolutionEventId: 'r1', sender: '@owner:x' },
+        { text: 'ship it', to: 'bob' },
+      ),
     ).toEqual({ t: 'endorse_approve', msgId: 'm1', text: 'ship it', to: 'bob' })
-    expect(toClientFrame('m1', { verdict: 'answer', text: 'hi', resolutionEventId: 'r1' })).toEqual({
+    expect(
+      toClientFrame('m1', { verdict: 'answer', text: 'hi', resolutionEventId: 'r1', sender: '@owner:x' }),
+    ).toEqual({
       t: 'answer',
       msgId: 'm1',
       text: 'hi',
     })
-    expect(toClientFrame('m1', { verdict: 'dismiss', resolutionEventId: 'r1' })).toEqual({
+    expect(toClientFrame('m1', { verdict: 'dismiss', resolutionEventId: 'r1', sender: '@owner:x' })).toEqual({
       t: 'dismiss',
       msgId: 'm1',
     })
   })
 
   it('builds no approval frame without the posted text and recipient to restate', () => {
-    expect(toClientFrame('m1', { verdict: 'approve', resolutionEventId: 'r1' })).toBeNull()
+    expect(
+      toClientFrame('m1', { verdict: 'approve', resolutionEventId: 'r1', sender: '@owner:x' }),
+    ).toBeNull()
   })
 })
 
@@ -276,28 +284,15 @@ describe('tail()', () => {
     expect(calls[0]?.init?.headers).not.toHaveProperty('Last-Event-ID')
   })
 
-  it('reconciles from open() on a reset frame, then throws', async () => {
+  it('yields a resync at the reset cursor on a reset frame, then throws', async () => {
     const resetFrame = 'event: reset\ndata: {"reason":"gap_too_large","latestId":99}\n\n'
-    const queueResponse = {
-      items: [{ msgId: 'q1', kind: 'question', from: 'alice', text: 'hi', at: 1, meta: {} }],
-    }
-    const { fetch: fetchImpl } = fakeFetch({
-      '/events': () => new Response(sseBody(resetFrame)),
-      '/api/queue': () => new Response(JSON.stringify(queueResponse)),
-    })
+    const { fetch: fetchImpl } = fakeFetch({ '/events': () => new Response(sseBody(resetFrame)) })
     const source = agentChatQueueSource(baseOptions({ fetch: fetchImpl }))
     const iterator = source.tail(undefined, new AbortController().signal)[Symbol.asyncIterator]()
 
-    const opened = await iterator.next()
-    expect(opened.value).toEqual({
-      type: 'opened',
-      item: expect.objectContaining({ id: 'q1' }),
-      cursor: '99',
-    })
+    const resync = await iterator.next()
 
-    const closed = await iterator.next()
-    expect(closed.value).toEqual({ type: 'closed', id: '__reset__', outcome: 'resolved', cursor: '99' })
-
+    expect(resync.value).toEqual({ type: 'resync', cursor: '99' })
     await expect(iterator.next()).rejects.toThrow('sse reset')
   })
 })
@@ -484,7 +479,11 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
       body: 'blocked on what?',
     })
 
-    const result = await source.resolve(msgId, { verdict: 'dismiss', resolutionEventId: 'r1' })
+    const result = await source.resolve(msgId, {
+      verdict: 'dismiss',
+      resolutionEventId: 'r1',
+      sender: '@owner:x',
+    })
     expect(result).toEqual({ ok: true })
   })
 
@@ -501,7 +500,11 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
     const impersonator = await registeredClient('impersonator')
     const source = agentChatQueueSource(options(impersonator))
     await source.open()
-    const result = await source.resolve(msgId as string, { verdict: 'approve', resolutionEventId: 'r2' })
+    const result = await source.resolve(msgId as string, {
+      verdict: 'approve',
+      resolutionEventId: 'r2',
+      sender: '@owner:x',
+    })
     expect(result).toEqual({ ok: false, reason: 'rejected', detail: expect.stringMatching(/human’s call/) })
   })
 
@@ -519,7 +522,11 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
     )) as Extract<ServerMessage, { t: 'send_result' }>
     await iterator.next()
 
-    const result = await source.resolve(msgId as string, { verdict: 'approve', resolutionEventId: 'r3' })
+    const result = await source.resolve(msgId as string, {
+      verdict: 'approve',
+      resolutionEventId: 'r3',
+      sender: '@owner:x',
+    })
 
     expect(result).toEqual({ ok: true })
     const [delivered] = core.events.inboxFor('recipient', 10)
@@ -538,7 +545,11 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
       }),
     )
 
-    const result = await source.resolve('m9', { verdict: 'approve', resolutionEventId: 'r4' })
+    const result = await source.resolve('m9', {
+      verdict: 'approve',
+      resolutionEventId: 'r4',
+      sender: '@owner:x',
+    })
 
     expect(result).toMatchObject({ ok: false, reason: 'rejected' })
     expect(sent).toHaveLength(0)
