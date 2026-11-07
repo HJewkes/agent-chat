@@ -5,6 +5,7 @@ import {
   type ErrorResponse,
   type LifecycleHealth,
   type LifecycleReport,
+  type LoopStallHealth,
 } from '../api-contract.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { apiRoutes, type OwnerVerdicts } from './api-routes.js'
@@ -58,6 +59,8 @@ export interface HttpAppOptions {
   lifecycle?: { summary: () => LifecycleHealth | undefined; report: () => Promise<LifecycleReport> }
   /** The socket server's permission arbiter (TP-1989); it owns the hook waits and session conns. Absent in tests. */
   verdicts?: OwnerVerdicts
+  /** CC-1699: event-loop blocks for `/health`. Absent in tests. */
+  loop?: () => LoopStallHealth
 }
 
 export function buildHttpApp({
@@ -68,6 +71,7 @@ export function buildHttpApp({
   slots,
   lifecycle,
   verdicts,
+  loop,
 }: HttpAppOptions): Hono {
   const app = new Hono()
 
@@ -90,7 +94,7 @@ export function buildHttpApp({
   // `requireToken` for why this one also accepts the token in the query.
   app.use('/events', requireToken(token, { allowQuery: true }))
 
-  app.get('/health', c => c.json(buildHealthPayload(core, port(), slots?.(), lifecycle?.summary())))
+  app.get('/health', c => c.json(buildHealthPayload(core, port(), slots?.(), lifecycle?.summary(), loop?.())))
 
   app.get('/api/lifecycle', async c =>
     lifecycle === undefined

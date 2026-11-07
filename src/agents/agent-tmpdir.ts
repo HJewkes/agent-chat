@@ -341,7 +341,19 @@ export interface TmpSweepDeps extends RemovalDeps {
   announced?: Set<string>
   /** The roots to scan; defaults to /tmp alone. A root that does not exist is skipped. */
   roots?: readonly string[]
+  /** Path to when its removal threw; it is not walked or retried until `FAILED_RETRY_MS` later. */
+  failed?: Map<string, number>
+  /** Wall time after which a pass starts no further dir; the rest wait for the next pass. */
+  budgetMs?: number
 }
+
+/**
+ * CC-1699: the sweep runs on the broker's event loop and walks each dir before removing it. 263
+ * dirs that rm cannot delete (EACCES), 6.4M inodes between them, were walked again every minute:
+ * a 30 s block of every 60 s, during which no socket or HTTP request was answered.
+ */
+export const FAILED_RETRY_MS = 6 * 3_600_000
+export const SWEEP_BUDGET_MS = 2_000
 
 /** Finished names mapped to their agent ids; a name that also has a live row is left out entirely. */
 function finishedNames(roster: readonly AgentIdentity[], now: number): Map<string, Set<string>> {
@@ -369,7 +381,10 @@ function sweepOne(target: RemovalTarget, deps: TmpSweepDeps): void {
   // The launcher itself does not carry the launch identity, so a still-running one is checked by argv.
   const command = deps.table.command(target.pid)
   if (deps.table.isAlive(target.pid) && [...target.agentIds].some(id => isLauncherOf(command, id))) return
+  const dir = agentTmpPath(target.name, target.pid, target.root)
+  if (dir !== undefined && failedRecently(dir, deps)) return
   const result = tryRemove(target, deps)
+  if (!result.removed && result.code !== undefined) deps.failed?.set(result.path, deps.now())
   if (!result.removed && deps.announced?.has(result.path)) return
   if (!result.removed) deps.announced?.add(result.path)
   logRemoval(deps.log, 'sweep', [...target.agentIds].join(','), result)
@@ -405,18 +420,31 @@ export function passSnapshot(table: TmpProcessTable): TmpProcessTable {
 export function sweepAgentTmpDirs(deps: TmpSweepDeps): void {
   const names = finishedNames(deps.roster(), deps.now())
   if (names.size === 0) return
-  const pass = { ...deps, table: passSnapshot(deps.table) }
+  const pass = {
+    ...deps,
+    table: passSnapshot(deps.table),
+    deadline: deps.now() + (deps.budgetMs ?? SWEEP_BUDGET_MS),
+  }
   for (const root of deps.roots ?? [TMP_ROOT]) {
     if (isTmpRoot(root) && deps.fs.lstat(root) !== undefined) sweepRoot(root, names, pass)
   }
 }
 
-function sweepRoot(root: string, names: Map<string, Set<string>>, deps: TmpSweepDeps): void {
+type SweepPass = TmpSweepDeps & { deadline: number }
+
+function sweepRoot(root: string, names: Map<string, Set<string>>, deps: SweepPass): void {
   for (const entry of deps.fs.readdir(root)) {
     if (!entry.startsWith(PREFIX)) continue
     for (const [name, agentIds] of names) {
       const pid = pidOf(entry, name, root)
-      if (pid !== undefined) sweepOne({ name, pid, agentIds, root }, deps)
+      if (pid === undefined) continue
+      if (deps.now() > deps.deadline) return
+      sweepOne({ name, pid, agentIds, root }, deps)
     }
   }
+}
+
+function failedRecently(path: string, deps: TmpSweepDeps): boolean {
+  const at = deps.failed?.get(path)
+  return at !== undefined && deps.now() - at < FAILED_RETRY_MS
 }

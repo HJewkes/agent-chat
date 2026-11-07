@@ -8,6 +8,7 @@ import {
   agentTmpPath,
   diskTmpRoot,
   ensureAgentTmpDir,
+  FAILED_RETRY_MS,
   realTmpFs,
   removeAgentTmpDir,
   removeOwnTmpDir,
@@ -783,6 +784,65 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
         }),
       ],
     ])
+  })
+
+  it('does not walk a dir it failed to remove again on the next pass, until the retry is due (CC-1699)', () => {
+    const fs = new FakeFs()
+      .add('/tmp/ac-worker-11')
+      .add('/tmp/ac-worker-11/ro')
+      .add('/tmp/ac-worker-11/ro/f', 'file')
+    fs.denied.add('/tmp/ac-worker-11')
+    const walked: string[] = []
+    const lstat = fs.lstat.bind(fs)
+    fs.lstat = (p: string) => {
+      if (p.startsWith('/tmp/ac-worker-11')) walked.push(p)
+      return lstat(p)
+    }
+    let clock = now
+    const sweep = {
+      roster: () => [row('a1', 'worker', 'exited')],
+      ...deps(fs),
+      now: () => clock,
+      log: () => undefined,
+      announced: new Set<string>(),
+      failed: new Map<string, number>(),
+    }
+
+    sweepAgentTmpDirs(sweep)
+    const firstPass = walked.length
+    clock += 60_000
+    sweepAgentTmpDirs(sweep)
+    const secondPass = walked.length - firstPass
+    clock += FAILED_RETRY_MS
+    sweepAgentTmpDirs(sweep)
+
+    expect(firstPass).toBeGreaterThan(0)
+    expect(secondPass).toBe(0)
+    expect(walked.length).toBeGreaterThan(firstPass)
+  })
+
+  it('starts no further dir once a pass has spent its budget, and the next pass removes the rest (CC-1699)', () => {
+    const fs = new FakeFs().add('/tmp/ac-worker-11').add('/tmp/ac-worker-12').add('/tmp/ac-worker-13')
+    let clock = now
+    const rm = fs.rm.bind(fs)
+    fs.rm = (p: string) => {
+      clock += 1_500
+      rm(p)
+    }
+    const sweep = {
+      roster: () => [row('a1', 'worker', 'exited')],
+      ...deps(fs),
+      now: () => clock,
+      log: () => undefined,
+      budgetMs: 2_000,
+    }
+
+    sweepAgentTmpDirs(sweep)
+    const firstPass = [...fs.removed]
+    sweepAgentTmpDirs(sweep)
+
+    expect(firstPass).toEqual(['/tmp/ac-worker-11', '/tmp/ac-worker-12'])
+    expect(fs.removed).toEqual(['/tmp/ac-worker-11', '/tmp/ac-worker-12', '/tmp/ac-worker-13'])
   })
 
   it('reads each process at most once in a pass however many dirs it checks (CC-1447)', () => {

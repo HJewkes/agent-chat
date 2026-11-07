@@ -86,6 +86,14 @@ describe('GET /health', () => {
     const res = await app(makeCore(), { port: () => null }).fetch(new Request('http://127.0.0.1/health'))
     expect(((await res.json()) as HealthPayload).port).toBeNull()
   })
+
+  it('carries the event-loop blocks so a slow broker names the cause (CC-1699)', async () => {
+    const loop = { stalls: 2, worst_ms: 29_800, last_ms: 1_200, last_at: 1_700_000_000_000 }
+
+    const res = await app(makeCore(), { loop: () => loop }).fetch(new Request('http://127.0.0.1/health'))
+
+    expect(((await res.json()) as HealthPayload).loop).toEqual(loop)
+  })
 })
 
 describe('GET /api/queue', () => {

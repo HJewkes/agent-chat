@@ -35,6 +35,16 @@ export interface HealthPayload {
   slots?: { held: number; cap: number }
   /** CC-118's last divergence check. Absent while the ledger shadow is off and before its first run. */
   lifecycle?: LifecycleHealth
+  /** CC-1699: event-loop blocks of a second or more since start. Absent from a caller with no monitor. */
+  loop?: LoopStallHealth
+}
+
+/** Blocks of the broker's event loop: how many, the worst, and the latest, in ms and epoch ms. */
+export interface LoopStallHealth {
+  stalls: number
+  worst_ms: number
+  last_ms?: number
+  last_at?: number
 }
 
 /** The summary of one lifecycle verifier run that `/health` carries. */

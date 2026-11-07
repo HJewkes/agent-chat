@@ -95,6 +95,7 @@ export function startOrphanSweep(
     uid: process.getuid?.() ?? -1,
     self: process.pid,
     announced: new Set<string>(),
+    failed: new Map<string, number>(),
     roots: agentTmpSweepRoots(os.homedir()),
   }
   let running = false

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
-import type { HealthPayload } from '../api-contract.js'
+import type { HealthPayload, LoopStallHealth } from '../api-contract.js'
+import { LOOP_STALL_EVENT, LOOP_STALL_MS } from '../broker/loop-stall.js'
 import { installCrashLog } from '../broker/crash-log.js'
 import { probeHealth } from '../broker/doctor.js'
 import { activeHold, clearHold, writeHold } from '../broker/hold.js'
@@ -53,12 +54,23 @@ export async function status(options: { port?: number }): Promise<void> {
   }
   console.log(
     s.health === null
-      ? 'http     no answer'
+      ? `http     no answer (a blocked event loop logs ${LOOP_STALL_EVENT} in ${logPath()})`
       : `http     ok  uptime ${Math.round(s.health.uptime_ms / 1000)}s  ` +
           `${s.health.sessions} sessions  ${s.health.queue_open} open`,
   )
+  if (s.health?.loop) console.log(loopLine(s.health.loop, Date.now()))
   // The socket is the answer to "is it running"; nothing else here is.
   if (!s.socket) process.exit(1)
+}
+
+/** CC-1699: the event-loop blocks `/health` reports, so a broker that answers late says why. */
+export function loopLine(loop: LoopStallHealth, now: number): string {
+  if (loop.stalls === 0) return `loop     no block of ${LOOP_STALL_MS} ms or more since start`
+  const ago = loop.last_at === undefined ? '' : `, ${Math.round((now - loop.last_at) / 1000)}s ago`
+  return (
+    `loop     ${loop.stalls} block(s) of ${LOOP_STALL_MS} ms or more, worst ${loop.worst_ms} ms, ` +
+    `last ${loop.last_ms ?? 0} ms${ago} (${LOOP_STALL_EVENT} in the broker log)`
+  )
 }
 
 /** Attached sessions at stop time, or null when the broker is already unreachable. */
