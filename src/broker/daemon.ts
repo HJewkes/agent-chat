@@ -65,6 +65,7 @@ import { startBurndownKick } from './burndown-kick.js'
 import { brokerJobKick } from './job-kick.js'
 import { startOrphanSweep } from '../agents/orphan-sweep.js'
 import { startProcessGuard } from '../agents/process-guard-monitor.js'
+import { startLoopStallMonitor } from './loop-stall.js'
 import { deliver, SocketServer } from './socket.js'
 import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
@@ -114,6 +115,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   if (listener === null) return null
 
   const { core, socketServer } = openServices()
+  const loopStall = startLoopStallMonitor({ log: logEvent, now: Date.now })
   listener.serve(socketServer)
   socketServer.startLifecycleVerifier()
   socketServer.startIdlePrintWake()
@@ -139,6 +141,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       ? null
       : await bindHttp(core, options.port ?? defaultPort(), ensureToken(), undefined, undefined, {
           slots: () => socketServer.slotUsage(),
+          loop: () => loopStall.monitor.health(),
           ...(lifecycle === undefined ? {} : { lifecycle }),
           verdicts: {
             permission: (msgId, behavior, channel) =>
@@ -168,6 +171,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       stopOrphanSweep()
       stopProcessGuard()
       stopBurndownKick()
+      loopStall.stop()
     },
   })
 
@@ -470,7 +474,7 @@ export async function bindHttp(
   token: string | null = null,
   attempts: number = BIND_RETRY_ATTEMPTS,
   retryDelayMs: number = BIND_RETRY_DELAY_MS,
-  readings: Pick<HttpAppOptions, 'slots' | 'lifecycle' | 'verdicts'> = {},
+  readings: Pick<HttpAppOptions, 'slots' | 'lifecycle' | 'verdicts' | 'loop'> = {},
 ): Promise<{ server: ServerType; port: number } | null> {
   let bound: number | null = null
   const app = buildHttpApp({ core, port: () => bound, token, dashboard: { token: () => token }, ...readings })

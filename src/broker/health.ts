@@ -1,4 +1,4 @@
-import type { HealthPayload, LifecycleHealth } from '../api-contract.js'
+import type { HealthPayload, LifecycleHealth, LoopStallHealth } from '../api-contract.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { socketPath } from '../paths.js'
 import type { BrokerCore } from './core.js'
@@ -24,6 +24,7 @@ export function buildHealthPayload(
   port: number | null,
   slots?: SlotUsage,
   lifecycle?: LifecycleHealth,
+  loop?: LoopStallHealth,
 ): HealthPayload {
   return {
     ok: true,
@@ -36,5 +37,6 @@ export function buildHealthPayload(
     queue_open: core.events.humanQueue().length,
     ...(slots === undefined ? {} : { slots }),
     ...(lifecycle === undefined ? {} : { lifecycle }),
+    ...(loop === undefined ? {} : { loop }),
   }
 }
