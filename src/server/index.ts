@@ -10,7 +10,7 @@ import type {
   Subscription,
   SystemEvent,
 } from '../protocol.js'
-import { cliEntry } from '../paths.js'
+import { cliEntry, socketPath } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 import {
@@ -26,7 +26,8 @@ import { endSelfHandler } from './end-self.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
-import { resolveContextHintPolicy, resolveParkAdvicePolicy } from '../config.js'
+import { resolveAutoStart, resolveContextHintPolicy, resolveParkAdvicePolicy } from '../config.js'
+import { waitForBroker } from './broker-wait.js'
 import { logEvent } from '../broker/log.js'
 import { ContextHinter, withHint } from './context-hint.js'
 import { readWait } from './human-wait.js'
@@ -250,6 +251,56 @@ async function reachBroker(broker: BrokerClient): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Put an ordinary session on the bus with no help from its model; returns the name it holds.
+ *
+ * CC-31. An ordinary session registers because the MODEL called chat_register,
+ * and registration is per-connection — so a replaced MCP subprocess comes back
+ * holding nothing, while the model, which already made that call earlier in the
+ * conversation, has no reason to make it again. From inside the session it
+ * still looks registered.
+ *
+ * Nothing here is asked of the model: the session id comes from this process's
+ * own environment, and the NAME comes from the broker's log. A session with
+ * nothing to reclaim gets ok:false and the ordinary path is unaffected.
+ * A requested name wins over whatever a reused Codex pid once held.
+ *
+ * CC-82. Neither path above covers a session starting for the FIRST time: it
+ * has no launch plan to be named by, and nothing in the log to reclaim. Until
+ * now that left it addressable only if its model called chat_register, which
+ * is an instruction and therefore something that sometimes does not happen —
+ * measured at four live sessions on one machine, all with healthy servers,
+ * none of them reachable. So the server names it from its own directory and
+ * registers it, marked provisional. The model renaming itself later is the
+ * ordinary path, not a correction.
+ */
+async function joinAsSession(
+  broker: BrokerClient,
+  host: SessionHost,
+  requested: string | undefined,
+): Promise<string | undefined> {
+  const readopted = requested ? undefined : await readopt(broker, host)
+  return readopted ?? (await registerProvisionally(broker, host, requested))
+}
+
+/**
+ * BS-48: a session that may not autostart came up with no broker (the forward to a remote one is
+ * down). It waits for the socket rather than start a local broker that would split the bus, then
+ * joins the way startup would have. The log row is the report: stderr reads as a server fault.
+ */
+function joinWhenBrokerAppears(
+  broker: BrokerClient,
+  join: () => Promise<void>,
+  stopped: () => boolean,
+): void {
+  logEvent('broker_wait', { pid: process.pid, socket: socketPath(), reason: 'autostart off' })
+  void waitForBroker({ reach: () => reachBroker(broker), pause, stopped }).then(async reached => {
+    if (!reached) return
+    logEvent('broker_wait_ended', { pid: process.pid })
+    await join()
+  })
 }
 
 /**
@@ -629,15 +680,17 @@ export async function startMcpServer(): Promise<void> {
     hostPid: hostIdentity().hostPid,
     log: logEvent,
   })
+  const autoStart = resolveAutoStart()
   const broker = new BrokerClient(
     deliver,
     () => void setImmediate(() => process.exit(0)),
     deliverSystemEvents,
     deliverPermissionVerdict,
     undefined,
-    { onEndSelf },
+    { onEndSelf, autoStart },
   )
   const online = await reachBroker(broker)
+  const waitsForBroker = !online && !autoStart
 
   // A spawned agent registers from its environment, before the model has had a
   // turn. The name was already assigned at spawn time, so waiting for the model
@@ -645,31 +698,10 @@ export async function startMcpServer(): Promise<void> {
   // with an instruction — a race that will sometimes lose, and which fails by
   // leaving the agent invisible to everyone told to talk to it.
   const spawnedRegistered = spawned !== undefined && online && (await registerSpawned(broker, spawned))
-  if (spawned && !spawnedRegistered) retryRegistration(broker, spawned)
+  if (spawned && !spawnedRegistered && !waitsForBroker) retryRegistration(broker, spawned)
 
-  // CC-31. An ordinary session registers because the MODEL called chat_register,
-  // and registration is per-connection — so a replaced MCP subprocess comes back
-  // holding nothing, while the model, which already made that call earlier in the
-  // conversation, has no reason to make it again. From inside the session it
-  // still looks registered.
-  //
-  // Nothing here is asked of the model: the session id comes from this process's
-  // own environment, and the NAME comes from the broker's log. A session with
-  // nothing to reclaim gets ok:false and the ordinary path is unaffected.
-  // A requested name wins over whatever a reused Codex pid once held.
   const requested = requestedCodexName(host)
-  const readopted = spawned || requested || !online ? undefined : await readopt(broker, host)
-
-  // CC-82. Neither path above covers a session starting for the FIRST time: it
-  // has no launch plan to be named by, and nothing in the log to reclaim. Until
-  // now that left it addressable only if its model called chat_register, which
-  // is an instruction and therefore something that sometimes does not happen —
-  // measured at four live sessions on one machine, all with healthy servers,
-  // none of them reachable. So the server names it from its own directory and
-  // registers it, marked provisional. The model renaming itself later is the
-  // ordinary path, not a correction.
-  const provisional =
-    spawned || readopted || !online ? undefined : await registerProvisionally(broker, host, requested)
+  const sessionName = spawned || !online ? undefined : await joinAsSession(broker, host, requested)
 
   mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     await broker.send({
@@ -683,20 +715,25 @@ export async function startMcpServer(): Promise<void> {
   // A readopted session already holds its name, so the handler must know it —
   // otherwise chat_register would look unmade and the model would be told to
   // call it, which is the confusion this whole path exists to remove.
-  const handler = new ToolHandler(
-    broker,
-    spawned?.name,
-    readopted ?? provisional,
-    () => hinter.hint(),
-    spoolDir,
-  )
+  const handler = new ToolHandler(broker, spawned?.name, sessionName, () => hinter.hint(), spoolDir)
   serveTools(mcp, handler)
   startParkAdvisor(mcp, broker, handler)
+
+  let ending = false
+  if (waitsForBroker) {
+    const join = async (): Promise<void> => {
+      if (spawned) return void (await registerSpawned(broker, spawned))
+      const name = await joinAsSession(broker, host, requested)
+      if (name !== undefined) handler.adoptIfUnnamed(name)
+    }
+    joinWhenBrokerAppears(broker, join, () => ending)
+  }
 
   const transport = new StdioServerTransport()
   // Claude Code closing the pipe means the session is gone. Exit rather than
   // linger on the broker socket, so the registration lease is released promptly.
   const shutdown = (): void => {
+    ending = true
     broker.close()
     process.exit(0)
   }

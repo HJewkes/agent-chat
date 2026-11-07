@@ -2,15 +2,18 @@ import net from 'node:net'
 import { EXIT } from '@titan-design/registry'
 import { BrokerClient } from '../client/broker-client.js'
 import { socketPath } from '../paths.js'
+import { resolveAutoStart } from '../config.js'
 
 /** Exit status a caller can key on to tell a down broker from any other failure. */
 export const BROKER_UNAVAILABLE_EXIT = EXIT.UNAVAILABLE
 
-/** Thrown instead of autostarting when `AGENT_CHAT_NO_AUTOSTART=1` finds no broker. */
+/** Thrown instead of autostarting when `AGENT_CHAT_NO_AUTOSTART=1` (or `remoteBroker`) finds no broker. */
 export class BrokerUnavailableError extends Error {
   readonly code = BROKER_UNAVAILABLE_EXIT
   constructor() {
-    super('broker unavailable: no broker is listening and AGENT_CHAT_NO_AUTOSTART=1 forbids starting one')
+    super(
+      'broker unavailable: no broker is listening and AGENT_CHAT_NO_AUTOSTART=1 or config remoteBroker forbids starting one',
+    )
     this.name = 'BrokerUnavailableError'
   }
 }
@@ -30,7 +33,7 @@ export async function withBroker<T>(
   fn: (broker: BrokerClient) => Promise<T>,
   options: { autoStart?: boolean } = {},
 ): Promise<T> {
-  const autoStart = options.autoStart !== false && process.env.AGENT_CHAT_NO_AUTOSTART !== '1'
+  const autoStart = options.autoStart !== false && resolveAutoStart()
   if (!autoStart) await probeBroker()
   const broker = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, { autoStart })
   await broker.connect()
