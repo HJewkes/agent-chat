@@ -1040,20 +1040,40 @@ describe('sweeping a real read-only tree (CC-1702)', () => {
     }
   })
 
-  it('keeps a tree whose unlock ran out of budget, and finishes it on a later pass', async () => {
+  it('removes a tree larger than one pass’s budget over several passes, logging each partial pass', async () => {
     if (process.getuid?.() === 0) return
     const home = makeHome()
     const dir = path.join(diskTmpRoot(home), 'ac-worker-11')
-    nodeFs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true })
-    nodeFs.chmodSync(path.join(dir, 'a', 'b'), 0o555)
+    for (let i = 0; i < 6; i++) {
+      const sub = path.join(dir, `d${i}`)
+      nodeFs.mkdirSync(sub, { recursive: true })
+      for (let f = 0; f < 5; f++) nodeFs.writeFileSync(path.join(sub, `f${f}`), '')
+      nodeFs.chmodSync(sub, 0o555)
+    }
 
     try {
-      let ticks = 0
-      await sweepReal(home, () => SWEEP_GRACE_MS + 1 + (ticks++ > 4 ? 10_000 : 0))
-      expect(nodeFs.existsSync(dir)).toBe(true)
+      let clock = SWEEP_GRACE_MS + 1
+      const events: string[] = []
+      const pass = () =>
+        sweepAgentTmpDirs({
+          roster: () => [row('a1', 'worker', 'exited')],
+          now: () => clock++,
+          fs: realTmpFs,
+          table: procTable({}),
+          uid: process.getuid?.() ?? -1,
+          self: process.pid,
+          log: e => events.push(e),
+          roots: [diskTmpRoot(home)],
+          budgetMs: 12,
+        })
 
-      await sweepReal(home)
+      await pass()
+      expect(nodeFs.existsSync(dir)).toBe(true)
+      for (let i = 0; i < 20 && nodeFs.existsSync(dir); i++) await pass()
+
       expect(nodeFs.existsSync(dir)).toBe(false)
+      expect(events).toContain('tmpdir_sweep_partial')
+      expect(events).toContain('tmpdir_removed')
     } finally {
       nodeFs.rmSync(home, { recursive: true, force: true })
     }

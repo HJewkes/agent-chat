@@ -50,11 +50,11 @@ export interface TmpFs {
   chmod(path: string, mode: number): void
   rm(path: string): void
   /**
-   * CC-1702: the non-blocking removal of a tree. When present, the sweep unlocks and then removes
-   * through these two instead of `rm`, so a huge tree never holds the event loop.
+   * CC-1702: the non-blocking removal of a tree. When present, the sweep removes through it instead
+   * of `rm`, so a huge tree never holds the event loop. It removes as it walks, so what one pass
+   * removed stays removed when its budget runs out.
    */
-  unlockTree?(path: string, budget: UnlockBudget): Promise<UnlockResult>
-  rmTree?(path: string): Promise<void>
+  reclaimTree?(path: string, budget: UnlockBudget): Promise<UnlockResult>
 }
 
 export interface UnlockBudget {
@@ -92,35 +92,36 @@ export const realTmpFs: TmpFs = {
   chmod: (path, mode) => fs.chmodSync(path, mode),
   // Recursive rm unlinks a symlink it meets inside the tree; it never follows one.
   rm: path => fs.rmSync(path, { recursive: true }),
-  unlockTree: (path, budget) => unlockTree(path, budget),
-  rmTree: path => fs.promises.rm(path, { recursive: true }),
+  reclaimTree: (path, budget) => reclaimTree(path, budget),
 }
 
 /**
  * CC-1702: Go module caches and the like are read-only trees, so rm hits EACCES. Walks `dir`
- * depth-first, async, giving each directory owner rwx before reading it. It lstats everything and
- * never descends into a symlink, so the walk cannot leave the tree.
+ * depth-first and async, giving each directory owner rwx before reading it and removing each
+ * entry as soon as it is done, so a pass cut short by the budget leaves less for the next. A
+ * symlink is unlinked, never followed.
  */
-async function unlockTree(dir: string, budget: UnlockBudget): Promise<UnlockResult> {
+async function reclaimTree(dir: string, budget: UnlockBudget): Promise<UnlockResult> {
   const result: UnlockResult = { complete: true, inodes: 0 }
-  await unlockEntry(dir, budget, result)
+  await reclaimDir(dir, budget, result)
   return result
 }
 
-async function unlockEntry(entry: string, budget: UnlockBudget, result: UnlockResult): Promise<void> {
-  if (!result.complete) return
-  if (budget.now() > budget.deadline) {
-    result.complete = false
-    return
-  }
-  const stat = await fs.promises.lstat(entry).catch(missingAsUndefined)
+async function reclaimDir(dir: string, budget: UnlockBudget, result: UnlockResult): Promise<void> {
+  const stat = await fs.promises.lstat(dir).catch(missingAsUndefined)
   if (stat === undefined) return
-  result.inodes++
-  if (stat.isSymbolicLink() || !stat.isDirectory()) return
-  if ((stat.mode & 0o700) !== 0o700) await fs.promises.chmod(entry, stat.mode | 0o700)
-  for (const child of await fs.promises.readdir(entry)) {
-    await unlockEntry(`${entry}/${child}`, budget, result)
+  if ((stat.mode & 0o700) !== 0o700) await fs.promises.chmod(dir, stat.mode | 0o700)
+  for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
+    if (budget.now() > budget.deadline) result.complete = false
+    if (!result.complete) return
+    const child = `${dir}/${entry.name}`
+    if (entry.isDirectory()) await reclaimDir(child, budget, result)
+    else await fs.promises.unlink(child).catch(missingAsUndefined)
+    result.inodes++
   }
+  if (!result.complete) return
+  await fs.promises.rmdir(dir)
+  result.inodes++
 }
 
 function missingAsUndefined(err: unknown): undefined {
@@ -328,19 +329,19 @@ function vetRemoval(target: RemovalTarget, deps: RemovalDeps): { dir: string } |
 }
 
 /**
- * CC-1702: the sweep's removal. With a non-blocking fs it unlocks the tree within the budget and
- * removes it only once the whole tree is unlocked; otherwise it is `tryRemove`.
+ * CC-1702: the sweep's removal. With a non-blocking fs it reclaims the tree within the budget, keeping
+ * what is left for the next pass; otherwise it is `tryRemove`.
  */
 async function tryRemoveAsync(target: RemovalTarget, deps: SweepPass): Promise<TmpRemoval | undefined> {
-  const { unlockTree: unlock, rmTree } = deps.fs
-  if (unlock === undefined || rmTree === undefined) return tryRemove(target, deps)
+  const { reclaimTree: reclaim } = deps.fs
+  if (reclaim === undefined) return tryRemove(target, deps)
   try {
     const vetted = vetRemoval(target, deps)
     if ('removed' in vetted) return vetted
-    const { complete, inodes } = await unlock(vetted.dir, deps)
-    if (!complete) return undefined
-    await rmTree(vetted.dir)
-    return { removed: true, path: vetted.dir, inodes }
+    const { complete, inodes } = await reclaim(vetted.dir, deps)
+    if (complete) return { removed: true, path: vetted.dir, inodes }
+    deps.log('tmpdir_sweep_partial', { path: vetted.dir, inodes })
+    return undefined
   } catch (err) {
     const { code, message } = err as NodeJS.ErrnoException
     return {
