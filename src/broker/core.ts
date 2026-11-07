@@ -13,7 +13,7 @@ import {
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
-import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
+import { resolveClaimWake, resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport } from './event-log.js'
 import { ReportBatcher, type Unpushed } from './report-batch.js'
@@ -23,6 +23,7 @@ import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry, type IdentityBinding } from './registry.js'
 import { ClaimLedger } from './claims.js'
+import { claimWake, type ClaimWake } from './claim-wake.js'
 import { pushHoldFor } from './push-hold.js'
 import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 import { TELEPORT_GAP_MS, midTeleport } from './teleport-window.js'
@@ -108,7 +109,7 @@ export class BrokerCore<C = Conn> {
   readonly agents: AgentLog
   readonly startedAt: number
   /** Live worktree/file claims, released with the connection that took them (CC-56). */
-  readonly claims = new ClaimLedger()
+  readonly claims: ClaimLedger
 
   private readonly reports: ReportBatcher<C>
   private readonly isSeat: (name: string) => boolean
@@ -128,6 +129,8 @@ export class BrokerCore<C = Conn> {
     this.isSeat = options.isSeat ?? (() => false)
     this.registry = options.registry ?? new Registry<C>()
     this.hub = options.hub ?? new EventHub()
+    const wake = options.claimWake ?? claimWake({ resolve: resolveClaimWake })
+    this.claims = new ClaimLedger(Date.now, () => wake.event())
     this.agents = new AgentLog(this.events)
     this.registry.holdPushesWhen(agentId => pushHoldFor(this.events, this.agents, agentId))
     this.startedAt = Date.now()
@@ -938,4 +941,6 @@ export interface BrokerCoreOptions<C = Conn> {
   reportBatchMs?: () => number
   /** CC-320: whether a name is a watched seat, whose messages are held while it is dark. Nobody, when absent. */
   isSeat?: (name: string) => boolean
+  /** TP-4867: told each time a claim ends. Defaults to the `claimWake` config, which runs nothing while unset. */
+  claimWake?: ClaimWake
 }
