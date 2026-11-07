@@ -19,9 +19,8 @@ describe('dashboard tokens resolve from titan-design', () => {
     expect(semantic.text.primary).toBe(T['text-primary'])
   })
 
-  it('uses the on-brand token for text sitting on a brand fill, not text-inverse', () => {
+  it('uses the on-brand token for text sitting on a brand fill', () => {
     expect(semantic.text.inverse).toBe(T['on-brand-primary'])
-    expect(semantic.text.inverse).not.toBe(T['text-inverse'])
   })
 
   it('leaves no hex outside titan’s token set in the exported values', () => {

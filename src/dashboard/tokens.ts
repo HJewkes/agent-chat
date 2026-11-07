@@ -215,9 +215,9 @@ export const semantic = {
     secondary: T['text-secondary'],
     tertiary: T['text-tertiary'],
     // `inverse` here means "text sitting ON a filled brand/accent fill", which
-    // is titan's `on-brand-primary` (white). Titan's own `text-inverse` is the
-    // opposite thing — near-black, for dark text on a light page — and using it
-    // would put #1C1916 on the orange active-filter chip.
+    // is titan's `on-brand-primary`. Titan's own `text-inverse` means dark text
+    // on a light page; the two values may coincide in a theme, but only
+    // `on-brand-primary` tracks the brand fill's contrast.
     inverse: T['on-brand-primary'],
   },
 
