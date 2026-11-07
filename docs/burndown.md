@@ -432,6 +432,29 @@ wait leaves out planning time. An exit with no dispatch within `--max-wait-min` 
 is reported as unmatched and left out of the median, since that slot waited for ready work,
 not for a tick.
 
+### Claim-ending wake (TP-4867)
+
+`claimWake` in `~/.agent-chat/config.json` makes the broker run a command when a broker claim
+(`chat_claim`) ends: released with `chat_release`, dropped when its holder's connection closes or
+the holder is retired, dropped when a teleport successor never arrives, or released for a spawn
+that never registered. A re-claim that replaces the holder's own claim does not count. It is the
+claim-side twin of Shepherd's merge wake (TP-1433), and it is off while the key is unset:
+
+```json
+"claimWake": {
+  "argv": ["systemctl", "--user", "start", "--no-block", "agent-chat-burndown.service"],
+  "settleMs": 20000,
+  "timeoutMs": 10000
+}
+```
+
+`argv` runs with no shell. `cwd` (absolute) is optional. `settleMs` defaults to 20000, at most 30000:
+the first claim end opens the window, and every end inside it shares one run when it closes.
+`timeoutMs` defaults to 10000. The broker never waits on the command; it logs `claim_wake_ran` or
+`claim_wake_failed` in the broker log, and an invalid value is logged as `config_invalid` and treated
+as unset. The key is read when a window opens, so an edit needs no broker restart. A broker restart
+inside a window drops the pending wake; the timer still covers it.
+
 ### Publish tasks (CC-987)
 
 A publish is its own task, never a slice. It carries `ops:publish`, and its `done_when` is one

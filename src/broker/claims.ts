@@ -151,7 +151,11 @@ function starSegmentsIntersect(a: string, b: string): boolean {
 export class ClaimLedger {
   private readonly claims: Claim[] = []
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** `onEnd` runs after a release removes at least one claim; a re-claim that replaces its own is no end (TP-4867). */
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly onEnd: () => void = () => undefined,
+  ) {}
 
   /** Every live claim, newest last. */
   list(): Claim[] {
@@ -204,7 +208,7 @@ export class ClaimLedger {
         conflicts: collisions.map(({ claim }) => claim),
       }
 
-    const replaced = this.releaseIn(owner, worktreePath)
+    const replaced = this.remove(c => c.owner === owner && c.worktreePath === worktreePath)
     const claim: Claim = {
       owner,
       worktreePath,
@@ -219,7 +223,7 @@ export class ClaimLedger {
 
   /** Drop one owner's claim in one worktree. Returns whether anything was held. */
   releaseIn(owner: string, worktreePath: string): boolean {
-    return this.remove(c => c.owner === owner && c.worktreePath === worktreePath)
+    return this.ended(this.remove(c => c.owner === owner && c.worktreePath === worktreePath))
   }
 
   /**
@@ -230,7 +234,12 @@ export class ClaimLedger {
    * and an agent that dies mid-task stops blocking its peers immediately.
    */
   releaseAll(owner: string): boolean {
-    return this.remove(c => c.owner === owner)
+    return this.ended(this.remove(c => c.owner === owner))
+  }
+
+  private ended(removed: boolean): boolean {
+    if (removed) this.onEnd()
+    return removed
   }
 
   private remove(predicate: (claim: Claim) => boolean): boolean {

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import { logEvent } from './broker/log.js'
 import { DEFAULT_SLOTS } from './agents/semaphore.js'
 import { configPath } from './paths.js'
+import { parseClaimWake, type ClaimWakeConfig } from './broker/claim-wake.js'
 import {
   DEFAULT_MACHINE_CPU_PRESSURE_PERCENT,
   DEFAULT_MACHINE_DISK_BYTES_PERCENT,
@@ -101,6 +102,8 @@ export interface AgentChatConfig {
   profileDrift?: unknown
   hostProof?: unknown
   accountRotation?: unknown
+  /** TP-4867: the argv the broker runs, coalesced, when a claim ends; unset runs nothing. */
+  claimWake?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -186,6 +189,16 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logInvalidOnce({ key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/** TP-4867: `claimWake` in `config.json`, read per window; unset or invalid (logged) runs nothing. */
+export function resolveClaimWake(): ClaimWakeConfig | undefined {
+  const value = readConfig().claimWake
+  if (value === undefined || value === null) return undefined
+  const parsed = parseClaimWake(value)
+  if (typeof parsed !== 'string') return parsed
+  logInvalidOnce({ key: 'claimWake', value, reason: parsed, fallback: 'off' })
+  return undefined
 }
 
 /**
