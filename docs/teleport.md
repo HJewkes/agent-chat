@@ -1271,6 +1271,21 @@ heals itself, and a teleport while no launcher is connected is refused with
 `no launcher connected on <mac host>` before anything is ended. Check with
 `agent-chat host list` on basement first.
 
+**Never a local broker on the Mac (BS-48).** Every client starts a broker when
+`chat.sock` does not answer, so a Claude session opened while the forward is down
+would bring up a Mac broker and split the bus: its sessions would be invisible
+from basement. Mark the Mac as served from elsewhere with `"remoteBroker": true`
+in its agent-chat `config.json`, or `AGENT_CHAT_NO_AUTOSTART=1` in the
+environment Claude Code starts from. Either one stops the MCP server and the CLI
+from autostarting. The MCP server still answers `initialize`, logs a
+`broker_wait` row to `broker.log`, and retries one connect at a time with
+backoff (1s up to every 30s), without limit, until the socket answers. Then it
+registers the session the way startup would have and logs `broker_wait_ended`.
+A session that loses the forward mid-session does the same once its quick
+reconnect ladder (about 9s) fails: it waits, then re-registers under its name. Until then, a chat tool fails with
+`not connected to the broker: none is listening at <socket>, and autostart is off`.
+CLI verbs fail at once with `broker unavailable` and exit 69.
+
 ### 17.2 One-time setup
 
 1. **Mac: update agent-chat** to a build with slices A, D1 and E. A launcher from

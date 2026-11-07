@@ -98,6 +98,11 @@ export class ToolHandler {
     this.nameIsFixed = spawnedName !== undefined
   }
 
+  /** BS-48: a name the server registered after a late connect; a name the model chose meanwhile wins. */
+  adoptIfUnnamed(name: string): void {
+    this.registeredName ??= name
+  }
+
   /** The name this session is registered under, as far as this process knows. */
   name(): string | null {
     return this.registeredName
