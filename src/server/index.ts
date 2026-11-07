@@ -27,7 +27,6 @@ import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
 import { resolveAutoStart, resolveContextHintPolicy, resolveParkAdvicePolicy } from '../config.js'
-import { waitForBroker } from './broker-wait.js'
 import { logEvent } from '../broker/log.js'
 import { ContextHinter, withHint } from './context-hint.js'
 import { readWait } from './human-wait.js'
@@ -290,13 +289,9 @@ async function joinAsSession(
  * down). It waits for the socket rather than start a local broker that would split the bus, then
  * joins the way startup would have. The log row is the report: stderr reads as a server fault.
  */
-function joinWhenBrokerAppears(
-  broker: BrokerClient,
-  join: () => Promise<void>,
-  stopped: () => boolean,
-): void {
+function joinWhenBrokerAppears(broker: BrokerClient, join: () => Promise<void>): void {
   logEvent('broker_wait', { pid: process.pid, socket: socketPath(), reason: 'autostart off' })
-  void waitForBroker({ reach: () => reachBroker(broker), pause, stopped }).then(async reached => {
+  void broker.waitUntilReachable().then(async reached => {
     if (!reached) return
     logEvent('broker_wait_ended', { pid: process.pid })
     await join()
@@ -687,7 +682,7 @@ export async function startMcpServer(): Promise<void> {
     deliverSystemEvents,
     deliverPermissionVerdict,
     undefined,
-    { onEndSelf, autoStart },
+    { onEndSelf, autoStart, awaitBroker: !autoStart },
   )
   const online = await reachBroker(broker)
   const waitsForBroker = !online && !autoStart
@@ -719,21 +714,22 @@ export async function startMcpServer(): Promise<void> {
   serveTools(mcp, handler)
   startParkAdvisor(mcp, broker, handler)
 
-  let ending = false
   if (waitsForBroker) {
     const join = async (): Promise<void> => {
-      if (spawned) return void (await registerSpawned(broker, spawned))
+      if (spawned) {
+        if (!(await registerSpawned(broker, spawned))) retryRegistration(broker, spawned)
+        return
+      }
       const name = await joinAsSession(broker, host, requested)
       if (name !== undefined) handler.adoptIfUnnamed(name)
     }
-    joinWhenBrokerAppears(broker, join, () => ending)
+    joinWhenBrokerAppears(broker, join)
   }
 
   const transport = new StdioServerTransport()
   // Claude Code closing the pipe means the session is gone. Exit rather than
   // linger on the broker socket, so the registration lease is released promptly.
   const shutdown = (): void => {
-    ending = true
     broker.close()
     process.exit(0)
   }

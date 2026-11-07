@@ -11,7 +11,7 @@ import { BrokerClient } from '../client/broker-client.js'
 import { BrokerUnavailableError, withBroker } from '../cli/client.js'
 import { resolveAutoStart } from '../config.js'
 import { configPath, socketPath } from '../paths.js'
-import { waitForBroker } from '../server/broker-wait.js'
+import { waitForBroker } from '../client/broker-wait.js'
 
 /** BS-48: a host served by a remote broker never starts its own when the forwarded socket is down. */
 
@@ -45,7 +45,35 @@ const listen = (): Promise<void> =>
 const sessionClient = (): BrokerClient =>
   new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
     autoStart: resolveAutoStart(),
+    awaitBroker: !resolveAutoStart(),
   })
+
+/** A stub broker that answers `register` and records the names; returns its open connections. */
+function registeringBroker(registered: string[]): Promise<Set<net.Socket>> {
+  const conns = new Set<net.Socket>()
+  server = net.createServer(conn => {
+    conns.add(conn)
+    conn.on('close', () => conns.delete(conn))
+    conn.on('data', chunk => {
+      for (const line of chunk.toString().split('\n').filter(Boolean)) {
+        const frame = JSON.parse(line) as Record<string, unknown>
+        if (frame['t'] !== 'register') continue
+        registered.push(String(frame['name']))
+        conn.write(
+          `${JSON.stringify({ t: 'register_result', ok: true, name: frame['name'], rid: frame['rid'] })}\n`,
+        )
+      }
+    })
+  })
+  return new Promise(resolve => server?.listen(socketPath(), () => resolve(conns)))
+}
+
+async function brokerGoesDown(conns: Set<net.Socket>): Promise<void> {
+  const down = server
+  server = undefined
+  for (const conn of conns) conn.destroy()
+  await new Promise<void>(resolve => (down ? down.close(() => resolve()) : resolve()))
+}
 
 describe('resolveAutoStart', () => {
   it('allows autostart by default', () => {
@@ -92,6 +120,31 @@ describe('session client with the forwarded socket down', () => {
     expect((err as Error).message).toMatch(/autostart is off/)
     expect((err as Error).message).toContain(socketPath())
   })
+
+  it('re-registers after the broker is gone longer than the reconnect ladder, never spawning', async () => {
+    process.env.AGENT_CHAT_NO_AUTOSTART = '1'
+    const registered: string[] = []
+    const conns = await registeringBroker(registered)
+    client = sessionClient()
+    await client.connect()
+    await client.request(
+      { t: 'register', name: 'mac-session', workingOn: 'w', cwd: '/', pid: 1 },
+      'register_result',
+    )
+
+    await brokerGoesDown(conns)
+    await new Promise(resolve => setTimeout(resolve, 10_500))
+    const offline = await client.request({ t: 'list' }, 'list_result').catch((e: unknown) => e)
+    expect((offline as Error).message).toMatch(/autostart is off/)
+
+    await registeringBroker(registered)
+
+    await vi.waitFor(() => expect(registered).toEqual(['mac-session', 'mac-session']), {
+      timeout: 5_000,
+      interval: 100,
+    })
+    expect(spawnMock).not.toHaveBeenCalled()
+  }, 30_000)
 
   it('still spawns a broker by default', async () => {
     client = sessionClient()

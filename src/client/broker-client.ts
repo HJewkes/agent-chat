@@ -21,6 +21,7 @@ import { cliEntry, home, socketPath } from '../paths.js'
 import { restartLockHolder } from '../broker/restart-lock.js'
 import { readPidFile } from '../broker/lifecycle.js'
 import { logEvent } from '../broker/log.js'
+import { waitForBroker } from './broker-wait.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 
@@ -190,6 +191,12 @@ export interface BrokerClientOptions {
    * it on the next connect attempt would make "stop" mean nothing.
    */
   autoStart?: boolean
+  /**
+   * BS-48: with `autoStart: false`, a session client whose reconnect after a drop fails keeps
+   * waiting for the broker (capped backoff, no limit) and re-registers when it answers, instead
+   * of staying offline. A one-shot CLI client leaves it off and fails fast.
+   */
+  awaitBroker?: boolean
   /** CC-1059: the broker asked the agent `agentId` to end, because it was retired on another host. */
   onEndSelf?: (agentId: string, reason: string) => void
   /** Where `AGENT_CHAT_AGENT_ID` is read for the `hello`; defaults to `process.env`. */
@@ -338,6 +345,45 @@ export class BrokerClient {
     this.onDropped?.()
     if (this.closed) return
     if (await this.reconnect()) await this.replayHeld()
+    else if (this.options.awaitBroker && !this.closed) await this.awaitReturn()
+  }
+
+  /** BS-48: the forward to a remote broker went down mid-session; wait it out rather than drop off the bus. */
+  private async awaitReturn(): Promise<void> {
+    logEvent('broker_wait', {
+      pid: process.pid,
+      socket: socketPath(),
+      reason: 'connection lost, autostart off',
+    })
+    if (!(await this.waitUntilReachable())) return
+    logEvent('broker_wait_ended', { pid: process.pid })
+    await this.replayHeld()
+  }
+
+  /**
+   * BS-48: one connect attempt per backoff step, without limit, until the broker answers (true) or
+   * this client is closed (false). Never starts a broker. A caller arriving while connected returns at once.
+   */
+  waitUntilReachable(): Promise<boolean> {
+    return waitForBroker({
+      reach: async () => this.socket !== null || (await this.attachUnlessClosed()),
+      pause: wait,
+      stopped: () => this.closed,
+    })
+  }
+
+  private async attachUnlessClosed(): Promise<boolean> {
+    try {
+      const socket = await this.tryConnect()
+      if (this.closed || this.socket !== null) {
+        socket.destroy()
+        return this.socket !== null
+      }
+      this.attach(socket)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private async reconnect(): Promise<boolean> {
