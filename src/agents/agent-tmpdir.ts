@@ -49,6 +49,23 @@ export interface TmpFs {
   mkdir(path: string, mode: number, recursive?: boolean): void
   chmod(path: string, mode: number): void
   rm(path: string): void
+  /**
+   * CC-1702: the non-blocking removal of a tree. When present, the sweep removes through it instead
+   * of `rm`, so a huge tree never holds the event loop. It removes as it walks, so what one pass
+   * removed stays removed when its budget runs out.
+   */
+  reclaimTree?(path: string, budget: UnlockBudget): Promise<UnlockResult>
+}
+
+export interface UnlockBudget {
+  now(): number
+  /** Wall time after which the walk stops; what it unlocked stays unlocked for the next pass. */
+  deadline: number
+}
+
+export interface UnlockResult {
+  complete: boolean
+  inodes: number
 }
 
 export interface TmpProcessTable extends Pick<
@@ -75,6 +92,41 @@ export const realTmpFs: TmpFs = {
   chmod: (path, mode) => fs.chmodSync(path, mode),
   // Recursive rm unlinks a symlink it meets inside the tree; it never follows one.
   rm: path => fs.rmSync(path, { recursive: true }),
+  reclaimTree: (path, budget) => reclaimTree(path, budget),
+}
+
+/**
+ * CC-1702: Go module caches and the like are read-only trees, so rm hits EACCES. Walks `dir`
+ * depth-first and async, giving each directory owner rwx before reading it and removing each
+ * entry as soon as it is done, so a pass cut short by the budget leaves less for the next. A
+ * symlink is unlinked, never followed.
+ */
+async function reclaimTree(dir: string, budget: UnlockBudget): Promise<UnlockResult> {
+  const result: UnlockResult = { complete: true, inodes: 0 }
+  await reclaimDir(dir, budget, result)
+  return result
+}
+
+async function reclaimDir(dir: string, budget: UnlockBudget, result: UnlockResult): Promise<void> {
+  const stat = await fs.promises.lstat(dir).catch(missingAsUndefined)
+  if (stat === undefined) return
+  if ((stat.mode & 0o700) !== 0o700) await fs.promises.chmod(dir, stat.mode | 0o700)
+  for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
+    if (budget.now() > budget.deadline) result.complete = false
+    if (!result.complete) return
+    const child = `${dir}/${entry.name}`
+    if (entry.isDirectory()) await reclaimDir(child, budget, result)
+    else await fs.promises.unlink(child).catch(missingAsUndefined)
+    result.inodes++
+  }
+  if (!result.complete) return
+  await fs.promises.rmdir(dir)
+  result.inodes++
+}
+
+function missingAsUndefined(err: unknown): undefined {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+  throw err
 }
 
 const readLink = (path: string): string | undefined => {
@@ -254,6 +306,15 @@ function countInodes(tmpFs: TmpFs, path: string): number {
  * recursive rm never resolves through it to an `ac-*` dir elsewhere.
  */
 export function removeAgentTmpDir(target: RemovalTarget, deps: RemovalDeps): TmpRemoval {
+  const vetted = vetRemoval(target, deps)
+  if ('removed' in vetted) return vetted
+  const inodes = countInodes(deps.fs, vetted.dir)
+  deps.fs.rm(vetted.dir)
+  return { removed: true, path: vetted.dir, inodes }
+}
+
+/** The dir to remove once every refusal has passed, or the refusal. */
+function vetRemoval(target: RemovalTarget, deps: RemovalDeps): { dir: string } | TmpRemoval {
   const dir = agentTmpPath(target.name, target.pid, target.root)
   if (dir === undefined) return { removed: false, path: '', reason: 'invalid name or pid' }
   const rootReason = rootRefusal(deps.fs, target.root ?? TMP_ROOT, deps.uid)
@@ -264,9 +325,32 @@ export function removeAgentTmpDir(target: RemovalTarget, deps: RemovalDeps): Tmp
   if (unsafe !== undefined) return { removed: false, path: dir, reason: unsafe }
   const busy = holder(target, dir, deps)
   if (busy !== undefined) return { removed: false, path: dir, reason: busy }
-  const inodes = countInodes(deps.fs, dir)
-  deps.fs.rm(dir)
-  return { removed: true, path: dir, inodes }
+  return { dir }
+}
+
+/**
+ * CC-1702: the sweep's removal. With a non-blocking fs it reclaims the tree within the budget, keeping
+ * what is left for the next pass; otherwise it is `tryRemove`.
+ */
+async function tryRemoveAsync(target: RemovalTarget, deps: SweepPass): Promise<TmpRemoval | undefined> {
+  const { reclaimTree: reclaim } = deps.fs
+  if (reclaim === undefined) return tryRemove(target, deps)
+  try {
+    const vetted = vetRemoval(target, deps)
+    if ('removed' in vetted) return vetted
+    const { complete, inodes } = await reclaim(vetted.dir, deps)
+    if (complete) return { removed: true, path: vetted.dir, inodes }
+    deps.log('tmpdir_sweep_partial', { path: vetted.dir, inodes })
+    return undefined
+  } catch (err) {
+    const { code, message } = err as NodeJS.ErrnoException
+    return {
+      removed: false,
+      path: agentTmpPath(target.name, target.pid, target.root) ?? '',
+      reason: message,
+      code: code ?? 'unknown',
+    }
+  }
 }
 
 type Log = (event: string, detail: Record<string, unknown>) => void
@@ -377,13 +461,14 @@ function pidOf(entry: string, name: string, root: string): number | undefined {
   return agentTmpPath(name, pid, root) === `${root}/${entry}` ? pid : undefined
 }
 
-function sweepOne(target: RemovalTarget, deps: TmpSweepDeps): void {
+async function sweepOne(target: RemovalTarget, deps: SweepPass): Promise<void> {
   // The launcher itself does not carry the launch identity, so a still-running one is checked by argv.
   const command = deps.table.command(target.pid)
   if (deps.table.isAlive(target.pid) && [...target.agentIds].some(id => isLauncherOf(command, id))) return
   const dir = agentTmpPath(target.name, target.pid, target.root)
   if (dir !== undefined && failedRecently(dir, deps)) return
-  const result = tryRemove(target, deps)
+  const result = await tryRemoveAsync(target, deps)
+  if (result === undefined) return
   if (!result.removed && result.code !== undefined) deps.failed?.set(result.path, deps.now())
   if (!result.removed && deps.announced?.has(result.path)) return
   if (!result.removed) deps.announced?.add(result.path)
@@ -416,8 +501,8 @@ export function passSnapshot(table: TmpProcessTable): TmpProcessTable {
   }
 }
 
-/** One pass: removes the dirs of agents whose rows are finished, for launches that left one behind. */
-export function sweepAgentTmpDirs(deps: TmpSweepDeps): void {
+/** One pass, within `budgetMs`: removes the dirs of agents whose rows are finished, for launches that left one behind. */
+export async function sweepAgentTmpDirs(deps: TmpSweepDeps): Promise<void> {
   const names = finishedNames(deps.roster(), deps.now())
   if (names.size === 0) return
   const pass = {
@@ -426,20 +511,20 @@ export function sweepAgentTmpDirs(deps: TmpSweepDeps): void {
     deadline: deps.now() + (deps.budgetMs ?? SWEEP_BUDGET_MS),
   }
   for (const root of deps.roots ?? [TMP_ROOT]) {
-    if (isTmpRoot(root) && deps.fs.lstat(root) !== undefined) sweepRoot(root, names, pass)
+    if (isTmpRoot(root) && deps.fs.lstat(root) !== undefined) await sweepRoot(root, names, pass)
   }
 }
 
 type SweepPass = TmpSweepDeps & { deadline: number }
 
-function sweepRoot(root: string, names: Map<string, Set<string>>, deps: SweepPass): void {
+async function sweepRoot(root: string, names: Map<string, Set<string>>, deps: SweepPass): Promise<void> {
   for (const entry of deps.fs.readdir(root)) {
     if (!entry.startsWith(PREFIX)) continue
     for (const [name, agentIds] of names) {
       const pid = pidOf(entry, name, root)
       if (pid === undefined) continue
       if (deps.now() > deps.deadline) return
-      sweepOne({ name, pid, agentIds, root }, deps)
+      await sweepOne({ name, pid, agentIds, root }, deps)
     }
   }
 }

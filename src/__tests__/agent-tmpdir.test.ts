@@ -672,9 +672,9 @@ const row = (agentId: string, name: string, state: AgentIdentity['state'], exite
 
 describe('sweeping per-agent TMPDIRs of finished agents', () => {
   const now = SWEEP_GRACE_MS + 1
-  const run = (fs: FakeFs, roster: AgentIdentity[], table = procTable({})) => {
+  const run = async (fs: FakeFs, roster: AgentIdentity[], table = procTable({})) => {
     const events: Array<[string, Record<string, unknown>]> = []
-    sweepAgentTmpDirs({
+    await sweepAgentTmpDirs({
       roster: () => roster,
       now: () => now,
       ...deps(fs, table),
@@ -683,13 +683,13 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     return events
   }
 
-  it('removes the dirs of an exited agent and logs each', () => {
+  it('removes the dirs of an exited agent and logs each', async () => {
     const fs = new FakeFs()
       .add('/tmp/ac-worker-11')
       .add('/tmp/ac-worker-12')
       .add('/tmp/ac-worker-12/f', 'file')
 
-    const events = run(fs, [row('a1', 'worker', 'exited')])
+    const events = await run(fs, [row('a1', 'worker', 'exited')])
 
     expect(fs.removed.sort()).toEqual(['/tmp/ac-worker-11', '/tmp/ac-worker-12'])
     expect(events).toContainEqual([
@@ -698,7 +698,7 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     ])
   })
 
-  it('leaves every entry that is not exactly ac-<finished name>-<pid>', () => {
+  it('leaves every entry that is not exactly ac-<finished name>-<pid>', async () => {
     const fs = new FakeFs()
       .add('/tmp/ac-worker-abc')
       .add('/tmp/ac-worker-')
@@ -708,36 +708,40 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
       .add('/tmp/review-500-abc')
       .add('/tmp/worker-11')
 
-    run(fs, [row('a1', 'worker', 'exited')])
+    await run(fs, [row('a1', 'worker', 'exited')])
 
     expect(fs.removed).toEqual([])
   })
 
-  it('leaves a name that also has a live row', () => {
+  it('leaves a name that also has a live row', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11')
 
-    run(fs, [row('a1', 'worker', 'exited'), row('a2', 'worker', 'live')])
+    await run(fs, [row('a1', 'worker', 'exited'), row('a2', 'worker', 'live')])
 
     expect(fs.removed).toEqual([])
   })
 
-  it('leaves an agent still inside the sweep grace', () => {
+  it('leaves an agent still inside the sweep grace', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11')
 
-    run(fs, [row('a1', 'worker', 'exited', now)])
+    await run(fs, [row('a1', 'worker', 'exited', now)])
 
     expect(fs.removed).toEqual([])
   })
 
-  it('leaves a dir whose launcher is still a live run-agent of that agent', () => {
+  it('leaves a dir whose launcher is still a live run-agent of that agent', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11')
 
-    run(fs, [row('a1', 'worker', 'retired')], procTable({ 11: { command: 'node agent-chat run-agent a1' } }))
+    await run(
+      fs,
+      [row('a1', 'worker', 'retired')],
+      procTable({ 11: { command: 'node agent-chat run-agent a1' } }),
+    )
 
     expect(fs.removed).toEqual([])
   })
 
-  it('refuses a symlink and reports it once, not every sweep', () => {
+  it('refuses a symlink and reports it once, not every sweep', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11', 'symlink')
     const roster = [row('a1', 'worker', 'exited')]
     const events: string[] = []
@@ -749,14 +753,14 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
       announced: new Set<string>(),
     }
 
-    sweepAgentTmpDirs(sweep)
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
 
     expect(fs.removed).toEqual([])
     expect(events).toEqual(['tmpdir_kept'])
   })
 
-  it('logs a failed removal once and still removes the entries after it', () => {
+  it('logs a failed removal once and still removes the entries after it', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11').add('/tmp/ac-worker-12')
     fs.denied.add('/tmp/ac-worker-11')
     const events: Array<[string, Record<string, unknown>]> = []
@@ -768,9 +772,9 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
       announced: new Set<string>(),
     }
 
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
     fs.add('/tmp/ac-worker-13')
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
 
     expect(fs.removed).toEqual(['/tmp/ac-worker-12', '/tmp/ac-worker-13'])
     expect(events.filter(([e]) => e === 'tmpdir_remove_failed')).toEqual([
@@ -786,7 +790,7 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     ])
   })
 
-  it('does not walk a dir it failed to remove again on the next pass, until the retry is due (CC-1699)', () => {
+  it('does not walk a dir it failed to remove again on the next pass, until the retry is due (CC-1699)', async () => {
     const fs = new FakeFs()
       .add('/tmp/ac-worker-11')
       .add('/tmp/ac-worker-11/ro')
@@ -808,20 +812,20 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
       failed: new Map<string, number>(),
     }
 
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
     const firstPass = walked.length
     clock += 60_000
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
     const secondPass = walked.length - firstPass
     clock += FAILED_RETRY_MS
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
 
     expect(firstPass).toBeGreaterThan(0)
     expect(secondPass).toBe(0)
     expect(walked.length).toBeGreaterThan(firstPass)
   })
 
-  it('starts no further dir once a pass has spent its budget, and the next pass removes the rest (CC-1699)', () => {
+  it('starts no further dir once a pass has spent its budget, and the next pass removes the rest (CC-1699)', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11').add('/tmp/ac-worker-12').add('/tmp/ac-worker-13')
     let clock = now
     const rm = fs.rm.bind(fs)
@@ -837,15 +841,15 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
       budgetMs: 2_000,
     }
 
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
     const firstPass = [...fs.removed]
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
 
     expect(firstPass).toEqual(['/tmp/ac-worker-11', '/tmp/ac-worker-12'])
     expect(fs.removed).toEqual(['/tmp/ac-worker-11', '/tmp/ac-worker-12', '/tmp/ac-worker-13'])
   })
 
-  it('reads each process at most once in a pass however many dirs it checks (CC-1447)', () => {
+  it('reads each process at most once in a pass however many dirs it checks (CC-1447)', async () => {
     const fs = new FakeFs()
     for (let pid = 11; pid < 61; pid++) fs.add(`/tmp/ac-worker-${pid}`)
     const procs: Record<number, FakeProc> = {}
@@ -870,13 +874,13 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
       }
     }
 
-    run(fs, [row('a1', 'worker', 'exited')], counted(procTable(procs)))
+    await run(fs, [row('a1', 'worker', 'exited')], counted(procTable(procs)))
 
     expect(fs.removed).toHaveLength(50)
     expect(Math.max(...reads.values())).toBe(1)
   })
 
-  it('reads the table afresh on the next pass, so a dir freed meanwhile goes', () => {
+  it('reads the table afresh on the next pass, so a dir freed meanwhile goes', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11')
     const procs = new Map<number, FakeProc>([[500, { cwd: '/tmp/ac-worker-11' }]])
     const table = procTable({})
@@ -893,18 +897,18 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
       log: () => undefined,
     }
 
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
     procs.delete(500)
-    sweepAgentTmpDirs(sweep)
+    await sweepAgentTmpDirs(sweep)
 
     expect(fs.removed).toEqual(['/tmp/ac-worker-11'])
   })
 
-  it('removes a finished agent’s dir under each root it is given', () => {
+  it('removes a finished agent’s dir under each root it is given', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11').add(DISK_ROOT).add(`${DISK_ROOT}/ac-worker-12`)
     const events: Array<[string, Record<string, unknown>]> = []
 
-    sweepAgentTmpDirs({
+    await sweepAgentTmpDirs({
       roster: () => [row('a1', 'worker', 'exited')],
       now: () => now,
       ...deps(fs),
@@ -915,11 +919,11 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     expect(fs.removed.sort()).toEqual([`${DISK_ROOT}/ac-worker-12`, '/tmp/ac-worker-11'])
   })
 
-  it('does not sweep through a symlinked disk root (CC-1321)', () => {
+  it('does not sweep through a symlinked disk root (CC-1321)', async () => {
     const fs = new FakeFs().add(DISK_ROOT, 'symlink').add(`${DISK_ROOT}/ac-worker-12`)
     const events: Array<[string, Record<string, unknown>]> = []
 
-    sweepAgentTmpDirs({
+    await sweepAgentTmpDirs({
       roster: () => [row('a1', 'worker', 'exited')],
       now: () => now,
       ...deps(fs),
@@ -934,12 +938,12 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     ])
   })
 
-  it('removes a finished implementer’s leftover dir under the disk root (CC-1264)', () => {
+  it('removes a finished implementer’s leftover dir under the disk root (CC-1264)', async () => {
     const dir = `${DISK_ROOT}/ac-seat-a-impl-4242`
     const fs = new FakeFs().add(DISK_ROOT).add(dir)
     const events: Array<[string, Record<string, unknown>]> = []
 
-    sweepAgentTmpDirs({
+    await sweepAgentTmpDirs({
       roster: () => [row('a1', 'seat-a-impl', 'exited')],
       now: () => now,
       ...deps(fs),
@@ -951,11 +955,11 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     expect(events).toContainEqual(['tmpdir_removed', expect.objectContaining({ source: 'sweep', path: dir })])
   })
 
-  it('removes a finished agent’s harness dir and keeps a live agent’s (CC-1266)', () => {
+  it('removes a finished agent’s harness dir and keeps a live agent’s (CC-1266)', async () => {
     const harness = '/home/example/.cache/agent-chat/harness'
     const fs = new FakeFs().add(harness).add(`${harness}/ac-worker-4242`).add(`${harness}/ac-lead-77`)
 
-    sweepAgentTmpDirs({
+    await sweepAgentTmpDirs({
       roster: () => [row('a1', 'worker', 'exited'), row('a2', 'lead', 'live')],
       now: () => now,
       ...deps(fs),
@@ -967,10 +971,10 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     expect(fs.nodes.has(`${harness}/ac-lead-77`)).toBe(true)
   })
 
-  it('skips a root that does not exist', () => {
+  it('skips a root that does not exist', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11')
 
-    sweepAgentTmpDirs({
+    await sweepAgentTmpDirs({
       roster: () => [row('a1', 'worker', 'exited')],
       now: () => now,
       ...deps(fs),
@@ -981,10 +985,97 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
     expect(fs.removed).toEqual(['/tmp/ac-worker-11'])
   })
 
-  it('does nothing when no agent is finished', () => {
+  it('does nothing when no agent is finished', async () => {
     const fs = new FakeFs().add('/tmp/ac-worker-11')
 
-    expect(run(fs, [row('a1', 'worker', 'live')])).toEqual([])
+    expect(await run(fs, [row('a1', 'worker', 'live')])).toEqual([])
     expect(fs.removed).toEqual([])
+  })
+})
+
+describe('sweeping a real read-only tree (CC-1702)', () => {
+  const sweepReal = (home: string, now: () => number = () => SWEEP_GRACE_MS + 1) =>
+    sweepAgentTmpDirs({
+      roster: () => [row('a1', 'worker', 'exited')],
+      now,
+      fs: realTmpFs,
+      table: procTable({}),
+      uid: process.getuid?.() ?? -1,
+      self: process.pid,
+      log: () => undefined,
+      roots: [diskTmpRoot(home)],
+    })
+
+  const makeHome = () => {
+    const home = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'cc1702-'))
+    nodeFs.mkdirSync(diskTmpRoot(home), { recursive: true, mode: 0o700 })
+    return home
+  }
+
+  it('removes a tree with a 0555 dir and a 0444 file, and does not follow a symlink out of the root', async () => {
+    if (process.getuid?.() === 0) return
+    const home = makeHome()
+    const outside = path.join(home, 'outside')
+    nodeFs.mkdirSync(outside)
+    nodeFs.writeFileSync(path.join(outside, 'keep'), 'x')
+    nodeFs.chmodSync(outside, 0o555)
+    const dir = path.join(diskTmpRoot(home), 'ac-worker-11')
+    const readOnly = path.join(dir, 'pkg', 'mod')
+    nodeFs.mkdirSync(readOnly, { recursive: true })
+    nodeFs.writeFileSync(path.join(readOnly, 'f.go'), 'package x')
+    nodeFs.chmodSync(path.join(readOnly, 'f.go'), 0o444)
+    nodeFs.symlinkSync(outside, path.join(readOnly, 'link'))
+    nodeFs.chmodSync(readOnly, 0o555)
+    nodeFs.chmodSync(path.join(dir, 'pkg'), 0o555)
+
+    try {
+      await sweepReal(home)
+
+      expect(nodeFs.existsSync(dir)).toBe(false)
+      expect(nodeFs.readFileSync(path.join(outside, 'keep'), 'utf8')).toBe('x')
+      expect(nodeFs.statSync(outside).mode & 0o777).toBe(0o555)
+    } finally {
+      nodeFs.chmodSync(outside, 0o755)
+      nodeFs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('removes a tree larger than one pass’s budget over several passes, logging each partial pass', async () => {
+    if (process.getuid?.() === 0) return
+    const home = makeHome()
+    const dir = path.join(diskTmpRoot(home), 'ac-worker-11')
+    for (let i = 0; i < 6; i++) {
+      const sub = path.join(dir, `d${i}`)
+      nodeFs.mkdirSync(sub, { recursive: true })
+      for (let f = 0; f < 5; f++) nodeFs.writeFileSync(path.join(sub, `f${f}`), '')
+      nodeFs.chmodSync(sub, 0o555)
+    }
+
+    try {
+      let clock = SWEEP_GRACE_MS + 1
+      const events: string[] = []
+      const pass = () =>
+        sweepAgentTmpDirs({
+          roster: () => [row('a1', 'worker', 'exited')],
+          now: () => clock++,
+          fs: realTmpFs,
+          table: procTable({}),
+          uid: process.getuid?.() ?? -1,
+          self: process.pid,
+          log: e => events.push(e),
+          roots: [diskTmpRoot(home)],
+          budgetMs: 12,
+        })
+
+      await pass()
+      expect(nodeFs.existsSync(dir)).toBe(true)
+      for (let i = 0; i < 20 && nodeFs.existsSync(dir); i++) await pass()
+
+      expect(nodeFs.existsSync(dir)).toBe(false)
+      expect(events).toContain('tmpdir_sweep_partial')
+      expect(events).toContain('tmpdir_removed')
+    } finally {
+      nodeFs.rmSync(home, { recursive: true, force: true })
+    }
   })
 })
