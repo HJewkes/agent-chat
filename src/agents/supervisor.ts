@@ -163,7 +163,7 @@ import {
   identityBlocker,
   identityTranscript,
   missingAgent,
-  RESUMED_BRIEF,
+  resumedBrief,
   resumeBlocker,
   retiredWorktree,
   type TranscriptVerdict,
@@ -995,7 +995,7 @@ export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'
 
 export interface ResumeRequest {
   surface?: SurfaceName
-  /** The turn a headless resume starts on; {@link RESUMED_BRIEF} when absent. */
+  /** The turn a headless resume starts on; {@link resumedBrief} supplies the default when absent. */
   message?: string
   /** CC-203: who asked for the wake, when it was not the human; written to `agent_resumed` meta. */
   source?: WakeSource
@@ -5237,7 +5237,7 @@ export class Supervisor implements TeleportHost {
       name: agent.name,
       profile,
       adopted: agent.origin === 'adopted',
-      brief: req.message ?? RESUMED_BRIEF,
+      brief: resumedBrief(req.message, reattached),
       cwd: allocation.cwd,
       cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
       surface,

@@ -34,6 +34,15 @@ export const RESUMED_BRIEF = [
   'while you were stopped, then continue the work or report where it stands over agent-chat.',
 ].join(' ')
 
+/**
+ * TP-4907: the turn a headless resume starts on. A resume that re-created a parked tree appends
+ * the re-create note, since the tree comes back without ignored build outputs such as dist and
+ * only the agent, under its own permission profile, may run the branch's build to restore them.
+ */
+export function resumedBrief(message: string | undefined, reattached: Allocation | undefined): string {
+  return [message ?? RESUMED_BRIEF, reattached?.note].filter(Boolean).join('\n\n')
+}
+
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export const verdictLine = (t: TranscriptVerdict): string =>
