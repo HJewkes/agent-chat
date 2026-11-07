@@ -8,6 +8,8 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
+import { planPath } from '../agents/launch-files.js'
+import { RESUMED_BRIEF } from '../agents/resume-session.js'
 import type { AgentIdentity } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -15,6 +17,7 @@ import { autoAttach } from './broker-harness.js'
  * CC-1253: a parked tree that `agent resume` re-creates comes back with the
  * dependencies its repository's declared lockfile install provides (CC-313),
  * before the resumed agent's turn, for both an npm and a pnpm repository.
+ * TP-4907: the resumed turn says the tree was re-created without its build outputs.
  */
 
 type Manager = 'npm' | 'pnpm'
@@ -128,6 +131,9 @@ async function parkedAgent(repo: string): Promise<AgentIdentity> {
   return agent
 }
 
+const resumedTurn = (agentId: string): string =>
+  (JSON.parse(fs.readFileSync(planPath(agentId), 'utf8')) as { stdin: string }).stdin
+
 const setupWarnings = (warnings: string[] | undefined): string[] =>
   (warnings ?? []).filter(w => w.includes('worktree setup'))
 
@@ -183,6 +189,56 @@ describe('resuming a parked agent whose repository declares a lockfile install',
       expect(setupWarnings(resumed.warnings)).toEqual([])
       expect(fs.existsSync(path.join(agent.cwd, 'node_modules/local-dep/package.json'))).toBe(true)
       expect(fs.existsSync(path.join(agent.cwd, 'node_modules/.modules.yaml'))).toBe(true)
+    },
+    INSTALL_TIMEOUT_MS,
+  )
+
+  it(
+    'the resumed turn of a re-created tree tells the agent to rebuild dist, after the default brief',
+    async () => {
+      const agent = await parkedAgent(repoDeclaring('npm'))
+
+      const resumed = await sup.resume('worker-a')
+
+      expect(resumed.reason).toBeUndefined()
+      const turn = resumedTurn(agent.agentId)
+      expect(turn.startsWith(RESUMED_BRIEF)).toBe(true)
+      expect(turn).toContain(`Your worktree at ${agent.cwd} had been removed and was re-created`)
+      expect(turn).toContain('build outputs such as dist were not rebuilt')
+    },
+    INSTALL_TIMEOUT_MS,
+  )
+
+  it(
+    "the resumed turn of a re-created tree keeps the coordinator's message and adds the rebuild note",
+    async () => {
+      const agent = await parkedAgent(repoDeclaring('npm'))
+
+      const resumed = await sup.resume('worker-a', { message: 'Fix round: address the review.' })
+
+      expect(resumed.reason).toBeUndefined()
+      const turn = resumedTurn(agent.agentId)
+      expect(turn.startsWith('Fix round: address the review.\n\n')).toBe(true)
+      expect(turn).toContain('build outputs such as dist were not rebuilt')
+    },
+    INSTALL_TIMEOUT_MS,
+  )
+})
+
+describe('resuming an exited agent whose tree was never parked', () => {
+  it(
+    'keeps dist in place and says nothing about a re-created tree',
+    async () => {
+      const agent = await spawnIn('worker-a', repoDeclaring('npm'))
+      fs.mkdirSync(path.join(agent.cwd, 'dist'))
+      fs.writeFileSync(path.join(agent.cwd, 'dist/index.js'), 'built\n')
+      await exit(agent)
+
+      const resumed = await sup.resume('worker-a', { message: 'Fix round: address the review.' })
+
+      expect(resumed.reason).toBeUndefined()
+      expect(fs.readFileSync(path.join(agent.cwd, 'dist/index.js'), 'utf8')).toBe('built\n')
+      expect(resumedTurn(agent.agentId)).toBe('Fix round: address the review.')
     },
     INSTALL_TIMEOUT_MS,
   )
