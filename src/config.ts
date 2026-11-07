@@ -104,6 +104,8 @@ export interface AgentChatConfig {
   accountRotation?: unknown
   /** TP-4867: the argv the broker runs, coalesced, when a claim ends; unset runs nothing. */
   claimWake?: unknown
+  /** BS-48: `true` on a host whose broker lives elsewhere (reached over a forwarded socket); never autostart one. */
+  remoteBroker?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -199,6 +201,18 @@ export function resolveClaimWake(): ClaimWakeConfig | undefined {
   if (typeof parsed !== 'string') return parsed
   logInvalidOnce({ key: 'claimWake', value, reason: parsed, fallback: 'off' })
   return undefined
+}
+
+/**
+ * BS-48: whether a client may start a broker when none answers. False when `AGENT_CHAT_NO_AUTOSTART=1`
+ * or `remoteBroker` is `true`: on a host served by a broker elsewhere, a local one would split the bus.
+ */
+export function resolveAutoStart(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.AGENT_CHAT_NO_AUTOSTART === '1') return false
+  const value = readConfig().remoteBroker
+  if (value === undefined || typeof value === 'boolean') return value !== true
+  logInvalidOnce({ key: 'remoteBroker', value, fallback: false })
+  return true
 }
 
 /**

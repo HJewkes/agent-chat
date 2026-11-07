@@ -471,6 +471,15 @@ export class BrokerClient {
     }
   }
 
+  /** BS-48: a client that may not autostart says why it is offline, and that it is waiting rather than broken. */
+  private notConnectedError(): Error {
+    if (this.options.autoStart !== false) return new Error('not connected to the broker')
+    return new Error(
+      `not connected to the broker: none is listening at ${socketPath()}, and autostart is off ` +
+        '(AGENT_CHAT_NO_AUTOSTART=1 or config remoteBroker), so this client will not start one',
+    )
+  }
+
   /** Fire-and-forget: for messages the broker does not answer. */
   async send(message: ClientMessage): Promise<void> {
     if (this.reconnecting) throw brokerRestartingError(message.t)
@@ -485,7 +494,7 @@ export class BrokerClient {
     if (this.reconnecting) return this.hold(message, replyType)
     return new Promise((resolve, reject) => {
       const socket = this.socket
-      if (!socket) return reject(new Error('not connected to the broker'))
+      if (!socket) return reject(this.notConnectedError())
 
       const keyed = this.stampKey(message)
       const sentAt = Date.now()
