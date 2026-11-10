@@ -1,6 +1,6 @@
 import type { AgentEventRow } from '../broker/event-store.js'
 import type { AgentCostEstimate, CostMetric } from '../protocol.js'
-import { FOOTPRINT_INTERVAL_MS, parseFootprintMeta, type Footprint } from './agent-footprint.js'
+import { parseFootprintMeta, type Footprint } from './agent-footprint.js'
 import { inferWorkRole } from './spawn-provenance.js'
 
 /**
@@ -66,15 +66,27 @@ function metricOf(values: readonly number[]): CostMetric {
   return metric(percentile(sorted, 0.5), percentile(sorted, 0.9))
 }
 
-const cores = (footprint: Footprint): number =>
-  footprint.cpuSeconds / ((footprint.samples * FOOTPRINT_INTERVAL_MS) / 1000)
+/**
+ * CC-1711: CPU spent while observed over the wall time observed. Lifetime CPU over `samples` ticks
+ * read a run's startup burst, or a broker restart's lost ticks, as cores no machine has.
+ * Undefined when the run was not observed over time, as every run recorded before the span existed.
+ */
+const coresOf = ({ cpuSeconds, cpuBaselineSeconds, wallSeconds }: Footprint): number | undefined =>
+  wallSeconds === undefined || wallSeconds <= 0
+    ? undefined
+    : Math.max(cpuSeconds - (cpuBaselineSeconds ?? 0), 0) / wallSeconds
 
-function measuresOf(exits: readonly ExitFootprint[]): Measures {
+function cpuMetric(profile: string, footprints: readonly Footprint[]): CostMetric {
+  const rates = footprints.flatMap(f => coresOf(f) ?? [])
+  return rates.length >= MIN_MEASURED_EXITS ? metricOf(rates) : coldStartCost(profile).cpuCores
+}
+
+function measuresOf(profile: string, exits: readonly ExitFootprint[]): Measures {
   const footprints = exits.map(exit => exit.footprint)
   const tmpFiles = footprints.flatMap(f => f.tmpFilesPeak ?? [])
   return {
     rssKb: metricOf(footprints.map(f => f.rssPeakKb)),
-    cpuCores: metricOf(footprints.map(cores)),
+    cpuCores: cpuMetric(profile, footprints),
     children: metricOf(footprints.map(f => f.childrenPeak)),
     tmpFiles: tmpFiles.length === 0 ? metric(0, 0) : metricOf(tmpFiles),
   }
@@ -114,10 +126,10 @@ export class CostTable {
   estimate(profile: string, role: string): AgentCostEstimate {
     const exact = this.byKey.get(keyOf(profile, role)) ?? []
     if (exact.length >= MIN_MEASURED_EXITS)
-      return { profile, role, exits: exact.length, source: 'measured', ...measuresOf(exact) }
+      return { profile, role, exits: exact.length, source: 'measured', ...measuresOf(profile, exact) }
     const broad = this.byProfile.get(profile) ?? []
     if (broad.length >= MIN_MEASURED_EXITS)
-      return { profile, role, exits: broad.length, source: 'profile', ...measuresOf(broad) }
+      return { profile, role, exits: broad.length, source: 'profile', ...measuresOf(profile, broad) }
     return { profile, role, exits: exact.length, source: 'default', ...coldStartCost(profile) }
   }
 

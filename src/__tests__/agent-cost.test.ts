@@ -14,6 +14,7 @@ import { renderAgentCosts } from '../cli/verbs/machine.js'
 const footprint = (over: Partial<Footprint> = {}): Footprint => ({
   samples: 6,
   cpuSeconds: 60,
+  wallSeconds: 60,
   rssPeakKb: 1000,
   childrenPeak: 2,
   ...over,
@@ -52,6 +53,26 @@ describe('a cost estimate', () => {
     expect(estimate.source).toBe('measured')
     expect(estimate.exits).toBe(10)
     expect(estimate.rssKb).toEqual({ median: 500, p90: 900 })
+  })
+
+  it('reads a startup burst before the first sample as cores no machine has, never (CC-1711)', () => {
+    const burst = { samples: 6, cpuSeconds: 4000, cpuBaselineSeconds: 3940, wallSeconds: 60 }
+    const table = new CostTable(Array.from({ length: 5 }, () => exit('p', 'r', burst)))
+
+    expect(table.estimate('p', 'r').cpuCores).toEqual({ median: 1, p90: 1 })
+  })
+
+  it('reads runs without an observed wall span from the cold-start default', () => {
+    const legacy = { samples: 6, cpuSeconds: 4000 }
+    const rows = Array.from({ length: 5 }, () => ({
+      profile: 'bd-implementer',
+      role: 'implementer',
+      footprint: legacy as Footprint,
+    }))
+
+    expect(new CostTable(rows).estimate('bd-implementer', 'implementer').cpuCores).toEqual(
+      coldStartCost('bd-implementer').cpuCores,
+    )
   })
 
   it('reads CPU as cores over the sampled run', () => {

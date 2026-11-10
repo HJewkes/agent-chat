@@ -52,7 +52,12 @@ export interface FootprintProbe {
 
 export interface Footprint {
   samples: number
+  /** Lifetime CPU of the tree: it includes what ran before the first sample. */
   cpuSeconds: number
+  /** The tree's CPU at the first sample, so `cpuSeconds - cpuBaselineSeconds` is CPU spent while observed. */
+  cpuBaselineSeconds?: number
+  /** Wall-clock span from the first sample to the last; a sample count is not time, as a tick can be late or missed. */
+  wallSeconds?: number
   rssPeakKb: number
   childrenPeak: number
   /** Absent when no TMPDIR was read. At {@link MAX_TMP_FILES} the true count may be higher. */
@@ -70,6 +75,7 @@ interface Tracked {
   /** Root pid to its start time, so a recycled pid is not read as this agent. */
   roots: Map<number, number>
   tmpDir?: string
+  firstSampleAt?: number
 }
 
 /** Parses /proc/<pid>/stat, whose comm field may hold spaces and parentheses. */
@@ -149,6 +155,7 @@ export class FootprintSampler {
   constructor(
     private readonly probe: FootprintProbe = procFootprintProbe,
     private readonly maxPidsPerTick = MAX_PIDS_PER_TICK,
+    private readonly now: () => number = Date.now,
   ) {}
 
   /**
@@ -238,6 +245,10 @@ export class FootprintSampler {
     const { footprint } = state
     if (footprint.samples % TMP_SAMPLE_EVERY === 0) await this.recordTmp(target, state)
     footprint.samples += 1
+    const at = this.now()
+    state.firstSampleAt ??= at
+    footprint.cpuBaselineSeconds ??= reading.cpuTicks / TICKS_PER_SECOND
+    footprint.wallSeconds = (at - state.firstSampleAt) / 1000
     // A tree loses counters when a parent dies unreaped, so the peak is the honest total.
     footprint.cpuSeconds = Math.max(footprint.cpuSeconds, reading.cpuTicks / TICKS_PER_SECOND)
     footprint.rssPeakKb = Math.max(footprint.rssPeakKb, reading.rssKb)

@@ -765,7 +765,7 @@ describe('inferring the exit of a visible agent', () => {
     vi.advanceTimersByTime(1000)
 
     const exit = core.events.agentEvents().find(r => r.kind === 'agent_exited')
-    expect(parseFootprintMeta(exit?.meta ?? {})).toEqual({
+    expect(parseFootprintMeta(exit?.meta ?? {})).toMatchObject({
       samples: 1,
       cpuSeconds: 2.5,
       rssPeakKb: 2048,
