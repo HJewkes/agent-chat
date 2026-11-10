@@ -23,7 +23,7 @@ const runs = (profile: string, role: string, rssGib: number, coresEach: number):
   Array.from({ length: 5 }, () => ({
     profile,
     role,
-    footprint: { samples: 6, cpuSeconds: 60 * coresEach, rssPeakKb: rssGib * GIB_KB, childrenPeak: 1 },
+    footprint: { samples: 6, cpuSeconds: 60 * coresEach, wallSeconds: 60, rssPeakKb: rssGib * GIB_KB, childrenPeak: 1 },
   }))
 
 const table = new CostTable([
@@ -49,6 +49,38 @@ describe('admission on predicted cost', () => {
 
     expect(admit(reviewer, 5, headroom)).toEqual([true, true, true, true, true])
     expect(admit(testRunner, 5, headroom)).toEqual([true, false, false, false, false])
+  })
+
+  it('admits an opus implementer on an idle machine under limit 40 (CC-1711)', () => {
+    const idle = readings({ cpuPressure: { someAvg60: 0.12 }, cpuCount: 48 })
+    const exitsAfterAStartupBurst: ExitFootprint[] = Array.from({ length: 20 }, () => ({
+      profile: 'bd-implementer',
+      role: 'implementer',
+      footprint: {
+        samples: 6,
+        cpuSeconds: 4700,
+        cpuBaselineSeconds: 4640,
+        wallSeconds: 60,
+        rssPeakKb: 2 * GIB_KB,
+        childrenPeak: 10,
+      },
+    }))
+    const opus = new CostTable(exitsAfterAStartupBurst).estimate('bd-implementer', 'implementer')
+
+    expect(predictedCostDecision(idle, opus, NONE, LIMITS)).toEqual({ ok: true })
+  })
+
+  it('counts a launch genuinely in flight against the next one (CC-1711)', () => {
+    const slots = new SpawnSlots(5)
+    slots.hold('seat', 'a1', { rssKb: 0, cpuCores: 5 })
+    const idle = readings({ cpuPressure: { someAvg60: 0 } })
+
+    expect(predictedCostDecision(idle, testRunner, slots.reserved(), LIMITS)).toMatchObject({
+      ok: false,
+      code: 'machine_predicted_cpu',
+    })
+    slots.release('a1')
+    expect(predictedCostDecision(idle, testRunner, slots.reserved(), LIMITS)).toEqual({ ok: true })
   })
 
   it('names memory when the p90 RSS crosses the floor, retryably', () => {

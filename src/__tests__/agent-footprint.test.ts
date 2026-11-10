@@ -87,7 +87,20 @@ describe('sampling a process tree', () => {
 
     await sampler.sample([target])
 
-    expect(sampler.take('a1')).toEqual({ samples: 1, cpuSeconds: 2, rssPeakKb: 2000, childrenPeak: 3 })
+    expect(sampler.take('a1')).toMatchObject({ samples: 1, cpuSeconds: 2, cpuBaselineSeconds: 2, rssPeakKb: 2000, childrenPeak: 3 })
+  })
+
+  it('records the CPU already spent at the first sample and the wall time observed since (CC-1711)', async () => {
+    const procs = new Map<number, FakeProc>([[10, { ticks: 6000 }]])
+    let clock = 1_000_000
+    const sampler = new FootprintSampler(fakeProbe(procs), undefined, () => clock)
+    await sampler.sample([target])
+    clock += 60_000
+    procs.set(10, { ticks: 6600 })
+
+    await sampler.sample([target])
+
+    expect(sampler.take('a1')).toMatchObject({ cpuSeconds: 66, cpuBaselineSeconds: 60, wallSeconds: 60 })
   })
 
   it('counts a process reached from both roots once', async () => {
@@ -114,7 +127,7 @@ describe('sampling a process tree', () => {
 
     await sampler.sample([target])
 
-    expect(sampler.take('a1')).toEqual({ samples: 2, cpuSeconds: 4, rssPeakKb: 1000, childrenPeak: 1 })
+    expect(sampler.take('a1')).toMatchObject({ samples: 2, cpuSeconds: 4, rssPeakKb: 1000, childrenPeak: 1 })
   })
 
   it('records nothing for an agent whose process could not be read', async () => {
