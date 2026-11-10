@@ -87,7 +87,13 @@ describe('sampling a process tree', () => {
 
     await sampler.sample([target])
 
-    expect(sampler.take('a1')).toMatchObject({ samples: 1, cpuSeconds: 2, cpuBaselineSeconds: 2, rssPeakKb: 2000, childrenPeak: 3 })
+    expect(sampler.take('a1')).toMatchObject({
+      samples: 1,
+      cpuSeconds: 2,
+      cpuBaselineSeconds: 2,
+      rssPeakKb: 2000,
+      childrenPeak: 3,
+    })
   })
 
   it('records the CPU already spent at the first sample and the wall time observed since (CC-1711)', async () => {

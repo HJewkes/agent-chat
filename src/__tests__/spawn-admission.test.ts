@@ -23,7 +23,13 @@ const runs = (profile: string, role: string, rssGib: number, coresEach: number):
   Array.from({ length: 5 }, () => ({
     profile,
     role,
-    footprint: { samples: 6, cpuSeconds: 60 * coresEach, wallSeconds: 60, rssPeakKb: rssGib * GIB_KB, childrenPeak: 1 },
+    footprint: {
+      samples: 6,
+      cpuSeconds: 60 * coresEach,
+      wallSeconds: 60,
+      rssPeakKb: rssGib * GIB_KB,
+      childrenPeak: 1,
+    },
   }))
 
 const table = new CostTable([
