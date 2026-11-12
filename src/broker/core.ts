@@ -25,6 +25,7 @@ import { Registry, type IdentityBinding } from './registry.js'
 import { ClaimLedger } from './claims.js'
 import { claimWake, type ClaimWake } from './claim-wake.js'
 import { pushHoldFor } from './push-hold.js'
+import { strandedPredecessor } from './stranded-predecessor.js'
 import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 import { TELEPORT_GAP_MS, midTeleport } from './teleport-window.js'
 
@@ -226,6 +227,11 @@ export class BrokerCore<C = Conn> {
     return { ok: true }
   }
 
+  /** CC-1719: a predecessor's replay under its own name, refused only for its retirement, is let back in. */
+  private readmits(agentId: string, name: string): boolean {
+    return this.agents.get(agentId)?.name === name && strandedPredecessor(this.events, this.agents, agentId)
+  }
+
   /**
    * The one registration path. Presence goes in the registry and dies with the
    * socket; attaching and detaching go in the log and outlive it.
@@ -234,12 +240,11 @@ export class BrokerCore<C = Conn> {
    * holds no sockets — same reason `deliver` is.
    */
   register(conn: C, msg: RegisterMessage, evict?: (conn: C) => void): { ok: boolean; reason?: string } {
-    if (msg.agentId !== undefined) {
-      const claim = this.claimable(msg.agentId, msg.name)
-      if (!claim.ok) {
-        logEvent('register_rejected', { name: msg.name, agentId: msg.agentId, reason: claim.reason })
-        return { ok: false, reason: claim.reason }
-      }
+    const claim = msg.agentId === undefined ? { ok: true as const } : this.claimable(msg.agentId, msg.name)
+    const stranded = !claim.ok && this.readmits(msg.agentId as string, msg.name)
+    if (!claim.ok && !stranded) {
+      logEvent('register_rejected', { name: msg.name, agentId: msg.agentId, reason: claim.reason })
+      return { ok: false, reason: claim.reason }
     }
     // Deliberately NOT the resolved identity below: only an agent id the broker
     // minted and handed over in an environment may take a live name away from its
@@ -257,11 +262,13 @@ export class BrokerCore<C = Conn> {
 
     this.append({ kind: 'registered', actor: msg.name, body: msg.workingOn, meta: { cwd: msg.cwd } })
     this.noteWorkingOnCollision(msg)
+    // CC-1719: the entry keeps the retired id it was registered with, as before the restart; no attach row, since retired is absorbing.
+    if (stranded) logEvent('register_readmitted', { name: msg.name, agentId: msg.agentId })
     // Resolved from the session id, so a session on a new socket re-attaches to
     // the identity it already has. Minting happens only here, after a successful
     // registration: mint any earlier and a name that turned out to be held leaves
     // an identity behind with nothing able to attach to it.
-    const bound = this.resolveIdentity(msg)
+    const bound = stranded ? undefined : this.resolveIdentity(msg)
     if (bound !== undefined) {
       const { agentId, binding } = bound
       this.registry.bindIdentity(conn, agentId, binding)

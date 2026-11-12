@@ -338,6 +338,13 @@ export class BrokerClient {
     }
   }
 
+  /** CC-1719: the held registration sent again on demand; undefined when this client never registered. */
+  async replayRegistration(): Promise<Extract<ServerMessage, { t: 'register_result' }> | undefined> {
+    if (this.identity === null) return undefined
+    const reply = await this.request({ t: 'register', ...this.identity }, 'register_result')
+    return reply as Extract<ServerMessage, { t: 'register_result' }>
+  }
+
   private async onDrop(): Promise<void> {
     if (this.closed || this.socket === null) return
     this.socket = null
