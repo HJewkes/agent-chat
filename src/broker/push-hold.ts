@@ -1,6 +1,7 @@
 import type { AgentLog } from '../agents/identity.js'
 import type { AgentIdentity } from '../protocol.js'
 import type { AgentEventRow, EventStore } from './event-store.js'
+import { strandedPredecessor } from './stranded-predecessor.js'
 
 /** CC-1552: why a connected session's peer mail and lifecycle events are logged to its inbox and not pushed. */
 export type PushHold = 'retired' | 'parked'
@@ -33,7 +34,8 @@ function teleportParked(
 export function pushHoldFor(events: EventStore, agents: AgentLog, agentId: string): PushHold | undefined {
   const identity = agents.get(agentId)
   if (identity === undefined) return undefined
-  if (identity.state === 'retired') return 'retired'
+  if (identity.state === 'retired')
+    return strandedPredecessor(events, agents, agentId) ? undefined : 'retired'
   const rows = events.agentEventsFor(agentId)
   return treeParked(rows) || teleportParked(events, identity, rows) ? 'parked' : undefined
 }

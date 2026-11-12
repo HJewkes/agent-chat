@@ -87,6 +87,24 @@ args: {"name":"scout"}
   }
 ]
 
+=== chat_register: spawned agent, same name, registration replayed
+args: {"name":"scout"}
+[
+  {
+    "type": "text",
+    "text": "Registered as \"scout\", the name the agent that spawned you fixed. The registration was sent to the broker again, so peers can reach you by that name."
+  }
+]
+
+=== chat_register: spawned agent, same name, replay refused
+args: {"name":"scout"}
+[
+  {
+    "type": "text",
+    "text": "Registration failed: agent a1 has been retired"
+  }
+]
+
 === chat_register: spawned agent, another name
 args: {"name":"me"}
 [

@@ -1,11 +1,26 @@
 import { z } from 'zod'
 import { present, requiredString } from '../../args.js'
+import type { BrokerClient } from '../../client/broker-client.js'
 import { DECLARED_MAX_KEYS, DECLARED_MAX_VALUE_CHARS, type ServerMessage } from '../../protocol.js'
 import { observedRegistration } from '../../git.js'
 import { cliEntry } from '../../paths.js'
 import { terminalAnchor } from '../anchor.js'
 import { currentSessionHost, hostMarker } from '../host.js'
 import { declaredField, declaredLabels, defineTool } from '../command.js'
+
+/**
+ * CC-1719: the same name is a request to be reachable under it, so the registration the
+ * spawn made is sent again. Idempotent while the broker holds it; the recovery when it does not.
+ */
+async function reregisterFixed(broker: BrokerClient, name: string): Promise<string> {
+  const res = await broker.replayRegistration()
+  if (res === undefined) return `Already registered as "${name}" by the agent that spawned you.`
+  if (!res.ok) return `Registration failed: ${res.reason}`
+  return (
+    `Registered as "${name}", the name the agent that spawned you fixed. The registration was sent ` +
+    'to the broker again, so peers can reach you by that name.'
+  )
+}
 
 export const chatRegister = defineTool({
   name: 'chat_register',
@@ -37,7 +52,7 @@ export const chatRegister = defineTool({
     // been told that name. Letting the model rename itself mid-session would
     // strand every one of them, so the call is a no-op rather than a rename.
     if (session.fixed) {
-      if (name === session.name()) return `Already registered as "${name}" by the agent that spawned you.`
+      if (name === session.name()) return reregisterFixed(broker, name)
       return `You are already registered as "${session.name()}" (spawned agent); that name is fixed for this session.`
     }
 

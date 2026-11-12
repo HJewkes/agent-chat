@@ -31,6 +31,8 @@ function fakeBroker(reply: ServerMessage | undefined, sent: ClientMessage[]): Br
       if (reply === undefined) throw new Error('no broker reply scripted for this case')
       return reply
     },
+    /** A scripted reply stands for a held registration; none means the client never registered. */
+    replayRegistration: async () => reply,
   } as unknown as BrokerClient
 }
 
@@ -851,6 +853,20 @@ const CHAT_REGISTER_CASES: CallCase[] = [
     reply: registered({ ok: false, reason: 'name "bob" is taken' }),
   },
   { label: 'spawned agent, same name', tool: 'chat_register', spawnedAs: 'scout', args: { name: 'scout' } },
+  {
+    label: 'spawned agent, same name, registration replayed',
+    tool: 'chat_register',
+    spawnedAs: 'scout',
+    args: { name: 'scout' },
+    reply: registered({ ok: true }),
+  },
+  {
+    label: 'spawned agent, same name, replay refused',
+    tool: 'chat_register',
+    spawnedAs: 'scout',
+    args: { name: 'scout' },
+    reply: registered({ ok: false, reason: 'agent a1 has been retired' }),
+  },
   { label: 'spawned agent, another name', tool: 'chat_register', spawnedAs: 'scout', args: { name: 'me' } },
   {
     label: 'spawned agent, bad declared',
