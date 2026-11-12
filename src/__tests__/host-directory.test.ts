@@ -18,6 +18,12 @@ import type { ClientMessage, ServerMessage } from '../protocol.js'
  * and ends its local predecessor only once the successor attaches.
  */
 
+// CC-1728: the broker's build is whatever dist was last stamped; unstamped here so answers are fixed.
+vi.mock('../build-commit.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../build-commit.js')>()),
+  ownBuildCommit: () => undefined,
+}))
+
 const MAC = 'owners-mac.invalid'
 const COUNTDOWN_MS = 1000
 const PREDECESSOR_PID = 83212
