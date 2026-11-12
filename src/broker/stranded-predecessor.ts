@@ -13,6 +13,7 @@ export function strandedPredecessor(events: EventStore, agents: AgentLog, agentI
   const identity = agents.get(agentId)
   if (identity?.state !== 'retired' || !agents.stoodDown(agentId)) return false
   const successor = agents.successorOf(agentId)
-  if (successor === undefined || successor.name !== identity.name || successor.state === 'retired') return false
+  if (successor === undefined || successor.name !== identity.name || successor.state === 'retired')
+    return false
   return !events.agentEventsFor(successor.agentId).some(row => row.kind === 'agent_attached')
 }

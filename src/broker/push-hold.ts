@@ -34,7 +34,8 @@ function teleportParked(
 export function pushHoldFor(events: EventStore, agents: AgentLog, agentId: string): PushHold | undefined {
   const identity = agents.get(agentId)
   if (identity === undefined) return undefined
-  if (identity.state === 'retired') return strandedPredecessor(events, agents, agentId) ? undefined : 'retired'
+  if (identity.state === 'retired')
+    return strandedPredecessor(events, agents, agentId) ? undefined : 'retired'
   const rows = events.agentEventsFor(agentId)
   return treeParked(rows) || teleportParked(events, identity, rows) ? 'parked' : undefined
 }
