@@ -251,10 +251,7 @@ async function restartUnderLock(options: { port?: number }, token: string): Prom
  */
 async function pidFileOwner(launchedPid: number | undefined): Promise<number | null> {
   if (launchedPid === undefined) return readPidFile()
-  await waitFor(
-    async () => readPidFile() !== null || !isProcessAlive(launchedPid),
-    OWN_PID_FILE_WAIT_MS,
-  )
+  await waitFor(async () => readPidFile() !== null || !isProcessAlive(launchedPid), OWN_PID_FILE_WAIT_MS)
   return readPidFile()
 }
 
