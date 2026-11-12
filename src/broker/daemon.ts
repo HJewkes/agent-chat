@@ -58,7 +58,7 @@ import {
 import { hostLeaseRefusal } from '../host-lease.js'
 import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
-import { clearLaunchIdentity, RESTART_TOKEN_ENV } from '../launch-identity.js'
+import { clearLaunchIdentity, PID_FILE_DELAY_ENV, RESTART_TOKEN_ENV } from '../launch-identity.js'
 import { restartLockHolder } from './restart-lock.js'
 import { startAgeOutSweep } from './age-out.js'
 import { startBurndownKick } from './burndown-kick.js'
@@ -106,6 +106,7 @@ export function newAgentSlots(): Semaphore {
  */
 export async function startBroker(options: StartBrokerOptions = {}): Promise<net.Server | null> {
   const restartToken = process.env[RESTART_TOKEN_ENV]
+  const pidFileDelayMs = testPidFileDelayMs(process.env[PID_FILE_DELAY_ENV])
   // A broker started by hand from inside an agent still must not hand that launch's identity or temp dir to its children.
   clearLaunchIdentity(process.env)
   const sock = socketPath()
@@ -148,6 +149,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
               socketServer.permissionVerdict(msgId, behavior, channel),
           },
         })
+  if (pidFileDelayMs > 0) await new Promise(resolve => setTimeout(resolve, pidFileDelayMs))
   recordBrokerState(http?.port ?? null)
 
   // The watcher and the shutdown it triggers are mutually referential: shutdown
@@ -544,6 +546,15 @@ function tryBindOnce(
  * and writing the pid file, which a test races.
  */
 const BUILD_AT_LOAD = newestBuildMtime()
+
+/** Test seam (CC-1727): stands in for a loaded boot. Honoured only under an ephemeral home. */
+function testPidFileDelayMs(raw: string | undefined): number {
+  const ms = Number(raw)
+  if (!isEphemeralHome(home()) || !Number.isFinite(ms) || ms <= 0) return 0
+  return Math.min(ms, MAX_TEST_PID_FILE_DELAY_MS)
+}
+
+const MAX_TEST_PID_FILE_DELAY_MS = 10_000
 
 function recordBrokerState(port: number | null): void {
   writePidFile()
