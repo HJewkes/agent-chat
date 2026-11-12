@@ -129,7 +129,8 @@ export class ToolHandler {
   async handle(name: string, args: Record<string, unknown>) {
     const tool = TOOL_COMMANDS.get(name)
     if (tool === undefined) throw new Error(`unknown tool: ${name}`)
-    const skew = this.broker.protocolSkew()
+    // Optional: tool tests hand in a partial broker, and a missing reader means no refusal was heard.
+    const skew = this.broker.protocolSkew?.()
     if (skew === undefined) return invokeTool(tool, args, this.context())
     try {
       return withSkew(await invokeTool(tool, args, this.context()), skew)
