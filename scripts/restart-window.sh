@@ -167,7 +167,7 @@ stage_and_swap() {
   git merge-base --is-ancestor HEAD "$new_head" || { echo "restart-window: origin/main is not a fast-forward of HEAD" >&2; return 1; }
   rm -rf "$stage" && mkdir "$stage" || return 1
   git archive "$new_head" | tar -x -C "$stage" || return 1
-  (cd "$stage" && npm ci && npm run build) || return 1
+  (cd "$stage" && npm ci && AGENT_CHAT_BUILD_COMMIT="$new_head" npm run build) || return 1
   echo "$old_head" > "$(head_file "$repo")" || return 1
   swap_in "$stage" "$repo" node_modules || return 1
   swap_in "$stage" "$repo" dist || { restore_prev; return 1; }

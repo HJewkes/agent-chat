@@ -12,6 +12,7 @@ import type { HostAnswer } from '../broker/host-directory.js'
 import { LAUNCH_TIMEOUT_MS } from '../broker/host-directory.js'
 import { helloProof, ownKey } from '../broker/launcher-key.js'
 import { cliEntry } from '../paths.js'
+import { ownBuildCommit, shortCommit } from '../build-commit.js'
 import {
   encode,
   lineReader,
@@ -66,6 +67,8 @@ export interface LauncherDeps {
   readKey(): string | null
   /** CC-1062: the shared executor's view of this machine, for a `host_spawn`. */
   spawnHost: SpawnHost
+  /** CC-1728: the commit this machine's dist was built from, announced so the broker can report drift. */
+  buildCommit?: string | undefined
 }
 
 /** Answered before the broker's own launch window closes, so an answer is not lost to its timeout. */
@@ -316,9 +319,21 @@ export const defaultLauncherDeps = (homeDir: string): LauncherDeps => ({
   clearSuperseded,
   readKey: ownKey,
   spawnHost: { ...defaultSpawnHost(), homeDir },
+  buildCommit: ownBuildCommit(),
 })
 
 type Log = (line: string) => void
+
+/** The accepted-hello line, which names a build drift the broker has also reported (CC-1728). */
+export function helloAccepted(
+  identity: LauncherIdentity,
+  own: string | undefined,
+  broker: string | undefined,
+): string {
+  const line = `launching for ${identity.host} (${identity.surfaces.join(', ')})`
+  if (broker === undefined || own === broker) return line
+  return `${line}; this build is ${shortCommit(own)} but the broker runs ${shortCommit(broker)}: rebuild agent-chat here`
+}
 
 /** A broker older than CC-1063 ignores `host_challenge`; give up rather than wait forever. */
 export const CHALLENGE_TIMEOUT_MS = 10_000
@@ -337,7 +352,12 @@ export function announcedLanding(identity: LauncherIdentity, homeDir: string): s
 function provedHello(identity: LauncherIdentity, deps: LauncherDeps, nonce: string): ClientMessage {
   const { landing: _requested, ...announced } = identity
   const landing = announcedLanding(identity, deps.homeDir)
-  const hello = { t: 'host_hello' as const, ...announced, ...(landing === undefined ? {} : { landing }) }
+  const hello = {
+    t: 'host_hello' as const,
+    ...announced,
+    ...(landing === undefined ? {} : { landing }),
+    ...(deps.buildCommit === undefined ? {} : { commit: deps.buildCommit }),
+  }
   const key = deps.readKey()
   if (key === null) return hello
   return { ...hello, proof: helloProof(key, identity.host, nonce) }
@@ -374,7 +394,7 @@ export function serveConnection(
         return link.send(provedHello(identity, deps, frame.nonce))
       }
       if (frame.t === 'host_hello_result') {
-        if (frame.ok) return log(`launching for ${identity.host} (${identity.surfaces.join(', ')})`)
+        if (frame.ok) return log(helloAccepted(identity, deps.buildCommit, frame.brokerCommit))
         return end(`the broker refused this launcher: ${frame.reason ?? 'no reason given'}`)
       }
       void handleHostFrame(frame, identity, deps, link).catch(err =>

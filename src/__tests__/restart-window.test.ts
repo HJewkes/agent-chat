@@ -26,7 +26,7 @@ echo "npm $*" >> "$SHIM_LOG"
 echo "cwd $PWD" >> "$SHIM_CWD_LOG"
 [ "$*" != "\${FAKE_NPM_FAIL:-}" ] || exit 1
 [ "$*" != "ci" ] || { mkdir -p node_modules; echo new > node_modules/marker; }
-[ "$*" != "run build" ] || { mkdir -p dist; echo new > dist/marker; }`),
+[ "$*" != "run build" ] || { mkdir -p dist; echo new > dist/marker; echo "\${AGENT_CHAT_BUILD_COMMIT:-unstamped}" > dist/build-commit; }`),
   rm: shim(`
 /bin/rm "$@" || exit
 for live in node_modules dist; do
@@ -348,6 +348,16 @@ describe('restart-window update and restart', () => {
     expect(liveMarkers()).toEqual(['new', 'new'])
     expect(fs.readdirSync(repo).sort()).toEqual(['.git', '.gitignore', 'bin', 'dist', 'node_modules'])
     expect(fs.existsSync(`${repo}.staging`)).toBe(false)
+  })
+
+  it('stamps the staged build with the commit it fetched, since the staging copy has no .git (CC-1728)', () => {
+    pushToOrigin('remote.txt')
+
+    expect(run().code).toBe(0)
+
+    expect(fs.readFileSync(path.join(repo, 'dist', 'build-commit'), 'utf8').trim()).toBe(
+      git('rev-parse', 'HEAD').trim(),
+    )
   })
 
   it('exits 3 and says the broker may be down when the restart fails', () => {
