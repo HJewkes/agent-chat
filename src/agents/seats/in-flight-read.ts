@@ -226,76 +226,105 @@ export interface InFlightInput {
 const seatAgent = (a: AgentIdentity, seat: string, prefix: string | undefined): boolean =>
   a.spawnedBy === seat || (prefix !== undefined && a.name.startsWith(`${prefix}-`))
 
+type Verdicts = Pick<FlightPr, 'verdict' | 'verdictHead'>
+
+/** The verdict for this head, else the newest one for the PR with the head it was for. */
+function verdictFor(verdicts: VerdictRecord[], pr: string, head: string | null): Verdicts {
+  const mine = verdicts.filter(v => prKey(v.pr) === prKey(pr))
+  const exact = head === null ? undefined : mine.find(v => v.head === head)
+  if (exact !== undefined) return { verdict: exact.verdict, verdictHead: null }
+  const newest = mine[0]
+  return newest === undefined
+    ? { verdict: null, verdictHead: null }
+    : { verdict: newest.verdict, verdictHead: newest.head }
+}
+
+const claimOfPr = (claims: Claim[], pr: string): Claim | undefined =>
+  claims.find(c => claimPr(c) !== null && prKey(claimPr(c) as string) === prKey(pr))
+
+function shepherdPr(r: ShepherdFlight, claims: Claim[], verdicts: VerdictRecord[]): FlightPr {
+  const pr = `${r.repo}#${r.pr}`
+  const claim = claimOfPr(claims, pr)
+  return {
+    pr,
+    head: r.headSha,
+    ...verdictFor(verdicts, pr, r.headSha),
+    ci: ciOf(r.phase),
+    phase: r.phase,
+    task: r.task,
+    agent: claim?.agentName ?? null,
+    claim: claim === undefined ? null : claimLabel(claim),
+    nextAction: r.nextAction,
+    pendingGate: r.pendingGate,
+    flags: [...(r.held ? ['held'] : []), ...(r.stalled ? ['stalled'] : [])],
+  }
+}
+
+function claimOnlyPr(c: Claim, pr: string, verdicts: VerdictRecord[]): FlightPr {
+  return {
+    pr,
+    head: c.prHead ?? null,
+    ...verdictFor(verdicts, pr, c.prHead ?? null),
+    ci: 'unknown',
+    phase: null,
+    task: c.taskId,
+    agent: c.agentName ?? null,
+    claim: claimLabel(c),
+    nextAction: null,
+    pendingGate: null,
+    flags: [],
+  }
+}
+
+function joinPrs(rows: ShepherdFlight[], claims: Claim[], verdicts: VerdictRecord[]): FlightPr[] {
+  const prs = new Map<string, FlightPr>()
+  for (const r of rows) {
+    const row = shepherdPr(r, claims, verdicts)
+    prs.set(prKey(row.pr), row)
+  }
+  for (const c of claims) {
+    const pr = claimPr(c)
+    if (pr === null || prs.has(prKey(pr))) continue
+    prs.set(prKey(pr), claimOnlyPr(c, pr, verdicts))
+  }
+  return [...prs.values()]
+}
+
+function flightAgents(agents: AgentIdentity[], prs: FlightPr[], claims: Claim[]): FlightAgent[] {
+  const claimByAgent = new Map(claims.flatMap(c => (c.agentName === undefined ? [] : [[c.agentName, c]])))
+  const hasPr = new Set(prs.flatMap(p => (p.agent === null ? [] : [p.agent])))
+  return agents
+    .filter(a => !hasPr.has(a.name))
+    .map(a => ({
+      name: a.name,
+      profile: a.profile,
+      state: a.state,
+      cwd: a.cwd,
+      ...(claimByAgent.has(a.name) ? { claim: claimLabel(claimByAgent.get(a.name) as Claim) } : {}),
+    }))
+    .sort((x, y) => x.name.localeCompare(y.name))
+}
+
+const orphanClaims = (claims: Claim[], agents: AgentIdentity[]): string[] => {
+  const names = new Set(agents.map(a => a.name))
+  return claims
+    .filter(c => claimPr(c) === null && !(c.agentName !== undefined && names.has(c.agentName)))
+    .map(claimLabel)
+}
+
 /** Pure: the sources already read, joined on PR. A source that is undefined contributes nothing. */
 export function deriveInFlight(input: InFlightInput): Omit<InFlight, 'unavailable'> {
   const { seat, prefix } = input
   const claims = (input.claims ?? []).filter(c => c.seat === seat && c.phase !== 'done')
   const agents = (input.roster ?? []).filter(a => seatAgent(a, seat, prefix))
-  const claimByAgent = new Map(claims.flatMap(c => (c.agentName === undefined ? [] : [[c.agentName, c]])))
   const rows = (input.shepherd ?? []).filter(
     r => r.pr !== null && (prefix === undefined ? false : rowOfSeat(r, prefix)),
   )
-  const verdictFor = (pr: string, head: string | null): Pick<FlightPr, 'verdict' | 'verdictHead'> => {
-    const mine = (input.verdicts ?? []).filter(v => prKey(v.pr) === prKey(pr))
-    const exact = head === null ? undefined : mine.find(v => v.head === head)
-    if (exact !== undefined) return { verdict: exact.verdict, verdictHead: null }
-    const newest = mine[0]
-    return newest === undefined
-      ? { verdict: null, verdictHead: null }
-      : { verdict: newest.verdict, verdictHead: newest.head }
-  }
-  const prs = new Map<string, FlightPr>()
-  for (const r of rows) {
-    const pr = `${r.repo}#${r.pr}`
-    const claim = claims.find(c => claimPr(c) !== null && prKey(claimPr(c) as string) === prKey(pr))
-    prs.set(prKey(pr), {
-      pr,
-      head: r.headSha,
-      ...verdictFor(pr, r.headSha),
-      ci: ciOf(r.phase),
-      phase: r.phase,
-      task: r.task,
-      agent: claim?.agentName ?? null,
-      claim: claim === undefined ? null : claimLabel(claim),
-      nextAction: r.nextAction,
-      pendingGate: r.pendingGate,
-      flags: [...(r.held ? ['held'] : []), ...(r.stalled ? ['stalled'] : [])],
-    })
-  }
-  for (const c of claims) {
-    const pr = claimPr(c)
-    if (pr === null || prs.has(prKey(pr))) continue
-    prs.set(prKey(pr), {
-      pr,
-      head: c.prHead ?? null,
-      ...verdictFor(pr, c.prHead ?? null),
-      ci: 'unknown',
-      phase: null,
-      task: c.taskId,
-      agent: c.agentName ?? null,
-      claim: claimLabel(c),
-      nextAction: null,
-      pendingGate: null,
-      flags: [],
-    })
-  }
-  const names = new Set(agents.map(a => a.name))
-  const hasPr = new Set([...prs.values()].flatMap(p => (p.agent === null ? [] : [p.agent])))
+  const prs = joinPrs(rows, claims, input.verdicts ?? [])
   return {
-    prs: [...prs.values()],
-    agents: agents
-      .filter(a => !hasPr.has(a.name))
-      .map(a => ({
-        name: a.name,
-        profile: a.profile,
-        state: a.state,
-        cwd: a.cwd,
-        ...(claimByAgent.has(a.name) ? { claim: claimLabel(claimByAgent.get(a.name) as Claim) } : {}),
-      }))
-      .sort((x, y) => x.name.localeCompare(y.name)),
-    claims: claims
-      .filter(c => claimPr(c) === null && !(c.agentName !== undefined && names.has(c.agentName)))
-      .map(claimLabel),
+    prs,
+    agents: flightAgents(agents, prs, claims),
+    claims: orphanClaims(claims, agents),
   }
 }
 
