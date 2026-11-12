@@ -44,12 +44,13 @@ async function registerAgainst(
   c: BrokerClient,
   answer: Omit<Extract<ServerMessage, { t: 'register_result' }>, 't'>,
 ) {
+  const before = received.length
   const pending = c.request(
     { t: 'register', name: 'n', workingOn: '', cwd: '/tmp', pid: 1 },
     'register_result',
   )
-  await until(() => received.length > 0)
-  brokerSide?.write(encode({ t: 'register_result', ...answer, rid: received.at(-1)?.rid }))
+  await until(() => received.length > before)
+  brokerSide?.write(encode({ t: 'register_result', ...answer, rid: received.at(-1)?.rid ?? 0 }))
   return pending
 }
 
