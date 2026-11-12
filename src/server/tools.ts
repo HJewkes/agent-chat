@@ -129,6 +129,19 @@ export class ToolHandler {
   async handle(name: string, args: Record<string, unknown>) {
     const tool = TOOL_COMMANDS.get(name)
     if (tool === undefined) throw new Error(`unknown tool: ${name}`)
-    return invokeTool(tool, args, this.context())
+    const skew = this.broker.protocolSkew()
+    if (skew === undefined) return invokeTool(tool, args, this.context())
+    try {
+      return withSkew(await invokeTool(tool, args, this.context()), skew)
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n\n${skewNotice(skew)}`, { cause: err })
+    }
   }
+}
+
+/** CC-1728: a broker that refused this build is why the tool failed, whatever the tool says. */
+const skewNotice = (skew: string): string => `agent-chat build too old for this broker: ${skew}`
+
+function withSkew(result: Awaited<ReturnType<typeof invokeTool>>, skew: string) {
+  return { ...result, content: [...result.content, { type: 'text' as const, text: skewNotice(skew) }] }
 }

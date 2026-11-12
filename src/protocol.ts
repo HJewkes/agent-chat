@@ -4,6 +4,7 @@ import {
 } from '@titan-design/agent-surface'
 import type { AgentProfile } from './agents/types.js'
 import type { Records } from './leak-guard/integrity/record.js'
+import type { PROTOCOL_TOO_OLD } from './protocol-version.js'
 
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
@@ -863,6 +864,8 @@ export type ClientMessage =
        * builds disagreed.
        */
       build?: string
+      /** CC-1728: the wire protocol this client speaks (`protocol-version.ts`); absent from a client older than the handshake. */
+      protocol?: number
     }
   /**
    * Reclaim a registration this session already had, without asking the model.
@@ -889,6 +892,7 @@ export type ClientMessage =
       /** Re-derived on the way back in; a reclaimed registration is still a registration. */
       observed?: ObservedPresence
       build?: string
+      protocol?: number
     }
   /**
    * `declared` rides here as well as on `register` because a session's role or
@@ -1425,7 +1429,8 @@ export type ServerMessage =
    * broker resolved it from the log. An ordinary register already knows the name
    * it asked for and gets nothing back.
    */
-  | { t: 'register_result'; ok: boolean; reason?: string; name?: string }
+  /** `code` is set when the client must be rebuilt before the broker will serve it (CC-1728). */
+  | { t: 'register_result'; ok: boolean; reason?: string; name?: string; code?: typeof PROTOCOL_TOO_OLD }
   | { t: 'subscribe_result'; ok: boolean; held: number; reason?: string }
   /**
    * Batched, because three agents starting together is one thing that happened,
