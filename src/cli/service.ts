@@ -10,7 +10,12 @@ import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } 
 import { clearInheritedShimEnv, recordLoginPath, resolveBasePath } from '../agents/base-path.js'
 import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
-import { RESTART_GAP_ENV, RESTART_TOKEN_ENV, withoutLaunchIdentity } from '../launch-identity.js'
+import {
+  PID_FILE_DELAY_ENV,
+  RESTART_GAP_ENV,
+  RESTART_TOKEN_ENV,
+  withoutLaunchIdentity,
+} from '../launch-identity.js'
 import { isEphemeralHome } from '../broker/ephemeral.js'
 import { MAX_RESTART_LOCK_S, releaseRestartLock, takeRestartLock } from '../broker/restart-lock.js'
 import { fail, withBroker } from './client.js'
@@ -128,6 +133,8 @@ async function launchDetached(
     port === undefined ? process.env : { ...process.env, AGENT_CHAT_PORT: String(port) },
   )
   if (token !== undefined) env[RESTART_TOKEN_ENV] = token
+  const pidFileDelay = process.env[PID_FILE_DELAY_ENV]
+  if (token !== undefined && pidFileDelay !== undefined) env[PID_FILE_DELAY_ENV] = pidFileDelay
   const child = spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore', env })
   child.unref()
   return { pid: child.pid, up: await waitFor(() => probeSocket(), TERM_GRACE_MS) }
@@ -231,13 +238,25 @@ async function restartUnderLock(options: { port?: number }, token: string): Prom
   if (await probeSocket()) return notOurBroker(readPidFile(), undefined)
   const launched = await launchDetached(options.port ?? previous, token)
   if (!launched.up) return notAnswering()
-  // The pid file is written just after the bind, so the socket can answer before it names its owner.
-  if (!(await waitFor(async () => readPidFile() === launched.pid, TERM_GRACE_MS))) {
-    return notOurBroker(readPidFile(), launched.pid)
-  }
+  const owner = await pidFileOwner(launched.pid)
+  if (owner !== launched.pid) return notOurBroker(owner, launched.pid)
   printUp()
   return undefined
 }
+
+/**
+ * The pid file is written after the HTTP bind, which a loaded boot can push well past 3 s (CC-1727),
+ * so an absent file while our broker lives means "still booting", not "lost the race". Only a file
+ * naming another pid, or our broker exiting, ends the wait early.
+ */
+async function pidFileOwner(launchedPid: number | undefined): Promise<number | null> {
+  if (launchedPid === undefined) return readPidFile()
+  await waitFor(async () => readPidFile() !== null || !isProcessAlive(launchedPid), OWN_PID_FILE_WAIT_MS)
+  return readPidFile()
+}
+
+/** Well inside the restart lock taken just before, so the lock covers the whole wait. */
+const OWN_PID_FILE_WAIT_MS = (MAX_RESTART_LOCK_S * 1000) / 2
 
 const notOurBroker = (onSocket: number | null, ours: number | undefined): string =>
   `restart: the broker on the socket (pid ${onSocket ?? 'unknown'}) is not the one this restart ` +

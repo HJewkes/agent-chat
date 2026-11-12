@@ -23,6 +23,7 @@ describe('what a broker spawned by an agent carries', () => {
     const env = withoutLaunchIdentity({
       AGENT_CHAT_RESTART_TOKEN: 'secret',
       AGENT_CHAT_TEST_RESTART_GAP_MS: '750',
+      AGENT_CHAT_TEST_PID_FILE_DELAY_MS: '4500',
       PATH: '/bin',
     })
     expect(env).toEqual({ PATH: '/bin' })

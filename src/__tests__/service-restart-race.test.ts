@@ -202,6 +202,46 @@ describe('service restart racing a session that auto-starts the broker', () => {
   }, 30_000)
 })
 
+describe('service restart whose own broker is slow to write its pid file (CC-1727)', () => {
+  const pidFile = (): string => path.join(dir, 'broker.pid')
+
+  it('waits past 3 s for the pid file and accepts the broker it launched', async () => {
+    await brokerWithRacer(false)
+    const since = new Date().toISOString()
+
+    const restart = cli(['service', 'restart'], { AGENT_CHAT_TEST_PID_FILE_DELAY_MS: '4500' })
+    const code = await exitOf(restart)
+
+    const started = rowsSince(since).filter(row => row.event === 'broker_started')
+    expect(code).toBe(0)
+    expect(started).toMatchObject([{ launcher: 'restart', ppid: restart.pid, pid: brokerPid() }])
+    expect(fs.existsSync(lockFile())).toBe(false)
+  }, 30_000)
+
+  it('still fails fast when the pid file names a broker it did not launch', async () => {
+    await brokerWithRacer(false)
+    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 60_000)'])
+    children.push(foreign)
+    const restart = cli(['service', 'restart'], {
+      AGENT_CHAT_TEST_RESTART_GAP_MS: '1500',
+      AGENT_CHAT_TEST_PID_FILE_DELAY_MS: '8000',
+    })
+    const exited = exitOf(restart)
+    let out = ''
+    restart.stdout?.on('data', (chunk: Buffer) => (out += chunk.toString()))
+    // Printed after the old broker's state files are cleared, so the forged pid file survives.
+    expect(await until(() => out.includes('Registrations are in-memory'), 10_000)).toBe(true)
+    fs.writeFileSync(pidFile(), `${foreign.pid}\n`)
+    const startedAt = Date.now()
+
+    const code = await exited
+
+    expect(code).toMatch(new RegExp(`pid ${foreign.pid}\\) is not the one this restart started`))
+    expect(Date.now() - startedAt).toBeLessThan(8_000)
+    expect(await until(() => brokerPid() !== foreign.pid, 15_000)).toBe(true)
+  }, 40_000)
+})
+
 describe('the restart lock', () => {
   const deadPid = (): number => spawnSync(process.execPath, ['-e', 'process.pid']).pid ?? 0
   const writeLock = (lock: object): void => fs.writeFileSync(lockFile(), JSON.stringify(lock))
