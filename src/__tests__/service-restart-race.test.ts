@@ -226,11 +226,15 @@ describe('service restart whose own broker is slow to write its pid file (CC-172
       AGENT_CHAT_TEST_RESTART_GAP_MS: '1500',
       AGENT_CHAT_TEST_PID_FILE_DELAY_MS: '8000',
     })
-    expect(await until(() => fs.existsSync(lockFile()) && !fs.existsSync(pidFile()), 10_000)).toBe(true)
+    const exited = exitOf(restart)
+    let out = ''
+    restart.stdout?.on('data', (chunk: Buffer) => (out += chunk.toString()))
+    // Printed after the old broker's state files are cleared, so the forged pid file survives.
+    expect(await until(() => out.includes('Registrations are in-memory'), 10_000)).toBe(true)
     fs.writeFileSync(pidFile(), `${foreign.pid}\n`)
     const startedAt = Date.now()
 
-    const code = await exitOf(restart)
+    const code = await exited
 
     expect(code).toMatch(new RegExp(`pid ${foreign.pid}\\) is not the one this restart started`))
     expect(Date.now() - startedAt).toBeLessThan(8_000)
