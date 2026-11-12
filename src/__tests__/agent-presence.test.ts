@@ -280,7 +280,8 @@ describe('identity from the spawn environment', () => {
 })
 
 describe('the seeded tool handler', () => {
-  const stubBroker = (reply: ServerMessage) => ({ request: async () => reply }) as unknown as BrokerClient
+  const stubBroker = (reply: ServerMessage) =>
+    ({ request: async () => reply, replayRegistration: async () => reply }) as unknown as BrokerClient
 
   const textOf = (result: { content: { text: string }[] }): string => result.content[0]!.text
 
@@ -297,10 +298,12 @@ describe('the seeded tool handler', () => {
     expect(textOf(result)).not.toMatch(/chat_register/)
   })
 
-  it('treats re-registering the same name as a no-op success', async () => {
+  it('sends the held registration again when asked for the same name (CC-1719)', async () => {
     const handler = new ToolHandler(stubBroker({ t: 'register_result', ok: true }), 'scout')
 
-    expect(textOf(await handler.handle('chat_register', { name: 'scout' }))).toMatch(/Already registered/)
+    expect(textOf(await handler.handle('chat_register', { name: 'scout' }))).toMatch(
+      /Registered as "scout".*sent to the broker again/,
+    )
   })
 
   it('refuses a rename, which would strand every peer told to use the old name', async () => {
@@ -327,7 +330,8 @@ describe('the seeded tool handler', () => {
  * learned when `String(undefined)` sailed through as the literal text "undefined".
  */
 describe('agent_spawn at the tool boundary', () => {
-  const stubBroker = (reply: ServerMessage) => ({ request: async () => reply }) as unknown as BrokerClient
+  const stubBroker = (reply: ServerMessage) =>
+    ({ request: async () => reply, replayRegistration: async () => reply }) as unknown as BrokerClient
 
   const textOf = (result: { content: { text: string }[] }): string => result.content[0]!.text
 
