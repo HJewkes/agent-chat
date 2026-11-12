@@ -22,6 +22,7 @@ import { restartLockHolder } from '../broker/restart-lock.js'
 import { readPidFile } from '../broker/lifecycle.js'
 import { logEvent } from '../broker/log.js'
 import { waitForBroker } from './broker-wait.js'
+import { PROTOCOL_TOO_OLD, PROTOCOL_VERSION } from '../protocol-version.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 
@@ -142,6 +143,10 @@ const REPLAYABLE: ReadonlySet<ClientMessage['t']> = new Set([
 // Bounded so a broker that never returns cannot grow this without limit.
 const MAX_HELD_FRAMES = 32
 
+/** CC-1728: every registration states the protocol this build speaks, whichever caller built the frame. */
+const withProtocol = (message: ClientMessage): ClientMessage =>
+  message.t === 'register' || message.t === 'readopt' ? { ...message, protocol: PROTOCOL_VERSION } : message
+
 const brokerRestartingError = (kind: ClientMessage['t']): Error =>
   new Error(
     `broker restarting: the connection to the agent-chat broker was lost and is being re-established. ` +
@@ -215,6 +220,8 @@ export class BrokerClient {
   private connecting: Promise<void> | null = null
   /** Guards against concurrent CC-83 recoveries racing for the same name. */
   private reregistering = false
+  /** CC-1728: the broker's refusal of this build, kept until a registration succeeds. */
+  private skew: string | undefined
   /** True between a drop and the reconnect's outcome: the gap frames are held or refused in. */
   private reconnecting = false
   private held: HeldFrame[] = []
@@ -570,6 +577,7 @@ export class BrokerClient {
         resolve: msg => {
           clearTimeout(timer)
           if (keyed) this.retryKeys.settled(keyed.fingerprint)
+          this.noteRegistration(msg)
           resolve(msg)
         },
         reject: err => {
@@ -579,8 +587,25 @@ export class BrokerClient {
       }
       queue.push(waiter)
       this.waiters.set(replyType, queue)
-      socket.write(encode({ ...(keyed?.frame ?? message), rid }))
+      socket.write(encode({ ...withProtocol(keyed?.frame ?? message), rid }))
     })
+  }
+
+  /**
+   * CC-1728: why the broker will not serve this build, or undefined. Logged once and
+   * stderr'd when it arrives, since a session that cannot register is a server fault.
+   */
+  protocolSkew(): string | undefined {
+    return this.skew
+  }
+
+  private noteRegistration(msg: ServerMessage): void {
+    if (msg.t !== 'register_result') return
+    if (msg.ok) this.skew = undefined
+    if (msg.code !== PROTOCOL_TOO_OLD || msg.reason === undefined || msg.reason === this.skew) return
+    this.skew = msg.reason
+    logEvent('protocol_skew', { pid: process.pid, reason: msg.reason })
+    process.stderr.write(`agent-chat: ${msg.reason}\n`)
   }
 
   /** CC-1454: a `send` or `resume` the caller left unkeyed gets a key, reused if an identical one timed out. */

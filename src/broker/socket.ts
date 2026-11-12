@@ -85,6 +85,7 @@ import { noticeWakeCapped } from './codex-wake-cap.js'
 import { DeclaredCallers, declaredIdOf, resolveDeclared, type Caller } from './declared-callers.js'
 import { class2RequesterOf, isRefusal, type Class2Asker, type Class2Requester } from './class2-requester.js'
 import { classOf } from './frame-classes.js'
+import { legacyClientHint, protocolRefusal, PROTOCOL_TOO_OLD, type ClientBuild } from '../protocol-version.js'
 import { LauncherDrift } from './launcher-drift.js'
 import { ownBuildCommit } from '../build-commit.js'
 
@@ -497,6 +498,8 @@ export class SocketServer {
   private readonly hooks = new Map<string, HookWait>()
   /** Each connection's open service asks, for the per-connection cap; dies with the connection. */
   private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
+  /** CC-1728: connections whose last registration sent no protocol, with what they said about their build. */
+  private readonly legacyClients = new WeakMap<Conn, ClientBuild>()
   /** CC-1728: one notice per host whose launcher build differs from this broker's. */
   private readonly drift = new LauncherDrift(ownBuildCommit(), {
     notify: body => void this.core.append({ kind: 'notice', actor: 'agent-chat', target: HUMAN, body }),
@@ -1254,6 +1257,42 @@ export class SocketServer {
   }
 
   /**
+   * CC-1728: refuse a client below the broker's minimum protocol by name, and
+   * remember one that sent none so its registration failures can say it may be skew.
+   */
+  private refuseOldProtocol(conn: Conn, msg: Extract<ClientMessage, { t: 'register' | 'readopt' }>): boolean {
+    const client: ClientBuild = { protocol: msg.protocol, build: msg.build, host: msg.host }
+    if (msg.protocol === undefined) this.legacyClients.set(conn, client)
+    else this.legacyClients.delete(conn)
+    const refusal = protocolRefusal(client)
+    if (refusal === undefined) return false
+    logEvent('protocol_refused', { client: msg.protocol, build: msg.build, host: msg.host })
+    reply(conn, { t: 'register_result', ok: false, reason: refusal, code: PROTOCOL_TOO_OLD })
+    return true
+  }
+
+  private skewHint(conn: Conn): string {
+    const legacy = this.legacyClients.get(conn)
+    return legacy === undefined ? '' : legacyClientHint(legacy)
+  }
+
+  /** Only the "you are not on the bus" refusal is annotated; a legacy client's other failures are its own. */
+  private withSkewHint(conn: Conn, reason: string): string {
+    return reason === 'not registered' ? reason + this.skewHint(conn) : reason
+  }
+
+  private failedRegistration(
+    conn: Conn,
+    result: { ok: boolean; reason?: string },
+  ): Extract<ServerMessage, { t: 'register_result' }> {
+    return {
+      t: 'register_result',
+      ...result,
+      reason: (result.reason ?? 'registration failed') + this.skewHint(conn),
+    }
+  }
+
+  /**
    * Put a returning session back on the bus under the name it already held.
    *
    * The name comes from the LOG, never from the request — `bySession` matches
@@ -1460,7 +1499,7 @@ export class SocketServer {
       recipients: result.recipients,
       results: result.results,
       ...(result.msgId === undefined ? {} : { msgId: result.msgId }),
-      ...(result.reason === undefined ? {} : { reason: result.reason }),
+      ...(result.reason === undefined ? {} : { reason: this.withSkewHint(conn, result.reason) }),
       ...(result.suppressLive || (result.deliveries.length > 0 && result.deliveries.every(d => !d.live))
         ? { held: true }
         : {}),
@@ -2228,7 +2267,8 @@ export class SocketServer {
       code: 'not_registered',
       reason:
         `the broker has no registration for this connection, so "${msg.t}" was refused. ` +
-        'If you hold an identity, register again — nothing about your session has to restart.',
+        'If you hold an identity, register again — nothing about your session has to restart.' +
+        this.skewHint(conn),
     })
   }
 
@@ -2301,7 +2341,7 @@ export class SocketServer {
     this.hintUnregistered(conn, msg)
     switch (msg.t) {
       case 'register': {
-        if (this.refuseLauncherRegister(conn)) return
+        if (this.refuseLauncherRegister(conn) || this.refuseOldProtocol(conn, msg)) return
         // Closing the displaced socket is what makes a takeover final: leaving it
         // open would let the predecessor keep writing under a name it no longer
         // holds. `end` rather than `destroy` so the fatal frame is flushed first
@@ -2316,14 +2356,14 @@ export class SocketServer {
           ),
         )
         if (result.ok) this.noteBuildMismatch(msg.name, msg.build)
-        reply(conn, { t: 'register_result', ...result })
+        reply(conn, result.ok ? { t: 'register_result', ...result } : this.failedRegistration(conn, result))
         if (result.ok) core.deliverStranded(msg.name)
         if (result.ok && dark !== undefined) core.deliverHeld(msg.name, dark)
         if (result.ok) this.showUndeliveredHandoff(msg, returning)
         return
       }
       case 'readopt':
-        if (this.refuseLauncherRegister(conn)) return
+        if (this.refuseLauncherRegister(conn) || this.refuseOldProtocol(conn, msg)) return
         return this.handleReadopt(conn, msg)
       case 'status':
         return reply(conn, {
