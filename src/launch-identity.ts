@@ -39,7 +39,9 @@ export function clearLaunchTmpDirs(env: NodeJS.ProcessEnv): void {
  */
 export const RESTART_TOKEN_ENV = 'AGENT_CHAT_RESTART_TOKEN'
 export const RESTART_GAP_ENV = 'AGENT_CHAT_TEST_RESTART_GAP_MS'
-const RESTART_ENV = [RESTART_TOKEN_ENV, RESTART_GAP_ENV] as const
+/** Test seam (CC-1727): how long a restart's own broker holds back its pid file, as a loaded boot does. */
+export const PID_FILE_DELAY_ENV = 'AGENT_CHAT_TEST_PID_FILE_DELAY_MS'
+const RESTART_ENV = [RESTART_TOKEN_ENV, RESTART_GAP_ENV, PID_FILE_DELAY_ENV] as const
 
 /** Removes the launch identity, any restart token and any launch's private temp dir from `env` in place. */
 export function clearLaunchIdentity(env: NodeJS.ProcessEnv): void {
