@@ -12,6 +12,7 @@ import {
   answerProbe,
   answerSpawn,
   handleHostFrame,
+  helloAccepted,
   hostSurfaces,
   serveConnection,
   type LauncherDeps,
@@ -404,6 +405,29 @@ describe('the landing dir a launcher announces (CC-1646)', () => {
 
     expect(hello?.t).toBe('host_hello')
     expect(hello).not.toHaveProperty('landing')
+  })
+})
+
+describe('the build a launcher announces (CC-1728)', () => {
+  const COMMIT = 'abc1234def5678'
+
+  it('rides on the hello when the dist is stamped', async () => {
+    const stub = await brokerStub(refuseHello)
+    const { deps } = fakeDeps()
+    await serveConnection(await stub.connect(), LINUX, { ...deps, buildCommit: COMMIT }, () => undefined)
+    stub.close()
+
+    expect(stub.received.find(f => f.t === 'host_hello')).toMatchObject({ commit: COMMIT })
+  })
+
+  it('names the drift in the accepted-hello line when the broker runs another build', () => {
+    const line = helloAccepted(LINUX, COMMIT, 'fedcba9876543210')
+
+    expect(line).toContain('this build is abc1234def56 but the broker runs fedcba987654')
+  })
+
+  it('says nothing of builds when they match', () => {
+    expect(helloAccepted(LINUX, COMMIT, COMMIT)).not.toContain('rebuild')
   })
 })
 
