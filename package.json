@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "node scripts/build-guard.mjs && tsc",
-    "postbuild": "chmod +x dist/cli.js",
+    "postbuild": "chmod +x dist/cli.js && node scripts/build-stamp.mjs",
     "pretest": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json && npm run typecheck:dashboard",
     "test": "node dist/cli.js suite-slot -- vitest run",

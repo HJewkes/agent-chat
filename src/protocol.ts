@@ -1390,6 +1390,8 @@ export type ClientMessage =
       proof?: string
       /** CC-1646: where a successor lands when its cwd is missing on this machine; absent from older launchers. */
       landing?: string
+      /** CC-1728: the commit the launcher's dist was built from; absent when unstamped or older. */
+      commit?: string
     }
   /** CC-1063: a launcher asks for the single-use nonce its next `host_hello` proof covers. */
   | { t: 'host_challenge' }
@@ -1602,7 +1604,8 @@ export type ServerMessage =
   | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch; endSelf?: true }
   | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string; predecessorLive?: boolean }
-  | { t: 'host_hello_result'; ok: boolean; reason?: string }
+  /** `brokerCommit` (CC-1728): the broker's own build, so a launcher can log the drift too. */
+  | { t: 'host_hello_result'; ok: boolean; reason?: string; brokerCommit?: string }
   /** CC-1063: the nonce for the next `host_hello` on this connection; HMAC it with the host's key. */
   | { t: 'host_challenge_result'; nonce: string }
   /** CC-951: broker -> launcher; does `cwd`, `configDir` and `surface` work on its machine. */

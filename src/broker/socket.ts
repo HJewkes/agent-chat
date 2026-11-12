@@ -86,6 +86,8 @@ import { DeclaredCallers, declaredIdOf, resolveDeclared, type Caller } from './d
 import { class2RequesterOf, isRefusal, type Class2Asker, type Class2Requester } from './class2-requester.js'
 import { classOf } from './frame-classes.js'
 import { legacyClientHint, protocolRefusal, PROTOCOL_TOO_OLD, type ClientBuild } from '../protocol-version.js'
+import { LauncherDrift } from './launcher-drift.js'
+import { ownBuildCommit } from '../build-commit.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -498,6 +500,11 @@ export class SocketServer {
   private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
   /** CC-1728: connections whose last registration sent no protocol, with what they said about their build. */
   private readonly legacyClients = new WeakMap<Conn, ClientBuild>()
+  /** CC-1728: one notice per host whose launcher build differs from this broker's. */
+  private readonly drift = new LauncherDrift(ownBuildCommit(), {
+    notify: body => void this.core.append({ kind: 'notice', actor: 'agent-chat', target: HUMAN, body }),
+    log: detail => logEvent('host_build_mismatch', detail),
+  })
   /** CC-951: connected host launchers, each dropped with its connection. */
   private readonly hosts = new HostDirectory<Conn>()
   /** CC-1059: each pending remote spawn's requesting connection, the only one that may report on it. */
@@ -1152,7 +1159,13 @@ export class SocketServer {
         ? this.hosts.hello(conn, hello, frame => reply(conn, frame), verdict === undefined)
         : { ok: false, reason: refusal }
     if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
-    reply(conn, { t: 'host_hello_result', ...result })
+    if (result.ok) this.drift.hello(hello.host, typeof msg.commit === 'string' ? msg.commit : undefined)
+    const brokerCommit = ownBuildCommit()
+    reply(conn, {
+      t: 'host_hello_result',
+      ...result,
+      ...(brokerCommit === undefined ? {} : { brokerCommit }),
+    })
   }
 
   /**
