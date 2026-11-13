@@ -486,7 +486,9 @@ describe('pace files on disk', () => {
 
     expect(Object.keys(env).sort()).toEqual([
       'CLAUDE_CONFIG_DIR',
-      'GIT_ALLOW_PROTOCOL',
+      'GIT_CONFIG_COUNT',
+      'GIT_CONFIG_KEY_0',
+      'GIT_CONFIG_VALUE_0',
       'HOME',
       'NODE_COMPILE_CACHE',
       'PATH',

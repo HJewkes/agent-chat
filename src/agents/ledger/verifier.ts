@@ -7,7 +7,8 @@ import { logEvent } from '../../broker/log.js'
 import type { EventStore } from '../../broker/event-store.js'
 import { AgentLog } from '../identity.js'
 import { heldByRuntimeState } from '../isolation/sweep.js'
-import { listRecoverableIndexed } from './recoverable.js'
+import { ledgerDbOver } from './db-shim.js'
+import { recoverableReader } from './recoverable.js'
 import {
   BACKFILL_KEY_PREFIX,
   classify,
@@ -73,7 +74,7 @@ export function readLedger(db: DatabaseSync): LedgerReading | undefined {
     .prepare('SELECT min(prepared_at) AS at FROM agent_execution WHERE request_key NOT LIKE ?')
     .get(`${BACKFILL_KEY_PREFIX}%`) as { at: string | null }
   return {
-    active: listRecoverableIndexed(db, RECOVERABLE_LIMIT).map(toRow),
+    active: recoverableReader(ledgerDbOver(db)).listRecoverable(RECOVERABLE_LIMIT).map(toRow),
     terminalByAgent: new Map(terminal.map(row => [row.agent, row.phase])),
     ...(first.at === null ? {} : { firstWriteAt: Date.parse(first.at) }),
   }
