@@ -38,9 +38,23 @@ export const gitHooksEnv = (dir: string): Record<string, string> => ({
   GIT_CONFIG_VALUE_0: dir,
 })
 
+const hasExtNeverAt = (env: Record<string, string>, index: number): boolean =>
+  env[`GIT_CONFIG_KEY_${index}`] === 'protocol.ext.allow' && env[`GIT_CONFIG_VALUE_${index}`] === 'never'
+
+/**
+ * The config pairs a launch env holds when they are exactly the guard's: the hooks path at index 0,
+ * alone or followed by the `protocol.ext.allow=never` pair the git pin appends (CC-1607). Any other
+ * layout is not the guard's, so none of it is read or cleared as if it were.
+ */
+export function guardConfigCount(env: Record<string, string>): 1 | 2 | undefined {
+  if (env.GIT_CONFIG_KEY_0 !== HOOKS_PATH_KEY) return undefined
+  if (env.GIT_CONFIG_COUNT === '1') return 1
+  return env.GIT_CONFIG_COUNT === '2' && hasExtNeverAt(env, 1) ? 2 : undefined
+}
+
 /** The guard dir a launch env points git at, if any. */
 export const hooksDirOf = (env: Record<string, string>): string | undefined =>
-  env.GIT_CONFIG_COUNT === '1' && env.GIT_CONFIG_KEY_0 === HOOKS_PATH_KEY ? env.GIT_CONFIG_VALUE_0 : undefined
+  guardConfigCount(env) === undefined ? undefined : env.GIT_CONFIG_VALUE_0
 
 // One git call: `--git-path hooks` honours the repo's own core.hooksPath once the guard's override is removed.
 const FIND_REPO_HOOK = `own=$(unset GIT_CONFIG_COUNT; git rev-parse --git-path hooks 2>/dev/null)

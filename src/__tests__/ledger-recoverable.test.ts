@@ -6,7 +6,7 @@ import { executionLedgerDdl, SqliteExecutionLedger } from '@titan-design/agent-l
 import { EXECUTION_PHASES, type ExecutionTransition } from '@titan-design/agent-protocol'
 import { EventLog } from '../broker/event-log.js'
 import { ledgerDbOver } from '../agents/ledger/db-shim.js'
-import { listRecoverableIndexed } from '../agents/ledger/recoverable.js'
+import { recoverableReader } from '../agents/ledger/recoverable.js'
 import { openShadowLedger, type ShadowLedger } from '../agents/ledger/shadow-ledger.js'
 import { readLedger } from '../agents/ledger/verifier.js'
 
@@ -41,7 +41,19 @@ function reader(): SqliteExecutionLedger {
 
 /** A snapshot row written directly, so a phase no transition reaches cheaply can still be seeded. */
 function seedRow(executionId: string, phase: string, preparedAt: string, agentId: string): void {
-  const record = { execution: { executionId }, agent: { agentId }, phase, preparedAt }
+  const record = {
+    execution: { executionId },
+    agent: { agentId },
+    phase,
+    preparedAt,
+    updatedAt: preparedAt,
+    lastObservedAt: preparedAt,
+    revision: 1,
+    ownerGeneration: 1,
+    harness: 'claude-code',
+    requestKey: `spawn:${executionId}`,
+    target: { kind: 'fresh', namespace: '/work' },
+  }
   events
     .ledgerHandle()
     .prepare(
@@ -112,16 +124,31 @@ describe('listing live executions', () => {
     expect(reading?.active.map(row => row.executionId)).toEqual(['live-1'])
   })
 
-  it('the indexed read returns what the package read returns, in every phase and under a limit', () => {
+  it('lists only live phases, oldest first, under a limit', () => {
     EXECUTION_PHASES.forEach((phase, i) => {
       const preparedAt = new Date(T0 + ((i * 7) % 10) * 1000).toISOString()
       seedRow(`exec-${phase}`, phase, preparedAt, `impl-${i}`)
     })
-    const db = events.ledgerHandle()
+    const read = recoverableReader(ledgerDbOver(events.ledgerHandle()))
 
-    for (const limit of [EXECUTION_PHASES.length, 2]) {
-      expect(listRecoverableIndexed(db, limit)).toEqual(reader().listRecoverable(limit))
-    }
-    expect(listRecoverableIndexed(db, EXECUTION_PHASES.length)).toHaveLength(5)
+    const all = read.listRecoverable(EXECUTION_PHASES.length).map(record => record.phase)
+
+    expect(all).toEqual(['prepared', 'cancel_requested', 'running', 'dispatching', 'recovery_required'])
+    expect(read.listRecoverable(2).map(record => record.phase)).toEqual(all.slice(0, 2))
+  })
+
+  it('skips an unreadable live row instead of failing the whole read', () => {
+    seedRow('live-1', 'running', new Date(T0).toISOString(), 'impl-1')
+    events
+      .ledgerHandle()
+      .prepare(
+        `UPDATE agent_execution SET execution_id = 'broken', record = '{}' WHERE execution_id = 'live-1'`,
+      )
+      .run()
+    seedRow('live-2', 'running', new Date(T0 + 1).toISOString(), 'impl-2')
+
+    const reading = readLedger(events.ledgerHandle())
+
+    expect(reading?.active.map(row => row.executionId)).toEqual(['live-2'])
   })
 })

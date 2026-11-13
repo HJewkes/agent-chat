@@ -1,24 +1,14 @@
-import type { DatabaseSync } from 'node:sqlite'
-import { DEFAULT_EXECUTION_TABLE } from '@titan-design/agent-lifecycle'
-import {
-  EXECUTION_PHASES,
-  isTerminalExecutionPhase,
-  type ExecutionRecord,
-} from '@titan-design/agent-protocol'
+import { SqliteExecutionLedger } from '@titan-design/agent-lifecycle'
+import { logEvent } from '../../broker/log.js'
+import type { LedgerDb } from './db-shim.js'
 
-const LIVE_PHASES = EXECUTION_PHASES.filter(phase => !isTerminalExecutionPhase(phase))
+/** A row recovery skipped goes to the broker log rather than the console nobody reads. */
+export const logSkippedExecution = (line: string): void => {
+  logEvent('ledger_shadow_error', { kind: 'unreadable', op: 'list_recoverable', reason: line })
+}
 
-/**
- * The package's `listRecoverable` with `phase IN` the live phases. Its `phase NOT IN`
- * cannot use the phase index, so it scans every finished execution on each call
- * (CC-1489). Deleted when agent-lifecycle ships the indexed query (TP-3518).
- */
-export function listRecoverableIndexed(db: DatabaseSync, limit: number): ExecutionRecord[] {
-  const rows = db
-    .prepare(
-      `SELECT record FROM "${DEFAULT_EXECUTION_TABLE}" WHERE phase IN (${LIVE_PHASES.map(() => '?').join(',')})
-       ORDER BY prepared_at, execution_id LIMIT ?`,
-    )
-    .all(...LIVE_PHASES, limit) as { record: string }[]
-  return rows.map(row => JSON.parse(row.record) as ExecutionRecord)
+/** The published ledger over the shim, reporting skipped rows to the broker log. */
+export function recoverableReader(db: LedgerDb): SqliteExecutionLedger {
+  // The package types `db` as better-sqlite3's Database; the shim serves only the calls it makes.
+  return new SqliteExecutionLedger(db as never, { warn: logSkippedExecution })
 }

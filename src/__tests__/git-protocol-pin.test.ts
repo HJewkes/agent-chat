@@ -8,7 +8,10 @@ import { childEnv } from '../exec.js'
 import { setupEnv } from '@titan-design/worktree'
 import { withShims } from '../agents/launch-agent.js'
 import type { LaunchPlan } from '../agents/types.js'
-import { pinGitProtocols, runGit } from '../git.js'
+import { pinGitProtocols, pinnedGitEnv, runGit } from '../git.js'
+import { clearInheritedShimEnv } from '../agents/base-path.js'
+import { gitHooksEnv, hooksDirOf } from '../leak-guard/hooks-dir.js'
+import { guardContext } from '../leak-guard/pretool.js'
 
 /**
  * CC-1095 (Shepherd rv-316 FIX_FIRST on ac#316 at 0122216b): an `ext::` remote runs a shell
@@ -16,6 +19,11 @@ import { pinGitProtocols, runGit } from '../git.js'
  */
 
 const SAFE = 'file:git:http:https:ssh'
+const EXT_NEVER = {
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'protocol.ext.allow',
+  GIT_CONFIG_VALUE_0: 'never',
+}
 const dirs: string[] = []
 
 const scratch = (prefix: string): string => {
@@ -48,7 +56,8 @@ afterEach(() => {
 
 describe('pinGitProtocols', () => {
   it.each([
-    [undefined, SAFE],
+    [undefined, undefined],
+    [SAFE, undefined],
     ['ext', ''],
     ['https:ext:ssh', 'https:ssh'],
     ['EXT:https', 'https'],
@@ -95,8 +104,11 @@ describe('the env a spawned agent gets', () => {
     )
   })
 
-  it('gives the safe list when the caller has none', () => {
-    expect(agentEnv({ PATH: '/usr/bin:/bin' }).GIT_ALLOW_PROTOCOL).toBe(SAFE)
+  it('leaves the list unset and denies ext by config when the caller has none', () => {
+    const env = agentEnv({ PATH: '/usr/bin:/bin' })
+
+    expect(env.GIT_ALLOW_PROTOCOL).toBeUndefined()
+    expect(env).toMatchObject(EXT_NEVER)
   })
 
   it.each([['ext'], [undefined]])(
@@ -141,10 +153,65 @@ describe('the env a spawned agent gets', () => {
       expect(withShims(plan({ GIT_ALLOW_PROTOCOL: 'ext:ssh' }), base).env.GIT_ALLOW_PROTOCOL).toBe('ssh')
     })
 
-    it('carries the pinned list when the profile sets none', () => {
+    it('drops a stale legacy list a stored plan carries', () => {
       const base = { PATH: '/usr/bin:/bin' }
 
-      expect(withShims(plan({}), base).env.GIT_ALLOW_PROTOCOL).toBe(SAFE)
+      expect(withShims(plan({ GIT_ALLOW_PROTOCOL: SAFE }), base).env.GIT_ALLOW_PROTOCOL).toBeUndefined()
+    })
+
+    it('re-appends the ext deny after config pairs the profile sets', () => {
+      const base = { PATH: '/usr/bin:/bin', ...EXT_NEVER }
+      const profile = {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'protocol.ext.allow',
+        GIT_CONFIG_VALUE_0: 'always',
+      }
+
+      expect(withShims(plan(profile), base).env).toMatchObject({
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_1: 'protocol.ext.allow',
+        GIT_CONFIG_VALUE_1: 'never',
+      })
+    })
+
+    const launched = (
+      planEnv: Record<string, string>,
+      base: Record<string, string>,
+    ): Record<string, string> => ({
+      ...base,
+      ...withShims(plan(planEnv), base).env,
+    })
+
+    it('keeps the ext deny inside the count when the plan sets fewer pairs than the base', () => {
+      const base = { PATH: '/usr/bin:/bin', ...pinnedGitEnv(gitHooksEnv('/old')) }
+
+      const env = launched(gitHooksEnv('/new'), base)
+
+      expect(env).toMatchObject({
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_VALUE_0: '/new',
+        GIT_CONFIG_KEY_1: 'protocol.ext.allow',
+        GIT_CONFIG_VALUE_1: 'never',
+      })
+    })
+
+    it("lets the guard read and a later broker clear the hooks dir of a launched agent's env", () => {
+      const env = launched(gitHooksEnv('/hooks'), { PATH: '/usr/bin:/bin', HOME: '/h' })
+
+      expect(hooksDirOf(env)).toBe('/hooks')
+      expect(guardContext(env, '/work', '/h').protectedPaths).toContain('/hooks')
+      clearInheritedShimEnv(env)
+      expect(Object.keys(env).filter(name => name.startsWith('GIT_CONFIG_'))).toEqual([])
+    })
+
+    it('starts an unguarded launch with no hooks path after a broker inherited an agent env', () => {
+      const inherited = launched(gitHooksEnv('/hooks'), { PATH: '/usr/bin:/bin', HOME: '/h' })
+      clearInheritedShimEnv(inherited)
+
+      const env = launched({}, pinnedGitEnv(inherited))
+
+      expect(env).toMatchObject(EXT_NEVER)
+      expect(hooksDirOf(env)).toBeUndefined()
     })
   })
 })
@@ -152,11 +219,12 @@ describe('the env a spawned agent gets', () => {
 describe('the burndown tick and worktree setup', () => {
   it('pins the tick subprocess env', () => {
     expect(childEnv({ GIT_ALLOW_PROTOCOL: 'ext' }).GIT_ALLOW_PROTOCOL).toBe('')
-    expect(childEnv({}).GIT_ALLOW_PROTOCOL).toBe(SAFE)
+    expect(childEnv({}).GIT_ALLOW_PROTOCOL).toBeUndefined()
+    expect(childEnv({})).toMatchObject(EXT_NEVER)
   })
 
   it('pins the install env', () => {
     expect(setupEnv({ GIT_ALLOW_PROTOCOL: 'ext' }).GIT_ALLOW_PROTOCOL).toBe('')
-    expect(setupEnv({}).GIT_ALLOW_PROTOCOL).toBe(SAFE)
+    expect(setupEnv({}).GIT_ALLOW_PROTOCOL).toBeUndefined()
   })
 })

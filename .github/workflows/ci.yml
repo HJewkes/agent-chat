@@ -68,7 +68,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || steps.base.outputs.sha }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: npx --yes @titan-design/egress-scan@0.6.7 range "$BASE_SHA" "$HEAD_SHA"
+        run: npx --yes @titan-design/egress-scan@0.7.0 range "$BASE_SHA" "$HEAD_SHA"
 
   # Flags a merge call outside the logged wrappers in .github/merge-lint.json.
   # Warn level: it exits 0 whatever it finds until D-M3-03 sets level error.
