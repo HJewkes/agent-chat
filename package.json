@@ -36,7 +36,7 @@
     "@titan-design/agent-protocol": "^0.10.0",
     "@titan-design/agent-surface": "^0.4.0",
     "@titan-design/anthropic-account": "^0.4.1",
-    "@titan-design/coordinator": "^0.7.1",
+    "@titan-design/coordinator": "^0.7.2",
     "@titan-design/daemon": "^0.9.0",
     "@titan-design/egress-scan": "0.7.0",
     "@titan-design/github": "^0.13.0",
