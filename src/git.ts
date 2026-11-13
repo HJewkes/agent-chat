@@ -1,4 +1,4 @@
-import { observedPresence, type GitRunner } from '@titan-design/worktree'
+import { observedPresence, withPinnedGitProtocols, type GitRunner } from '@titan-design/worktree'
 import type { ObservedPresence } from './protocol.js'
 
 export {
@@ -11,6 +11,18 @@ export {
   observedPresence,
   type GitRunner,
 } from '@titan-design/worktree'
+
+/**
+ * `withPinnedGitProtocols` for an env of strings only: a list git would rank over the caller's own
+ * `protocol.*.allow` is left unset, and `protocol.ext.allow=never` goes last in GIT_CONFIG_COUNT (CC-1607).
+ */
+export function pinnedGitEnv(env: Record<string, string>): Record<string, string> {
+  const pinned: Record<string, string> = {}
+  for (const [name, value] of Object.entries(withPinnedGitProtocols(env))) {
+    if (value !== undefined) pinned[name] = value
+  }
+  return pinned
+}
 
 /**
  * The `observed` half of a registration, spread-ready, so both register paths

@@ -12,7 +12,7 @@ import { gitMirrorDirFor } from '../leak-guard/git-mirror.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
 import { removeGhWriteKey, writeGhWriteKey } from '../gh-shim/write-key.js'
 import { agentDir, distDir, ghShimDir, ghWriteKeysDir, home } from '../paths.js'
-import { pinGitProtocols } from '../git.js'
+import { pinnedGitEnv } from '../git.js'
 import { agentEnv, type AgentEnvOptions } from './agent-env.js'
 import { resolveBasePath } from './base-path.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
@@ -90,10 +90,26 @@ export function agentBaseEnv(
   return { ...agentEnv(parent, options), PATH: resolvePath(parent) }
 }
 
+const GIT_CONFIG_PAIR = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/
+
+/**
+ * The git pin for the env the launcher will build, as entries to put in the plan: a narrowed
+ * caller list, and the config pairs wherever the plan's differ from the base's (CC-1607).
+ */
+function gitPinFor(planEnv: Record<string, string>, base: Record<string, string>): Record<string, string> {
+  const pinned = pinnedGitEnv({ ...base, ...planEnv })
+  const pin: Record<string, string> = {}
+  for (const [name, value] of Object.entries(pinned)) {
+    if (name === 'GIT_ALLOW_PROTOCOL' || (GIT_CONFIG_PAIR.test(name) && value !== base[name]))
+      pin[name] = value
+  }
+  return pin
+}
+
 /**
  * The plan with the shim dirs on its PATH. The launcher layers `plan.env` over the base env,
  * so a PATH the plan sets wins over the base's: the shims go onto whichever PATH will win.
- * GIT_ALLOW_PROTOCOL is pinned the same way, so a profile's env cannot re-enable `ext` (CC-1095),
+ * The git protocol pin is applied the same way, so a profile's env cannot re-enable `ext` (CC-1095),
  * and so is GIT_EXEC_PATH, so a profile cannot move git's helpers off the shim's mirror (TP-4249).
  */
 export function withShims(plan: LaunchPlan, base: Record<string, string> = agentBaseEnv()): LaunchPlan {
@@ -102,13 +118,13 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
     ...plan.env,
   }
   const { PATH } = withGitShim(withGhShim(env))
-  const GIT_ALLOW_PROTOCOL = pinGitProtocols(plan.env.GIT_ALLOW_PROTOCOL ?? base.GIT_ALLOW_PROTOCOL)
+  const { GIT_ALLOW_PROTOCOL: _stale, ...planEnv } = plan.env
   return {
     ...plan,
     env: {
-      ...plan.env,
+      ...planEnv,
       ...(PATH === undefined ? {} : { PATH }),
-      GIT_ALLOW_PROTOCOL,
+      ...gitPinFor(plan.env, base),
       ...gitExecPathFor(plan.env),
     },
   }

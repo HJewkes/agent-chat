@@ -9,11 +9,11 @@ import {
   type ScannerFacts,
 } from '../../leak-guard/hooks-dir.js'
 import { GIT_BIN } from './review-diff.js'
-import { pinGitProtocols } from '../../git.js'
+import { pinnedGitEnv } from '../../git.js'
 
 /**
  * The tick's handle on `titan-egress-scan`, the scanner and private term list the pre-push hook
- * uses (CC-265). It runs with an environment of PATH, HOME, the term list and the pinned GIT_ALLOW_PROTOCOL alone, and requires
+ * uses (CC-265). It runs with an environment of PATH, HOME, the term list and the ext-never git config pair alone, and requires
  * the list, so a missing one is an outcome rather than a scan with generic rules only.
  */
 
@@ -80,13 +80,12 @@ function outcomeOf(run: ReturnType<typeof spawnSync>): EgressOutcome {
 /** Probes the scanner once, so a tick that finds none reports `no-scanner` on every call. */
 export function egressRunner(inputs: EgressInputs = defaultEgressInputs()): EgressRunner {
   const facts = (inputs.probe ?? probeScanner)(inputs.path)
-  const env = {
+  const env = pinnedGitEnv({
     PATH: inputs.path,
     HOME: inputs.home,
     TITAN_EGRESS_TERMS: inputs.termsFile ?? termsFileFor(inputs.home),
     TITAN_EGRESS_REQUIRE_TERMS: '1',
-    GIT_ALLOW_PROTOCOL: pinGitProtocols(undefined),
-  }
+  })
   const scan = (args: string[], cwd?: string, input?: string): EgressOutcome => {
     if (facts === undefined) return { state: 'no-scanner' }
     const run = spawnSync(facts.node, [facts.scanner, ...args], {

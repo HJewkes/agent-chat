@@ -16,6 +16,11 @@ import { pinGitProtocols, runGit } from '../git.js'
  */
 
 const SAFE = 'file:git:http:https:ssh'
+const EXT_NEVER = {
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'protocol.ext.allow',
+  GIT_CONFIG_VALUE_0: 'never',
+}
 const dirs: string[] = []
 
 const scratch = (prefix: string): string => {
@@ -48,7 +53,8 @@ afterEach(() => {
 
 describe('pinGitProtocols', () => {
   it.each([
-    [undefined, SAFE],
+    [undefined, undefined],
+    [SAFE, undefined],
     ['ext', ''],
     ['https:ext:ssh', 'https:ssh'],
     ['EXT:https', 'https'],
@@ -95,8 +101,11 @@ describe('the env a spawned agent gets', () => {
     )
   })
 
-  it('gives the safe list when the caller has none', () => {
-    expect(agentEnv({ PATH: '/usr/bin:/bin' }).GIT_ALLOW_PROTOCOL).toBe(SAFE)
+  it('leaves the list unset and denies ext by config when the caller has none', () => {
+    const env = agentEnv({ PATH: '/usr/bin:/bin' })
+
+    expect(env.GIT_ALLOW_PROTOCOL).toBeUndefined()
+    expect(env).toMatchObject(EXT_NEVER)
   })
 
   it.each([['ext'], [undefined]])(
@@ -141,10 +150,25 @@ describe('the env a spawned agent gets', () => {
       expect(withShims(plan({ GIT_ALLOW_PROTOCOL: 'ext:ssh' }), base).env.GIT_ALLOW_PROTOCOL).toBe('ssh')
     })
 
-    it('carries the pinned list when the profile sets none', () => {
+    it('drops a stale legacy list a stored plan carries', () => {
       const base = { PATH: '/usr/bin:/bin' }
 
-      expect(withShims(plan({}), base).env.GIT_ALLOW_PROTOCOL).toBe(SAFE)
+      expect(withShims(plan({ GIT_ALLOW_PROTOCOL: SAFE }), base).env.GIT_ALLOW_PROTOCOL).toBeUndefined()
+    })
+
+    it('re-appends the ext deny after config pairs the profile sets', () => {
+      const base = { PATH: '/usr/bin:/bin', ...EXT_NEVER }
+      const profile = {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'protocol.ext.allow',
+        GIT_CONFIG_VALUE_0: 'always',
+      }
+
+      expect(withShims(plan(profile), base).env).toMatchObject({
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_1: 'protocol.ext.allow',
+        GIT_CONFIG_VALUE_1: 'never',
+      })
     })
   })
 })
@@ -152,11 +176,12 @@ describe('the env a spawned agent gets', () => {
 describe('the burndown tick and worktree setup', () => {
   it('pins the tick subprocess env', () => {
     expect(childEnv({ GIT_ALLOW_PROTOCOL: 'ext' }).GIT_ALLOW_PROTOCOL).toBe('')
-    expect(childEnv({}).GIT_ALLOW_PROTOCOL).toBe(SAFE)
+    expect(childEnv({}).GIT_ALLOW_PROTOCOL).toBeUndefined()
+    expect(childEnv({})).toMatchObject(EXT_NEVER)
   })
 
   it('pins the install env', () => {
     expect(setupEnv({ GIT_ALLOW_PROTOCOL: 'ext' }).GIT_ALLOW_PROTOCOL).toBe('')
-    expect(setupEnv({}).GIT_ALLOW_PROTOCOL).toBe(SAFE)
+    expect(setupEnv({}).GIT_ALLOW_PROTOCOL).toBeUndefined()
   })
 })
