@@ -41,7 +41,7 @@
     "@titan-design/egress-scan": "0.7.0",
     "@titan-design/github": "^0.12.0",
     "@titan-design/matrix-bus": "^0.2.2",
-    "@titan-design/owner-queue": "^0.6.0",
+    "@titan-design/owner-queue": "^0.8.1",
     "@titan-design/queue-mirror": "^0.4.7",
     "@titan-design/react-ui": "^0.23.1",
     "@titan-design/registry": "^0.6.0",
