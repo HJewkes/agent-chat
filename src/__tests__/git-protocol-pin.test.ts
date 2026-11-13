@@ -8,7 +8,10 @@ import { childEnv } from '../exec.js'
 import { setupEnv } from '@titan-design/worktree'
 import { withShims } from '../agents/launch-agent.js'
 import type { LaunchPlan } from '../agents/types.js'
-import { pinGitProtocols, runGit } from '../git.js'
+import { pinGitProtocols, pinnedGitEnv, runGit } from '../git.js'
+import { clearInheritedShimEnv } from '../agents/base-path.js'
+import { gitHooksEnv, hooksDirOf } from '../leak-guard/hooks-dir.js'
+import { guardContext } from '../leak-guard/pretool.js'
 
 /**
  * CC-1095 (Shepherd rv-316 FIX_FIRST on ac#316 at 0122216b): an `ext::` remote runs a shell
@@ -169,6 +172,46 @@ describe('the env a spawned agent gets', () => {
         GIT_CONFIG_KEY_1: 'protocol.ext.allow',
         GIT_CONFIG_VALUE_1: 'never',
       })
+    })
+
+    const launched = (
+      planEnv: Record<string, string>,
+      base: Record<string, string>,
+    ): Record<string, string> => ({
+      ...base,
+      ...withShims(plan(planEnv), base).env,
+    })
+
+    it('keeps the ext deny inside the count when the plan sets fewer pairs than the base', () => {
+      const base = { PATH: '/usr/bin:/bin', ...pinnedGitEnv(gitHooksEnv('/old')) }
+
+      const env = launched(gitHooksEnv('/new'), base)
+
+      expect(env).toMatchObject({
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_VALUE_0: '/new',
+        GIT_CONFIG_KEY_1: 'protocol.ext.allow',
+        GIT_CONFIG_VALUE_1: 'never',
+      })
+    })
+
+    it("lets the guard read and a later broker clear the hooks dir of a launched agent's env", () => {
+      const env = launched(gitHooksEnv('/hooks'), { PATH: '/usr/bin:/bin', HOME: '/h' })
+
+      expect(hooksDirOf(env)).toBe('/hooks')
+      expect(guardContext(env, '/work', '/h').protectedPaths).toContain('/hooks')
+      clearInheritedShimEnv(env)
+      expect(Object.keys(env).filter(name => name.startsWith('GIT_CONFIG_'))).toEqual([])
+    })
+
+    it('starts an unguarded launch with no hooks path after a broker inherited an agent env', () => {
+      const inherited = launched(gitHooksEnv('/hooks'), { PATH: '/usr/bin:/bin', HOME: '/h' })
+      clearInheritedShimEnv(inherited)
+
+      const env = launched({}, pinnedGitEnv(inherited))
+
+      expect(env).toMatchObject(EXT_NEVER)
+      expect(hooksDirOf(env)).toBeUndefined()
     })
   })
 })

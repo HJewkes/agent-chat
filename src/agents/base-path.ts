@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { gitMirrorDirFor } from '../leak-guard/git-mirror.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
-import { hooksDirOf } from '../leak-guard/hooks-dir.js'
+import { guardConfigCount } from '../leak-guard/hooks-dir.js'
 import { holdsAgentChatShim } from '../leak-guard/shim-header.js'
 
 /**
@@ -87,8 +87,9 @@ export function resolveBasePath(req: BasePathRequest): string {
 
 /**
  * CC-1653: what a broker started from an agent session inherits of that agent's push guard. The
- * shim dir, a GIT_EXEC_PATH at a shim's mirror and the hooks-path pair belong to that one launch;
- * each later launch sets its own.
+ * shim dir, a GIT_EXEC_PATH at a shim's mirror and the hooks-path pair (with the ext-never pair the
+ * pin appends after it) belong to that one launch; each later launch sets its own, and the broker's
+ * own git children are pinned again when they start.
  */
 export function clearInheritedShimEnv(env: NodeJS.ProcessEnv): void {
   const shimDir = env[GIT_SHIM_DIR_ENV]
@@ -96,8 +97,13 @@ export function clearInheritedShimEnv(env: NodeJS.ProcessEnv): void {
   const execPath = env.GIT_EXEC_PATH
   if (execPath !== undefined && (holdsAgentChatShim(execPath) || execPath === mirrorOf(shimDir)))
     delete env.GIT_EXEC_PATH
-  if (hooksDirOf(env as Record<string, string>) === undefined) return
-  for (const key of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) delete env[key]
+  const count = guardConfigCount(env as Record<string, string>)
+  if (count === undefined) return
+  delete env.GIT_CONFIG_COUNT
+  for (let i = 0; i < count; i++) {
+    delete env[`GIT_CONFIG_KEY_${i}`]
+    delete env[`GIT_CONFIG_VALUE_${i}`]
+  }
 }
 
 const mirrorOf = (shimDir: string | undefined): string | undefined =>

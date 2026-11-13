@@ -93,15 +93,15 @@ export function agentBaseEnv(
 const GIT_CONFIG_PAIR = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/
 
 /**
- * The git pin for the env the launcher will build, as entries to put in the plan: a narrowed
- * caller list, and the config pairs wherever the plan's differ from the base's (CC-1607).
+ * The git pin for the env the launcher will build from base and plan, as entries to put in the plan:
+ * a narrowed caller list and every config pair, so the plan's layer never leaves the
+ * `protocol.ext.allow=never` pair past a smaller count (CC-1607).
  */
 function gitPinFor(planEnv: Record<string, string>, base: Record<string, string>): Record<string, string> {
   const pinned = pinnedGitEnv({ ...base, ...planEnv })
   const pin: Record<string, string> = {}
   for (const [name, value] of Object.entries(pinned)) {
-    if (name === 'GIT_ALLOW_PROTOCOL' || (GIT_CONFIG_PAIR.test(name) && value !== base[name]))
-      pin[name] = value
+    if (name === 'GIT_ALLOW_PROTOCOL' || GIT_CONFIG_PAIR.test(name)) pin[name] = value
   }
   return pin
 }

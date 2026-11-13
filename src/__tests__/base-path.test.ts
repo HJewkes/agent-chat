@@ -155,6 +155,36 @@ describe('a broker started from an agent session (CC-1653)', () => {
     expect(env).toEqual({ HOME: '/h' })
   })
 
+  it('clears the hooks-path pair with the ext deny the git pin appends after it', () => {
+    const env: NodeJS.ProcessEnv = {
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: path.join(stateDir, 'git-hooks', 'no-rewrite'),
+      GIT_CONFIG_KEY_1: 'protocol.ext.allow',
+      GIT_CONFIG_VALUE_1: 'never',
+      HOME: '/h',
+    }
+
+    clearInheritedShimEnv(env)
+
+    expect(env).toEqual({ HOME: '/h' })
+  })
+
+  it('keeps a second pair that is not the ext deny', () => {
+    const env: NodeJS.ProcessEnv = {
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/owner/hooks',
+      GIT_CONFIG_KEY_1: 'user.name',
+      GIT_CONFIG_VALUE_1: 'me',
+    }
+    const before = { ...env }
+
+    clearInheritedShimEnv(env)
+
+    expect(env).toEqual(before)
+  })
+
   it("keeps an owner's own GIT_EXEC_PATH and GIT_CONFIG pair", () => {
     const env: NodeJS.ProcessEnv = {
       GIT_EXEC_PATH: '/usr/lib/git-core',
