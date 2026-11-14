@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { PROFILE_ACCOUNTS } from './account-move.js'
 import { groupByAccount, type AccountRow, type AccountUsage } from './account-budget.js'
 import { leastUsedText, pickLeastUsed, type LeastUsedPick, type RotationConfig } from './account-rotation.js'
 import { accountName, defaultConfigDir, profileDir } from './config-dir.js'
@@ -73,4 +74,11 @@ export function chooseAccount(
 export function remoteAccountDir(account: string, home: string): string {
   if (path.isAbsolute(account)) return account
   return account === 'default' ? defaultConfigDir(home) : profileDir(account, {}, home)
+}
+
+/** The name `account_move` knows a config dir by: `claude` for the default one. */
+export function moveNameOf(dir: string, home: string = os.homedir()): string {
+  if (path.resolve(dir) === defaultConfigDir(home)) return 'claude'
+  const base = path.basename(dir)
+  return (PROFILE_ACCOUNTS as readonly string[]).includes(base) ? base : path.resolve(dir)
 }

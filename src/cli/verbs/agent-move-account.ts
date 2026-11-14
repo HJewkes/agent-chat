@@ -1,5 +1,4 @@
 import os from 'node:os'
-import path from 'node:path'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import type { ServerMessage } from '../../protocol.js'
@@ -7,9 +6,7 @@ import { selfSession } from '../../agents/move-account-self.js'
 import type { BrokerClient } from '../../client/broker-client.js'
 import { accountDirs, readAccountUsage } from '../../agents/account-budget.js'
 import { accountIdentity } from '../../agents/account-identity.js'
-import { PROFILE_ACCOUNTS } from '../../agents/account-move.js'
-import { chooseAccount, LEAST_USED } from '../../agents/account-request.js'
-import { defaultConfigDir } from '../../agents/config-dir.js'
+import { chooseAccount, LEAST_USED, moveNameOf } from '../../agents/account-request.js'
 import { resolveAccountRotation } from '../../config.js'
 import { defineVerb, Report, type AccountPool } from '../command.js'
 
@@ -37,13 +34,6 @@ const machinePool = (): AccountPool => ({
   config: resolveAccountRotation,
   identify: dir => accountIdentity(dir),
 })
-
-/** The name `account_move` knows the picked config dir by: `claude` for the default one. */
-function moveNameOf(dir: string): string {
-  if (path.resolve(dir) === defaultConfigDir()) return 'claude'
-  const base = path.basename(dir)
-  return (PROFILE_ACCOUNTS as readonly string[]).includes(base) ? base : path.resolve(dir)
-}
 
 /** `least-used` becomes the pool's pick, by the same `chooseAccount` a spawn uses; any other account stands. */
 function resolveAccount(account: string, pool: AccountPool): { account: string } | { error: string } {

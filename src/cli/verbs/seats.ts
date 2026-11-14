@@ -111,6 +111,8 @@ import { claimsPort, eventsVerdictsPort, shepherdPort } from '../../agents/seats
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
+import { runGuard } from '../../agents/account-guard-pass.js'
+import { liveGuardDeps } from './accounts-guard.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
 import {
   notifyAsWatchdog,
@@ -353,8 +355,20 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
   }
 }
 
+/** CC-894: the account guard runs after the seats pass; its failure costs its own lines, never the pass. */
+async function guardPass(root: string, client: BrokerClient, dryRun: boolean): Promise<string[]> {
+  try {
+    return await runGuard(liveGuardDeps(root, client), { dryRun })
+  } catch (err) {
+    return [`guard: failed: ${(err as Error).message}`]
+  }
+}
+
 async function liveRun(root: string, options: WatchdogOptions): Promise<Report> {
-  const lines = await withRunningBroker(client => runWatchdog(liveDeps(root, client), options))
+  const lines = await withRunningBroker(async client => [
+    ...(await runWatchdog(liveDeps(root, client), options)),
+    ...(options.seats === undefined ? await guardPass(root, client, options.dryRun) : []),
+  ])
   return { ok: true, lines }
 }
 
