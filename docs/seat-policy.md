@@ -66,6 +66,28 @@ the seat's next spawn request with no broker restart. A ceiling profile whose fi
 broker start (CC-1094 drift) is refused whatever `profileDrift` says, because the ceiling trusts the
 profile by name. A profile outside the ceiling is refused with a reason naming the policy file.
 
+## One holder per seat (`seatSingleInstance.mode`)
+
+The name lease counts only identities the broker launched, so on its own it lets a broker spawn take
+a seat's name from a hand-started holder whose socket is not up (after a broker restart, say), and
+lets a hand-started session register a seat's name while the launched holder is detached. The
+single-instance guard (`src/agents/seats/single-instance.ts`) closes both for names listed in this
+file. Set it in `~/.agent-chat/config.json`, read per spawn and per registration:
+
+```json
+{ "seatSingleInstance": { "mode": "shadow" } }
+```
+
+- `off` (the default, and the fallback for an invalid value, logged as `config_invalid`): no check.
+- `shadow`: logs `seat_single_instance_would_refuse {name, holder, request}` and admits.
+- `enforce`: refuses with `seat name held by <agentId>`.
+
+A holder is any non-retired identity under the name that the lease counts, plus an adopted one that
+is attached (`live` in the log, or bound to the name's current connection). The identity itself
+re-registering is admitted, as is a teleport successor (its broker-derived `teleport_from`). A name
+not listed in this file is never checked. An adopted identity left `live` by a broker that died
+without writing its detach counts as a holder until it detaches or is retired.
+
 ## What the tools show
 
 - `agent_list` marks a row `root seat (seat-policy.json)` when its name is listed, its profile is in
