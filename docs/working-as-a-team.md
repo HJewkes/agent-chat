@@ -310,6 +310,12 @@ Monitor(
 - `--once` runs one poll against a state file (`--state`, or a default under `$AGENT_CHAT_HOME`) and
   exits. Use it from a script or to try a watch set.
 
+**Check the Monitor lifetime your harness gives you.** The recipe above assumes a Monitor that
+accepts `persistent: true`. Some Claude Code builds have no `persistent` flag and kill every Monitor
+at `timeout_ms` (at most 10 to 60 minutes), with one expiry notice. That notice is itself a wake.
+On such a build, set `timeout_ms` to its maximum and re-arm on each expiry. Keep `--state` on a
+fixed file, so a re-armed gate compares against the last poll and does not re-seed.
+
 **Successors must re-arm it.** Like a CronCreate job, a Monitor dies with the session that armed it.
 After a teleport or a respawn, the new session runs the same `Monitor(...)` call again. Put the
 exact command in your handoff. Whether a `persistent: true` Monitor survives `/compact` is
