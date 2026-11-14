@@ -174,6 +174,26 @@ describe('the related section when the daemon cannot help', () => {
 })
 
 describe('the related section when the daemon answers', () => {
+  it('sends the client header the daemon guard requires on state-changing requests', async () => {
+    const guarded = async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      if (!headers.get('origin') && !headers.get('x-titan-client')) {
+        return json(403, {
+          ok: false,
+          error: 'State-changing request needs an Origin header or an X-Titan-Client header',
+        })
+      }
+      return json(200, hits({ initiative: 'widgets', name: 'a.md' }))
+    }
+
+    const result = await resolveSpawnBriefing({ briefing: 'widgets', brief: 'fix it', root, fetch: guarded })
+
+    expect(result).toMatchObject({
+      text: expect.stringContaining('## Related to this assignment (1, ranked; open with Read)'),
+    })
+    expect(result).not.toHaveProperty('warning')
+  })
+
   it('ranks hits under the brief, with absolute paths and foreign initiatives labelled', async () => {
     const requests: Array<{ url: string; body: unknown }> = []
     const answer = async (url: string | URL | Request, init?: RequestInit) => {

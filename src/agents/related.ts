@@ -126,7 +126,7 @@ async function postRelated(q: RelatedQuery, query: string, signal: AbortSignal):
   const fetchImpl = q.fetch ?? fetch
   const res = await fetchImpl(`http://127.0.0.1:${q.port ?? activeWorkPort()}/rpc/context.related`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-titan-client': 'agent-chat-briefing' },
     body: JSON.stringify({
       for: query,
       initiative: q.initiative,
