@@ -53,6 +53,7 @@ import {
 import { successorProvenance } from './spawn-provenance.js'
 import type { AccountTarget } from './account-move.js'
 import { childConfigDir } from './config-dir.js'
+import { machineLeastUsedDir, successorAccount, type SuccessorAccount } from './least-used-seat.js'
 import {
   ACCOUNT_MOVE_PREAMBLE,
   accountLabel,
@@ -527,6 +528,8 @@ interface Pending {
   account?: PendingMove
   /** CC-1646: the launcher's landing dir, when the predecessor's cwd is missing on its machine. */
   landedCwd?: string
+  /** CC-894: a `least-used` seat's successor starts on this account rather than its predecessor's. */
+  leastUsed?: SuccessorAccount
 }
 
 interface ProbePaths {
@@ -607,6 +610,8 @@ const TELEPORT_SHEPHERD_MS = 5_000
 export interface SeatHandoffDeps extends SeatTeleportDeps {
   /** TP-1600 e: where a seat successor's state section is read from; unset reads the broker's own. */
   stateSources?: (seat: string, shepherd: SeatTeleportDeps['shepherd']) => SeatStateSources
+  /** CC-894: the least-used account a declaring seat's successor starts on; unset reads this machine's. */
+  leastUsedDir?: (preferDir: string | undefined) => string | undefined
 }
 
 export const defaultSeatTeleportDeps = (): SeatHandoffDeps => ({
@@ -689,6 +694,10 @@ export class Teleport {
     if (move !== undefined && 'reason' in move) return refused(subject, 'account', move.reason)
 
     const remote = onAnotherHost(subject)
+    const leastUsed =
+      move === undefined && !remote && route.site !== 'launcher'
+        ? this.leastUsedSuccessor(subject.name, configDir)
+        : undefined
     const config = teleportConfig({
       identity,
       subject,
@@ -700,7 +709,10 @@ export class Teleport {
       loadProfile: name => this.host.loadProfile(name, req.account?.by ?? subject.name),
     })
     if ('error' in config) return refused(subject, 'config', config.error)
-    const placed = await this.blockerAt(route, config.surface, { cwd: route.cwd ?? subject.cwd, configDir })
+    const placed = await this.blockerAt(route, config.surface, {
+      cwd: route.cwd ?? subject.cwd,
+      configDir: leastUsed?.dir ?? configDir,
+    })
     if ('reason' in placed) return this.cannotComplete(subject, placed.reason)
     const landed = placed.cwd === subject.cwd ? undefined : placed.cwd
     const gone = route.site === 'launcher' ? this.goneDuringCheck(subject) : undefined
@@ -760,6 +772,7 @@ export class Teleport {
       ...(req.reason === undefined ? {} : { reason: req.reason }),
       ...(move === undefined ? {} : { account: move }),
       ...(landed === undefined ? {} : { landedCwd: landed }),
+      ...(leastUsed === undefined ? {} : { leastUsed }),
     }
     this.pending.set(subject.agentId, entry)
     if (landed !== undefined)
@@ -1587,10 +1600,8 @@ export class Teleport {
     const { subject } = entry
     const previous = this.core.agents.spawnMeta(subject.agentId)
     const generation = Number.parseInt(previous.generation ?? '1', 10)
-    const { configDir, unset } =
-      resume === undefined
-        ? this.configDirOf(subject)
-        : { configDir: childConfigDir(resume.target), unset: resume.target.unset === true }
+    const { configDir, unset } = this.successorDir(entry, resume)
+    const accountFrom = resume?.movedFrom?.dir ?? entry.leastUsed?.from
     // CC-951: a remote predecessor's pane is on its own host, so a successor launched here opens fresh.
     const anchor = landsBesidePredecessor(entry) ? subject.anchor : undefined
     const subscriptions = carriedSubscriptions(subject.subscriptions)
@@ -1616,7 +1627,8 @@ export class Teleport {
         generation: String((Number.isFinite(generation) ? generation : 1) + 1),
         // CC-915: the session-origin reader sees only this row, and the successor keeps the tree and task.
         ...successorProvenance(this.core.agents.get(subject.agentId)),
-        ...(resume?.movedFrom === undefined ? {} : { account_from: resume.movedFrom.dir }),
+        // CC-892 d: `account_from` makes the seat file follow the successor's account.
+        ...(accountFrom === undefined ? {} : { account_from: accountFrom }),
       },
       ...(resume === undefined ? {} : { resumeSession: resume.sessionId }),
       ...(configDir ? { configDir } : {}),
@@ -1631,6 +1643,20 @@ export class Teleport {
       ...(entry.inherited === undefined ? {} : { inherited: entry.inherited }),
       ...(entry.inherited === undefined ? {} : { inheritedFrom: subject.agentId }),
     }
+  }
+
+  /** An account move resumes on its target, a `least-used` seat on its pick, every other successor where it was. */
+  private successorDir(entry: Pending, resume?: ResumeOn): { configDir: string | undefined; unset: boolean } {
+    if (resume !== undefined)
+      return { configDir: childConfigDir(resume.target), unset: resume.target.unset === true }
+    if (entry.leastUsed !== undefined) return { configDir: entry.leastUsed.dir, unset: false }
+    return this.configDirOf(entry.subject)
+  }
+
+  /** CC-894: read at teleport time, so the successor starts wherever usage is lowest then. */
+  private leastUsedSuccessor(name: string, configDir: string | undefined): SuccessorAccount | undefined {
+    const seatFile = readSeatFile(this.seatTeleport.autonomyRoot, name)
+    return successorAccount(seatFile, configDir, this.seatTeleport.leastUsedDir ?? machineLeastUsedDir)
   }
 
   /**

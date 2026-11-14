@@ -1,4 +1,3 @@
-import { frontmatterField } from './active-work.js'
 import type { AccountUsage } from './account-budget.js'
 import {
   guardDecision,
@@ -7,9 +6,10 @@ import {
   type GuardSeat,
   type GuardState,
 } from './account-guard.js'
-import { LEAST_USED, moveNameOf } from './account-request.js'
+import { moveNameOf } from './account-request.js'
 import type { RotationConfig } from './account-rotation.js'
 import { accountName, defaultConfigDir } from './config-dir.js'
+import { declaresLeastUsed } from './least-used-seat.js'
 import type { SessionInfo } from '../protocol.js'
 
 /** CC-894: one guard tick over every charter seat: read, decide, then move or notify unless dry. */
@@ -33,9 +33,6 @@ export interface GuardDeps {
   notify(text: string): Promise<GuardOutcome>
   now(): number
 }
-
-export const declaresLeastUsed = (seatFile: string): boolean =>
-  frontmatterField(seatFile, 'account') === LEAST_USED
 
 function guardSeats(deps: GuardDeps, roster: SessionInfo[]): GuardSeat[] {
   return deps.seats().map(({ name, seatFile }) => {
