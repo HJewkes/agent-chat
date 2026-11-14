@@ -2250,6 +2250,8 @@ export class Supervisor implements TeleportHost {
     const holder = this.core.agents.nameHolder(req.name)
     if (holder !== undefined)
       return `the name "${req.name}" is held by ${describeHolder(holder)}; retire it or choose another`
+    const seatHeld = this.core.seatSingleInstanceRefusal(req.name, 'spawn')
+    if (seatHeld !== undefined) return seatHeld
     if (this.core.registry.connFor(req.name) !== undefined)
       return `a session is already registered as "${req.name}"`
     if (req.requestedBy !== HUMAN && requester.role === 'worker')

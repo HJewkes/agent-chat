@@ -29,6 +29,7 @@ import { ALIAS_NAME } from './leak-guard/git-alias.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 import { SEAT_SPAWN_MODES, type SeatSpawnMode } from './agents/seats/spawn-gate.js'
+import { SEAT_SINGLE_INSTANCE_MODES, type SeatSingleInstanceMode } from './agents/seats/single-instance.js'
 import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
 import { roleOfProfile } from './agents/seats/agent-rows.js'
 import { PACE_CONTROLLER_MODES, type PaceControllerMode } from './agents/seats/pace.js'
@@ -60,6 +61,8 @@ export interface AgentChatConfig {
   poolPick?: unknown
   paceController?: unknown
   seatSpawnGate?: unknown
+  /** TP-5768: `{ "mode": "off" | "shadow" | "enforce" }`; one holder per policy seat. */
+  seatSingleInstance?: unknown
   seatStewards?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
@@ -335,6 +338,21 @@ export function resolveSeatSpawnMode(): SeatSpawnMode {
   const mode = SEAT_SPAWN_MODES.find(known => known === value)
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'seatSpawnGate', value, fallback: 'off' })
+  return 'off'
+}
+
+/**
+ * TP-5768: whether a second holder of a policy seat's name is ignored (`off`, the default), logged as
+ * `seat_single_instance_would_refuse` (`shadow`), or refused (`enforce`). From `config.json`'s
+ * `seatSingleInstance.mode`, read per spawn and per registration.
+ */
+export function resolveSeatSingleInstanceMode(): SeatSingleInstanceMode {
+  const value = readConfig().seatSingleInstance
+  if (value === undefined) return 'off'
+  const raw = typeof value === 'object' && value !== null ? (value as { mode?: unknown }).mode : undefined
+  const mode = SEAT_SINGLE_INSTANCE_MODES.find(known => known === raw)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'seatSingleInstance', value, fallback: 'off' })
   return 'off'
 }
 
