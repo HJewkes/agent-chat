@@ -72,7 +72,11 @@ const spawnSeat = (name = SEAT): Promise<SpawnOutcome> =>
     spawnerConfigDir: tmp('ssi-account-'),
   })
 
-const frame = (name: string, sessionId: string, agentId?: string): Extract<ClientMessage, { t: 'register' }> => ({
+const frame = (
+  name: string,
+  sessionId: string,
+  agentId?: string,
+): Extract<ClientMessage, { t: 'register' }> => ({
   t: 'register',
   name,
   workingOn: 'holding the seat',
@@ -153,7 +157,7 @@ function mintUnderSeat(agentId: string, from?: string): void {
   })
 }
 
-const wouldRefuseRows = (spy: ReturnType<typeof vi.spyOn>) =>
+const wouldRefuseRows = (spy: { mock: { calls: unknown[][] } }): unknown[] =>
   spy.mock.calls.filter(([kind]) => kind === 'seat_single_instance_would_refuse').map(([, detail]) => detail)
 
 describe('R11 gaps, pinned as today under mode off', () => {
@@ -284,10 +288,12 @@ describe('singleInstanceVerdict', () => {
   })
 
   it('admits the holder itself, a teleport hand-over, and a name that is no policy seat', () => {
-    expect(singleInstanceVerdict({ ...base, request: 'register-agentId', self: 'held-1' }).verdict).toBe('admit')
-    expect(singleInstanceVerdict({ ...base, request: 'register-agentId', teleportFrom: 'held-1' }).verdict).toBe(
+    expect(singleInstanceVerdict({ ...base, request: 'register-agentId', self: 'held-1' }).verdict).toBe(
       'admit',
     )
+    expect(
+      singleInstanceVerdict({ ...base, request: 'register-agentId', teleportFrom: 'held-1' }).verdict,
+    ).toBe('admit')
     expect(singleInstanceVerdict({ ...base, isPolicySeat: false }).verdict).toBe('admit')
   })
 })

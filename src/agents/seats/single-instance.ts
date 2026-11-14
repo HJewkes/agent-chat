@@ -26,8 +26,7 @@ export interface SingleInstanceInput {
 }
 
 export type SingleInstanceVerdict =
-  | { verdict: 'admit' }
-  | { verdict: 'refuse'; reason: string; holder: string }
+  { verdict: 'admit' } | { verdict: 'refuse'; reason: string; holder: string }
 
 export function singleInstanceVerdict(input: SingleInstanceInput): SingleInstanceVerdict {
   if (!input.isPolicySeat || input.teleportFrom !== undefined) return { verdict: 'admit' }

@@ -303,7 +303,11 @@ export class BrokerCore<C = Conn> {
   /** TP-5768: a registration under a policy seat's name while another identity holds it. */
   private registerSeatRefusal(msg: RegisterMessage): string | undefined {
     if (msg.agentId === undefined)
-      return this.seatSingleInstanceRefusal(msg.name, 'register-adopted', this.agents.bySession(msg.sessionId ?? '')?.agentId)
+      return this.seatSingleInstanceRefusal(
+        msg.name,
+        'register-adopted',
+        this.agents.bySession(msg.sessionId ?? '')?.agentId,
+      )
     const teleportFrom = this.agents.get(msg.agentId)?.teleportFrom
     return this.seatSingleInstanceRefusal(msg.name, 'register-agentId', msg.agentId, teleportFrom)
   }
