@@ -63,18 +63,12 @@ describe('held-relay reads', () => {
   let dir: string
   let db: string
 
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'held-relay-read-'))
-    db = path.join(dir, 'events.db')
+  const seed = (rows: readonly Seed[]): void => {
     const sqlite = new DatabaseSync(db)
-    sqlite.exec(
-      'CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, actor TEXT, ' +
-        'target TEXT, msg_id TEXT, ref TEXT, body TEXT, meta TEXT)',
-    )
     const insert = sqlite.prepare(
       'INSERT INTO events (ts, kind, actor, target, msg_id, ref, body, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    for (const s of story)
+    for (const s of rows)
       insert.run(
         s.ts,
         s.kind,
@@ -86,6 +80,18 @@ describe('held-relay reads', () => {
         JSON.stringify(s.meta ?? {}),
       )
     sqlite.close()
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'held-relay-read-'))
+    db = path.join(dir, 'events.db')
+    const sqlite = new DatabaseSync(db)
+    sqlite.exec(
+      'CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, actor TEXT, ' +
+        'target TEXT, msg_id TEXT, ref TEXT, body TEXT, meta TEXT)',
+    )
+    sqlite.close()
+    seed(story)
   })
 
   afterEach(() => {
@@ -116,6 +122,24 @@ describe('held-relay reads', () => {
         hold: 'parked',
       },
     ])
+  })
+
+  it('clears a message an inbox_read receipt names, but not on a receipt naming only another message', () => {
+    const receipt = (msgIds: string): Seed => ({
+      ts: at(20),
+      kind: 'inbox_read',
+      actor: 'seat-park',
+      meta: { msgIds },
+    })
+    seed([receipt('other-1,other-2')])
+    const { holds } = readHolds(db, [], at(30))
+    const unnamed = readHeldCandidates(db, holds, 15 * MIN, at(30))
+
+    seed([receipt('other-3,m1')])
+    const named = readHeldCandidates(db, holds, 15 * MIN, at(30))
+
+    expect(unnamed.map(i => i.msgId)).toEqual(['m1'])
+    expect(named).toEqual([])
   })
 
   it('leaves a message younger than the threshold out', () => {

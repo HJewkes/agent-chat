@@ -12,10 +12,14 @@ import {
 import { readHeldCandidates, readHolds } from '../../agents/seats/held-relay-read.js'
 import type { WakeResult } from '../../agents/seats/run.js'
 import { logEvent } from '../../broker/log.js'
-import { resolveHeldRelay } from '../../config.js'
+import { resolveAutoStart, resolveHeldRelay } from '../../config.js'
 import { home } from '../../paths.js'
 import { defineVerb, Report } from '../command.js'
 import { notifyAsWatchdog, sendAsOwner, withRunningBroker } from './seat-broker.js'
+
+/** The relay reads the broker's events.db, so on a `remoteBroker` host it reads a stale copy. */
+const REMOTE_WARNING =
+  "warning: config remoteBroker is true; this events.db is not the broker host's, so the pass reads stale mail"
 
 const WAKE_TEXT = 'Held-message relay: peer mail has waited past the threshold; read your inbox.'
 
@@ -132,7 +136,8 @@ export const seatsHeldRelayVerb = defineVerb({
     if (Number.isNaN(nowMs)) return { ok: false, lines: [], errors: [`--now is not an ISO instant: ${now}`] }
     const ports = livePorts(db ?? path.join(home(), 'events.db'), resolveHeldRelay())
     try {
-      return await runHeldRelay(ports, { dryRun: dryRun === true, nowMs })
+      const report = await runHeldRelay(ports, { dryRun: dryRun === true, nowMs })
+      return resolveAutoStart({}) ? report : { ...report, lines: [REMOTE_WARNING, ...report.lines] }
     } catch (err) {
       return { ok: false, lines: [], errors: [err instanceof Error ? err.message : String(err)] }
     }

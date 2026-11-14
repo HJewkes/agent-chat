@@ -1,7 +1,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
-import { resolveHeldRelay } from '../../config.js'
+import { resolveAutoStart, resolveHeldRelay } from '../../config.js'
 import {
   describeLaunchd,
   launchdControl,
@@ -28,7 +28,12 @@ import { defineVerb, Report } from '../command.js'
 export interface HeldRelayTarget {
   agentChatHome?: string | undefined
   everyMinutes: number
+  /** Config `remoteBroker`: this host's events.db is not the broker's, so the relay would read stale mail. */
+  remoteBroker?: boolean
 }
+
+export const REMOTE_BROKER_REFUSAL =
+  'refused: config remoteBroker is true, so this host is not the broker host; install the relay where the broker runs'
 
 const defaultHome = (): string => path.join(os.homedir(), '.agent-chat')
 
@@ -70,6 +75,7 @@ function vettedHome(target: HeldRelayTarget, dryRun: boolean): string | undefine
 
 /** A scratch or worktree home vanishes under the job, so one is refused before anything renders. */
 function refusal(target: HeldRelayTarget, dryRun: boolean): Report | null {
+  if (target.remoteBroker === true) return { ok: false, lines: [], errors: [REMOTE_BROKER_REFUSAL] }
   if (target.agentChatHome === '')
     return { ok: false, lines: [], errors: ['refused: --agent-chat-home is empty'] }
   const home = vettedHome(target, dryRun)
@@ -116,13 +122,15 @@ const HOME_FLAG = {
 const target = (agentChatHome: string | undefined): HeldRelayTarget => ({
   agentChatHome,
   everyMinutes: resolveHeldRelay().everyMinutes,
+  remoteBroker: !resolveAutoStart({}),
 })
 
 export const seatsHeldRelayInstallVerb = defineVerb({
   name: 'seats.held-relay-install',
   description:
     'install the launchd job (systemd --user units on Linux) that runs `seats held-relay` every ' +
-    'heldRelay.everyMinutes; the pass stays a no-op until heldRelay.enabled',
+    'heldRelay.everyMinutes on the broker host (refused where config remoteBroker is true); the pass ' +
+    'stays a no-op until heldRelay.enabled',
   args: z.object({ dryRun: z.boolean().optional(), agentChatHome: z.string().optional() }),
   result: Report,
   cli: {

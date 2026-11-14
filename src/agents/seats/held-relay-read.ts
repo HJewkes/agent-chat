@@ -28,8 +28,8 @@ const AGENT_KINDS: readonly EventKind[] = [
   'isolation_parked',
 ]
 
-/** The recipient's own rows that show it took a turn or read its inbox. */
-const TURN_KINDS = "'message', 'broadcast', 'seat_activity', 'inbox_read'"
+/** The recipient's own rows that show it took a turn; an `inbox_read` receipt clears only the messages it names. */
+const TURN_KINDS = "'message', 'broadcast', 'seat_activity'"
 /** At most this many waiting messages per recipient, newest kept. */
 const ITEM_LIMIT = 50
 
@@ -124,22 +124,37 @@ interface MessageRow {
   body: string | null
 }
 
+/** The msg ids `name`'s CC-1680 `inbox_read` receipts after row `afterId` and before `untilMs` name. */
+function readReceipts(db: DatabaseSync, name: string, afterId: number, untilMs: number): Set<string> {
+  const rows = db
+    .prepare("SELECT meta FROM events WHERE actor = ? AND kind = 'inbox_read' AND id > ? AND ts < ?")
+    .all(name, afterId, untilMs) as unknown as { meta: string | null }[]
+  const ids = rows.flatMap(row => {
+    const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, unknown>
+    return typeof meta.msgIds === 'string' ? meta.msgIds.split(',') : []
+  })
+  return new Set(ids)
+}
+
 function waitingFor(db: DatabaseSync, name: string, cutoffMs: number, untilMs: number): MessageRow[] {
   const turn = db
     .prepare(`SELECT MAX(id) AS id FROM events WHERE actor = ? AND kind IN (${TURN_KINDS}) AND ts < ?`)
     .get(name, untilMs) as { id: number | null }
+  const afterId = turn.id ?? 0
   const rows = db
     .prepare(
       "SELECT actor, msg_id, ts, body FROM events WHERE target = ? AND kind IN ('message', 'broadcast') " +
         'AND actor <> ? AND id > ? AND ts <= ? ORDER BY id DESC LIMIT ?',
     )
-    .all(name, HUMAN, turn.id ?? 0, cutoffMs, ITEM_LIMIT) as unknown as MessageRow[]
-  return rows.reverse()
+    .all(name, HUMAN, afterId, cutoffMs, ITEM_LIMIT) as unknown as MessageRow[]
+  const read = readReceipts(db, name, afterId, untilMs)
+  return rows.reverse().filter(row => row.msg_id === null || !read.has(row.msg_id))
 }
 
 /**
- * Per recipient, the peer messages that arrived after its own last turn row and are at least
- * `olderThanMs` old at `untilMs`, oldest first. A message from the human is left out: it unparks.
+ * Per recipient, the peer messages that arrived after its own last turn row, that no `inbox_read`
+ * receipt of its names, and that are at least `olderThanMs` old at `untilMs`, oldest first. A
+ * message from the human is left out: it unparks.
  */
 export function readHeldCandidates(
   dbPath: string,

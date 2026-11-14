@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { heldRelayInstallOn } from '../cli/verbs/held-relay-job.js'
+import { REMOTE_BROKER_REFUSAL, heldRelayInstallOn } from '../cli/verbs/held-relay-job.js'
 import type { JobHost } from '../mirror/job-host.js'
 import type { Launchctl } from '../mirror/launchd.js'
 import type { Systemctl } from '../mirror/systemd.js'
@@ -79,5 +79,14 @@ describe('held-relay job install', () => {
     expect(report.ok).toBe(false)
     expect(report.lines).toEqual([])
     expect(report.errors?.[0]).toContain('temp dir')
+  })
+
+  it('refuses on a remoteBroker host, before rendering or calling anything', () => {
+    const { host: mac, calls } = host('darwin')
+
+    const report = heldRelayInstallOn(mac, { everyMinutes: 10, remoteBroker: true })
+
+    expect(report).toEqual({ ok: false, lines: [], errors: [REMOTE_BROKER_REFUSAL] })
+    expect(calls).toEqual([])
   })
 })

@@ -765,7 +765,8 @@ Commands:
                                   one human-queue notice per message and deduped across passes. A
                                   no-op until heldRelay.enabled
   held-relay-install [options]    install the launchd job (systemd --user units on Linux) that runs
-                                  `seats held-relay` every heldRelay.everyMinutes; the pass stays a
+                                  `seats held-relay` every heldRelay.everyMinutes on the broker host
+                                  (refused where config remoteBroker is true); the pass stays a
                                   no-op until heldRelay.enabled
   held-relay-uninstall [options]  stop the held-relay job and keep it from starting at login; on
                                   Linux, also remove its units
@@ -999,7 +1000,8 @@ Options:
 Usage: agent-chat seats held-relay-install [options]
 
 install the launchd job (systemd --user units on Linux) that runs `seats held-relay` every
-heldRelay.everyMinutes; the pass stays a no-op until heldRelay.enabled
+heldRelay.everyMinutes on the broker host (refused where config remoteBroker is true); the pass
+stays a no-op until heldRelay.enabled
 
 Options:
   --dry-run                  print the plist and launchctl calls (units and systemctl calls on
