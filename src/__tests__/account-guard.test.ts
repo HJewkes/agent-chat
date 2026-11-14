@@ -11,7 +11,9 @@ import {
 } from '../agents/account-guard.js'
 import { runGuard, type GuardDeps } from '../agents/account-guard-pass.js'
 import { DEFAULT_ROTATION } from '../agents/account-rotation.js'
-import type { SessionInfo } from '../protocol.js'
+import type { ClientMessage, SessionInfo } from '../protocol.js'
+import type { BrokerClient } from '../client/broker-client.js'
+import { liveGuardDeps } from '../cli/verbs/accounts-guard.js'
 
 /** CC-894: the account guard over fake readings and a fake clock; nothing reads a real login. */
 
@@ -180,6 +182,7 @@ const rosterRow = (name: string, configDir: string, idleMs: number): SessionInfo
 function fakeDeps(idleMs: number) {
   const moves: { name: string; to: string }[] = []
   const saved: GuardState[] = []
+  const logged: { seat: string; text: string }[] = []
   const deps: GuardDeps = {
     seats: () => [
       { name: 'coord-a', seatFile: LEAST_USED_SEAT },
@@ -198,9 +201,10 @@ function fakeDeps(idleMs: number) {
       return { ok: true, detail: `moving to ${to}` }
     },
     notify: async () => ({ ok: true, detail: 'notice' }),
+    seatLog: (seat, text) => logged.push({ seat, text }),
     now: () => NOW,
   }
-  return { deps, moves, saved }
+  return { deps, moves, saved, logged }
 }
 
 describe('one guard tick', () => {
@@ -232,5 +236,34 @@ describe('one guard tick', () => {
     await runGuard(deps, { dryRun: false })
 
     expect(moves).toEqual([])
+  })
+})
+
+describe('the guard’s own record of a move', () => {
+  // Mutation: skipping the seat log leaves the seat's journal with no record of who moved it.
+  it('logs the move in the seat’s journal as by account-guard', async () => {
+    const { deps, logged } = fakeDeps(30 * MIN)
+
+    await runGuard(deps, { dryRun: false })
+
+    expect(logged).toEqual([
+      { seat: 'coord-a', text: expect.stringMatching(/^account-guard moved this seat alpha -> beta: /) },
+    ])
+  })
+
+  // Mutation: dropping `source` from the frame records the guard's move as the human's.
+  it('marks its account_move frame with source guard', async () => {
+    const sent: ClientMessage[] = []
+    const client = {
+      request: async (msg: ClientMessage) => {
+        sent.push(msg)
+        return { t: 'teleport_result', ok: true }
+      },
+    } as unknown as BrokerClient
+    const pool = { readings: () => [], config: () => DEFAULT_ROTATION }
+
+    await liveGuardDeps('/synthetic/autonomy', client, pool).move('coord-a', 'beta')
+
+    expect(sent).toEqual([{ t: 'account_move', name: 'coord-a', to: 'beta', source: 'guard' }])
   })
 })

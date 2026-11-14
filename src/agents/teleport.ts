@@ -726,7 +726,7 @@ export class Teleport {
         successor: descendantId,
         ...(req.reason === undefined ? {} : { reason: req.reason }),
         ...(restated.length === 0 ? {} : { questions: restated.join(',') }),
-        ...(move === undefined ? {} : { account_to: move.to.dir }),
+        ...(move === undefined ? {} : { account_to: move.to.dir, account_by: move.by }),
         ...(landed === undefined ? {} : landedMeta(subject.cwd, landed, route.cwd !== undefined)),
       },
     })
@@ -771,6 +771,7 @@ export class Teleport {
       name: subject.name,
       from: subject.agentId,
       to: descendantId,
+      ...(move === undefined ? {} : { account_by: move.by }),
       ...(req.reason === undefined ? {} : { reason: req.reason }),
     })
 
