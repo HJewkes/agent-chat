@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { CLIENT_HEADER } from '@titan-design/daemon'
 import { activeWorkPort } from '../paths.js'
 
 /**
@@ -126,7 +127,7 @@ async function postRelated(q: RelatedQuery, query: string, signal: AbortSignal):
   const fetchImpl = q.fetch ?? fetch
   const res = await fetchImpl(`http://127.0.0.1:${q.port ?? activeWorkPort()}/rpc/context.related`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-titan-client': 'agent-chat-briefing' },
+    headers: { 'content-type': 'application/json', [CLIENT_HEADER]: 'agent-chat-briefing' },
     body: JSON.stringify({
       for: query,
       initiative: q.initiative,
