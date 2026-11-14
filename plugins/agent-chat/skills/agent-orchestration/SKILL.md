@@ -280,7 +280,12 @@ they do. Its result prints an `agent-chat endorse <id> --to <peer> --text ...` c
 A worker that has sent its first Status report is usually carrying its whole assignment in
 context, and every later turn pays for all of it again. A follow-up (review fixes, a second
 task on the same branch, a cold wake hours later) costs far less in a new session that starts
-from the report than in the old one. This is advice, not a cap. Use it when both are true:
+from the report than in the old one. A coordinator's "merged, next slice" is the usual way
+this goes wrong: on the logan room pipeline (2026-11-05 to 11-14), the 8 costliest workers
+each carried 8 to 24 serial tasks in one session at 340-500k tokens per turn, and those 8
+alone spent 4.4B tokens (logan guest-retro-2026-11-13.md, worker addendum). A new task is a
+new worker; only a fix to the same PR stays in place. This is advice, not a cap. Use it when
+both are true:
 
 - the worker has delivered its first Status report, and
 - its context fill (the roster's segment, or `session_budget(name)`) is above its role's
@@ -295,6 +300,11 @@ the old worker's newest `chat_send` to you, its branch and worktree, and its ses
 transcript path. Your brief only has to say what to do next. Pass the same `worktree` (or
 `cwd`) so the successor works on the existing branch instead of allocating a new one. Only
 the agent's own spawner can name it as a predecessor.
+
+Do not tell a worker to hold its turn open while a run is live. A worker that polls a long
+render or a GPU queue in its own turn re-reads its whole context on every poll; one comforter
+worker spent 29% of its tool calls polling for that reason. Have it launch the run detached,
+end its turn, and report when it is woken by the run's notification or by you.
 
 Keep the follow-up in place when it depends on what the worker holds in context and not in
 the report: a debugging trail it has not written down, or a decision it is midway through.
