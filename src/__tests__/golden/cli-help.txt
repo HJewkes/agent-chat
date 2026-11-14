@@ -759,6 +759,11 @@ Commands:
                                   packet from events.db, Shepherd and seats status, apply rules
                                   R1-R5, and append one JSONL row per seat. Only --shadow runs: it
                                   sends nothing and wakes nothing
+  held-relay [options]            one pass of the held-message relay: peer mail waiting past
+                                  heldRelay.thresholdMinutes for a coordinator (or a
+                                  heldRelay.recipients name) that has taken no turn since, filed as
+                                  one human-queue notice per message and deduped across passes. A
+                                  no-op until heldRelay.enabled
   help [command]                  display help for command
 
 === agent-chat seats watchdog
@@ -969,6 +974,20 @@ Options:
   --dir <value>   where the <seat>.jsonl rows go (default: the XDG state dir)
   --db <value>    events.db to read (default: the broker home)
   -h, --help      display help for command
+
+=== agent-chat seats held-relay
+Usage: agent-chat seats held-relay [options]
+
+one pass of the held-message relay: peer mail waiting past heldRelay.thresholdMinutes for a
+coordinator (or a heldRelay.recipients name) that has taken no turn since, filed as one human-queue
+notice per message and deduped across passes. A no-op until heldRelay.enabled
+
+Options:
+  --dry-run      read only: list what would be noticed; sends, wakes and saves nothing, enabled or
+                 not
+  --now <value>  ISO instant to replay the pass at; needs --dry-run
+  --db <value>   events.db to read (default: the broker home)
+  -h, --help     display help for command
 
 === agent-chat port
 Usage: agent-chat port [options] [command]

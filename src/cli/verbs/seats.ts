@@ -126,6 +126,7 @@ import { identityTranscript } from '../../agents/resume-session.js'
 import { respawnSeat } from './seat-respawn.js'
 import { seatsCoordinatorsVerb } from './seats-coordinators.js'
 import { seatsWatchVerb } from './seats-watch.js'
+import { seatsHeldRelayVerb } from './seats-held-relay.js'
 import { refreshSeatHeartbeat, seatsHeartbeatGapsVerb, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
 import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
 import { logEvent } from '../../broker/log.js'
@@ -1000,4 +1001,5 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsHeartbeatGapsVerb)
   addVerb(seats, seatsCoordinatorsVerb)
   addVerb(seats, seatsWatchVerb)
+  addVerb(seats, seatsHeldRelayVerb)
 }
