@@ -2,9 +2,10 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { CLIENT_HEADER, createRequestGuard } from '@titan-design/daemon'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resolveBriefing, resolveSpawnBriefing } from '../agents/active-work.js'
-import { RELATED_RESERVE } from '../agents/related.js'
+import { fetchRelated, RELATED_RESERVE } from '../agents/related.js'
 
 /**
  * CC-101. The spawn briefing's last section is ranked against the assignment by
@@ -192,6 +193,44 @@ describe('the related section when the daemon answers', () => {
       text: expect.stringContaining('## Related to this assignment (1, ranked; open with Read)'),
     })
     expect(result).not.toHaveProperty('warning')
+  })
+
+  it('sends the client header on both the render call and the served-log call', async () => {
+    const seen: Array<string | null> = []
+    const answer = async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get('x-titan-client'))
+      return json(200, hits({ initiative: 'widgets', name: 'a.md' }))
+    }
+
+    await resolveSpawnBriefing({ briefing: 'widgets', brief: 'fix it', root, fetch: answer })
+
+    expect(seen.length).toBeGreaterThanOrEqual(2)
+    expect(seen).toEqual(seen.map(() => 'agent-chat-briefing'))
+  })
+
+  it('is accepted by the real daemon guard, and refused without the header', async () => {
+    const captured: Headers[] = []
+    const capture = async (_url: string | URL | Request, init?: RequestInit) => {
+      captured.push(new Headers(init?.headers))
+      return json(200, hits())
+    }
+    await fetchRelated({ query: 'fix it', initiative: 'widgets', fetch: capture })
+    const guard = createRequestGuard({}, () => 7777)
+    const asGuarded = (headers: Headers) =>
+      guard({
+        method: 'POST',
+        host: '127.0.0.1:7777',
+        origin: headers.get('origin') ?? undefined,
+        client: headers.get(CLIENT_HEADER) ?? undefined,
+        contentType: headers.get('content-type') ?? undefined,
+      })
+
+    const withClient = captured[0] as Headers
+    const withoutClient = new Headers(withClient)
+    withoutClient.delete(CLIENT_HEADER)
+
+    expect(asGuarded(withClient)).toBeNull()
+    expect(asGuarded(withoutClient)).toMatchObject({ status: 403 })
   })
 
   it('ranks hits under the brief, with absolute paths and foreign initiatives labelled', async () => {
