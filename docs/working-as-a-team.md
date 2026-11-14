@@ -281,6 +281,41 @@ Caps, because a tag is a write into every peer's `chat_list`: 16 tags per sessio
 each, `A-Z a-z 0-9 _ : . -` only, and 32 tags total per applier across the bus. All rejected at
 the tool boundary rather than truncated.
 
+## 5b. Model-free heartbeat: `heartbeat gate` under a Monitor
+
+A CronCreate heartbeat wakes the model on every fire, and each wake re-reads the whole context,
+even when nothing has changed. If what you are waiting on is a git ref or a file, run
+`agent-chat heartbeat gate` as a persistent Monitor instead. Monitor turns each line on stdout into
+one notification. The gate prints nothing while its watched values stay the same. It prints one
+`changed: ...` line naming the key that moved, and one `quiet: ...` line once `--max-quiet` minutes
+pass with no change. The first poll only records the starting state, so arming it costs no wake.
+
+```
+Monitor(
+  command: "agent-chat heartbeat gate --git ~/src/model:main --path ~/runs/current/state.json --path ~/runs/reports",
+  persistent: true,
+)
+```
+
+- `--git repo[:ref]` watches the commit a ref points at (HEAD by default). `--path` watches a file's
+  mtime and size. On a directory it watches each entry, so a fallback report written there
+  wakes you with its own name. A path that disappears also counts as a change. Both flags can be repeated.
+- `--every` (poll minutes, default 20) and `--max-quiet` (default 120) default from `heartbeatGate`
+  in `~/.agent-chat/config.json`: `{"everyMinutes": 20, "maxQuietMinutes": 120}`.
+- The gate reads local git and the filesystem only. It needs no events.db or broker, so it works on a
+  host whose broker runs elsewhere. It does not watch your inbox, because channel pushes already
+  deliver new mail.
+- A worker waiting on a run arms the same command with `--path <run-state file>` and ends its
+  turn. It does not hold the turn open and poll.
+- `--once` runs one poll against a state file (`--state`, or a default under `$AGENT_CHAT_HOME`) and
+  exits. Use it from a script or to try a watch set.
+
+**Successors must re-arm it.** Like a CronCreate job, a Monitor dies with the session that armed it.
+After a teleport or a respawn, the new session runs the same `Monitor(...)` call again. Put the
+exact command in your handoff. Whether a `persistent: true` Monitor survives `/compact` is
+UNVERIFIED. Until someone checks it, re-arm after a compaction if no `quiet` line has arrived
+within `--max-quiet`.
+
 ---
 
 ## 6. Relaying a decision: `chat_endorse`

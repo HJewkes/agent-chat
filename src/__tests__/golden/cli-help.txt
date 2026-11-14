@@ -32,6 +32,7 @@ Commands:
 
 Agent commands:
   watch [options] <name>     stream messages for a session that cannot receive channel pushes
+  heartbeat                  model-free wakes for a Monitor
   agent                      durable agents
   teleport                   teleport control
   handoff                    stored teleport handoffs
@@ -1337,6 +1338,38 @@ Options:
   --interval <seconds>  how often to poll (default: "2")
   --once                print what is waiting and exit, instead of following
   -h, --help            display help for command
+
+=== agent-chat heartbeat
+Usage: agent-chat heartbeat [options] [command]
+
+model-free wakes for a Monitor
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  gate [options]  a model-free heartbeat for a Monitor: poll git refs and paths every --every
+                  minutes and print one line only when one changed, or a quiet line after
+                  --max-quiet minutes of no change. The first poll prints nothing. Defaults come
+                  from heartbeatGate in config.json
+  help [command]  display help for command
+
+=== agent-chat heartbeat gate
+Usage: agent-chat heartbeat gate [options]
+
+a model-free heartbeat for a Monitor: poll git refs and paths every --every minutes and print one
+line only when one changed, or a quiet line after --max-quiet minutes of no change. The first poll
+prints nothing. Defaults come from heartbeatGate in config.json
+
+Options:
+  --git <repo[:ref]>     a git ref to watch, HEAD by default (repeatable)
+  --path <path>          a file or directory to watch (repeatable)
+  --every <minutes>      poll interval
+  --max-quiet <minutes>  print a quiet line after this long silent
+  --once                 one poll against the state file, then exit
+  --state <file>         where the last fingerprint is kept (default with --once: under
+                         $AGENT_CHAT_HOME)
+  -h, --help             display help for command
 
 === agent-chat agent
 Usage: agent-chat agent [options] [command]
