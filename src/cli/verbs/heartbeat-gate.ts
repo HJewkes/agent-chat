@@ -80,18 +80,47 @@ export interface GateLoopPorts {
   save?: ((state: GateState) => void) | undefined
 }
 
-/** Polls until the process ends; prints only what `gateStep` emits. */
-export async function gateLoop(
-  ports: GateLoopPorts,
-  opts: { everyMs: number; maxQuietMs: number; initial?: GateState | undefined },
-): Promise<never> {
-  let state = opts.initial
+interface GateLoopOptions {
+  everyMs: number
+  maxQuietMs: number
+  initial?: GateState | undefined
+}
+
+/** Polls, silent, until `gateStep` emits; state is saved on every poll, so the next arm starts from it. */
+async function nextEmit(ports: GateLoopPorts, opts: GateLoopOptions, initial: GateState | undefined) {
+  let state = initial
   for (;;) {
     const step = gateStep({ prev: state, fp: ports.read(), nowMs: ports.now(), maxQuietMs: opts.maxQuietMs })
-    if (step.emit !== undefined) ports.print(step.emit)
     state = step.state
     ports.save?.(state)
+    if (step.emit !== undefined) return { line: step.emit, state }
     await ports.sleep(opts.everyMs)
+  }
+}
+
+/** `--until-change`: one wake per arm. Resolves with the first line `gateStep` emits. */
+export async function gateUntilChange(ports: GateLoopPorts, opts: GateLoopOptions): Promise<string> {
+  return (await nextEmit(ports, opts, opts.initial)).line
+}
+
+/** The streaming mode: polls until the process ends and prints only what `gateStep` emits. */
+export async function gateLoop(ports: GateLoopPorts, opts: GateLoopOptions): Promise<never> {
+  let state = opts.initial
+  for (;;) {
+    const next = await nextEmit(ports, opts, state)
+    ports.print(next.line)
+    state = next.state
+    await ports.sleep(opts.everyMs)
+  }
+}
+
+function livePorts(watch: GateWatch, save: GateLoopPorts['save']): GateLoopPorts {
+  return {
+    read: () => readFingerprint(watch),
+    now: Date.now,
+    sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    print: line => console.log(line),
+    save,
   }
 }
 
@@ -100,15 +129,17 @@ const minutes = z.coerce.number().positive().optional()
 export const heartbeatGateVerb = defineVerb({
   name: 'heartbeat.gate',
   description:
-    'a model-free heartbeat for a Monitor: poll git refs and paths every --every minutes and print one ' +
-    'line only when one changed, or a quiet line after --max-quiet minutes of no change. The first poll ' +
-    'prints nothing. Defaults come from heartbeatGate in config.json',
+    'a model-free heartbeat: poll git refs and paths every --every minutes and print one line only when ' +
+    'one changed, or a quiet line after --max-quiet minutes of no change. The first poll prints nothing. ' +
+    'With --until-change it exits after that one line, for a background Bash call that wakes the model ' +
+    'once; without, it streams for a Monitor. Defaults come from heartbeatGate in config.json',
   args: z.object({
     git: z.array(z.string()).optional(),
     path: z.array(z.string()).optional(),
     every: minutes,
     maxQuiet: minutes,
     once: z.boolean().optional(),
+    untilChange: z.boolean().optional(),
     state: z.string().optional(),
   }),
   result: Report,
@@ -119,9 +150,14 @@ export const heartbeatGateVerb = defineVerb({
       every: { long: '--every <minutes>', description: 'poll interval' },
       maxQuiet: { long: '--max-quiet <minutes>', description: 'print a quiet line after this long silent' },
       once: { long: '--once', description: 'one poll against the state file, then exit' },
+      untilChange: {
+        long: '--until-change',
+        description: 'poll silently, then exit 0 after the first changed or quiet line',
+      },
       state: {
         long: '--state <file>',
-        description: 'where the last fingerprint is kept (default with --once: under $AGENT_CHAT_HOME)',
+        description:
+          'where the last fingerprint is kept (default with --once or --until-change: under $AGENT_CHAT_HOME)',
       },
     },
   },
@@ -129,9 +165,12 @@ export const heartbeatGateVerb = defineVerb({
     const watch: GateWatch = { git: args.git ?? [], paths: args.path ?? [] }
     if (watch.git.length + watch.paths.length === 0)
       return { ok: false, lines: [], errors: ['heartbeat gate needs at least one --git or --path'] }
+    if (args.once === true && args.untilChange === true)
+      return { ok: false, lines: [], errors: ['--once and --until-change are exclusive'] }
     const config = resolveHeartbeatGate()
     const maxQuietMs = (args.maxQuiet ?? config.maxQuietMinutes) * 60_000
-    const stateFile = args.state ?? (args.once === true ? defaultStatePath(watch) : undefined)
+    const oneShot = args.once === true || args.untilChange === true
+    const stateFile = args.state ?? (oneShot ? defaultStatePath(watch) : undefined)
     const initial = stateFile === undefined ? undefined : loadState(stateFile)
     const save = stateFile === undefined ? undefined : (state: GateState) => saveState(stateFile, state)
     if (args.once === true) {
@@ -139,15 +178,9 @@ export const heartbeatGateVerb = defineVerb({
       save?.(step.state)
       return { ok: true, lines: step.emit === undefined ? [] : [step.emit] }
     }
-    return gateLoop(
-      {
-        read: () => readFingerprint(watch),
-        now: Date.now,
-        sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-        print: line => console.log(line),
-        save,
-      },
-      { everyMs: (args.every ?? config.everyMinutes) * 60_000, maxQuietMs, initial },
-    )
+    const ports = livePorts(watch, save)
+    const opts = { everyMs: (args.every ?? config.everyMinutes) * 60_000, maxQuietMs, initial }
+    if (args.untilChange === true) return { ok: true, lines: [await gateUntilChange(ports, opts)] }
+    return gateLoop(ports, opts)
   },
 })

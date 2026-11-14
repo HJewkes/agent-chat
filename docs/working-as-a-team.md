@@ -281,21 +281,30 @@ Caps, because a tag is a write into every peer's `chat_list`: 16 tags per sessio
 each, `A-Z a-z 0-9 _ : . -` only, and 32 tags total per applier across the bus. All rejected at
 the tool boundary rather than truncated.
 
-## 5b. Model-free heartbeat: `heartbeat gate` under a Monitor
+## 5b. Model-free heartbeat: `heartbeat gate --until-change` in the background
 
 A CronCreate heartbeat wakes the model on every fire, and each wake re-reads the whole context,
-even when nothing has changed. If what you are waiting on is a git ref or a file, run
-`agent-chat heartbeat gate` as a persistent Monitor instead. Monitor turns each line on stdout into
-one notification. The gate prints nothing while its watched values stay the same. It prints one
-`changed: ...` line naming the key that moved, and one `quiet: ...` line once `--max-quiet` minutes
-pass with no change. The first poll only records the starting state, so arming it costs no wake.
+even when nothing has changed. If what you are waiting on is a git ref or a file, use
+`agent-chat heartbeat gate --until-change` in a background Bash call instead. A background Bash call
+keeps running across turns and wakes the model once, when the command exits. The gate polls without
+printing anything. It exits 0 with one line, either `changed: ...` naming the key that moved, or
+`quiet: ...` once `--max-quiet` minutes pass with no change. The first poll only records the starting
+state, so arming it costs no wake.
 
 ```
-Monitor(
-  command: "agent-chat heartbeat gate --git ~/src/model:main --path ~/runs/current/state.json --path ~/runs/reports",
-  persistent: true,
+Bash(
+  run_in_background: true,
+  command: "agent-chat heartbeat gate --until-change --git ~/src/model:main --path ~/runs/current/state.json --path ~/runs/reports --state ~/runs/heartbeat.json --every 20 --max-quiet 120",
 )
 ```
+
+**Re-arm it after every wake.** When the call exits, act on its line, then run the same `Bash(...)`
+again before you end the turn. The gate writes `--state` on its way out, so the next arm compares
+against what you just saw: it neither re-seeds nor reports the same change twice. A session's
+background calls die with it, so a successor after a teleport or a respawn must re-arm the same
+command. Put the exact command in your handoff. Whether a background call survives `/compact` is
+UNVERIFIED. Until someone checks it, re-arm after a compaction if no line has arrived within
+`--max-quiet`.
 
 - `--git repo[:ref]` watches the commit a ref points at (HEAD by default). `--path` watches a file's
   mtime and size. On a directory it watches each entry, so a fallback report written there
@@ -307,20 +316,15 @@ Monitor(
   deliver new mail.
 - A worker waiting on a run arms the same command with `--path <run-state file>` and ends its
   turn. It does not hold the turn open and poll.
-- `--once` runs one poll against a state file (`--state`, or a default under `$AGENT_CHAT_HOME`) and
-  exits. Use it from a script or to try a watch set.
+- `--state` defaults to a file under `$AGENT_CHAT_HOME` keyed by the watch set. Pass a fixed file
+  so the handoff names it.
+- `--once` runs one poll against the state file and exits. Use it from a script or to try a watch set.
 
-**Check the Monitor lifetime your harness gives you.** The recipe above assumes a Monitor that
-accepts `persistent: true`. Some Claude Code builds have no `persistent` flag and kill every Monitor
-at `timeout_ms` (at most 10 to 60 minutes), with one expiry notice. That notice is itself a wake.
-On such a build, set `timeout_ms` to its maximum and re-arm on each expiry. Keep `--state` on a
-fixed file, so a re-armed gate compares against the last poll and does not re-seed.
-
-**Successors must re-arm it.** Like a CronCreate job, a Monitor dies with the session that armed it.
-After a teleport or a respawn, the new session runs the same `Monitor(...)` call again. Put the
-exact command in your handoff. Whether a `persistent: true` Monitor survives `/compact` is
-UNVERIFIED. Until someone checks it, re-arm after a compaction if no `quiet` line has arrived
-within `--max-quiet`.
+**Monitor is for short watches only.** Without `--until-change` the gate streams, printing one line
+per change, and Monitor turns each line into a notification. A Monitor has no persistent mode.
+It is killed at `timeout_ms`, at most 30 minutes, and the expiry notice is itself a wake. A
+long heartbeat under Monitor therefore wakes at least every 30 minutes, which is barely better than a
+20-minute cron. Use it only to watch something you expect to change within that window.
 
 ---
 
