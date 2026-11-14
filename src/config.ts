@@ -3,6 +3,7 @@ import { logEvent } from './broker/log.js'
 import { DEFAULT_SLOTS } from './agents/semaphore.js'
 import { configPath } from './paths.js'
 import { parseClaimWake, type ClaimWakeConfig } from './broker/claim-wake.js'
+import { DEFAULT_HELD_RELAY, parseHeldRelay, type HeldRelayConfig } from './agents/seats/held-relay.js'
 import {
   DEFAULT_MACHINE_CPU_PRESSURE_PERCENT,
   DEFAULT_MACHINE_DISK_BYTES_PERCENT,
@@ -107,6 +108,8 @@ export interface AgentChatConfig {
   claimWake?: unknown
   /** BS-48: `true` on a host whose broker lives elsewhere (reached over a forwarded socket); never autostart one. */
   remoteBroker?: unknown
+  /** The held-message relay (`seats held-relay`); unset or invalid (logged) keeps it off. */
+  heldRelay?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -225,6 +228,16 @@ export function resolveHeartbeatGate(): HeartbeatGateConfig {
   }
   if (!isObject(value)) logInvalidOnce({ key: 'heartbeatGate', value, fallback: DEFAULT_HEARTBEAT_GATE })
   return { everyMinutes: pick('everyMinutes'), maxQuietMinutes: pick('maxQuietMinutes') }
+}
+
+/** `heldRelay` in `config.json`, read per pass; unset gives the defaults, invalid (logged) gives them too. */
+export function resolveHeldRelay(): HeldRelayConfig {
+  const value = readConfig().heldRelay
+  if (value === undefined) return DEFAULT_HELD_RELAY
+  const parsed = parseHeldRelay(value)
+  if (typeof parsed !== 'string') return parsed
+  logInvalidOnce({ key: 'heldRelay', value, reason: parsed, fallback: 'defaults' })
+  return DEFAULT_HELD_RELAY
 }
 
 /**

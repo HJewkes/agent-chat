@@ -184,6 +184,16 @@ export const watchdogPlistPath = (): string =>
 export const watchdogLogDir = (): string =>
   path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-seat-watchdog')
 
+/** The launchd label for `agent-chat seats held-relay`. */
+export const HELD_RELAY_LABEL = 'dev.hjewkes.agent-chat-held-relay'
+
+/** launchd reads agents from the real home, so this ignores `AGENT_CHAT_HOME`. */
+export const heldRelayPlistPath = (): string =>
+  path.join(os.homedir(), 'Library', 'LaunchAgents', `${HELD_RELAY_LABEL}.plist`)
+
+export const heldRelayLogDir = (): string =>
+  path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-held-relay')
+
 /** The systemd user manager reads units from here (CC-816); like launchd's, it ignores `AGENT_CHAT_HOME`. */
 export const systemdUserUnitDir = (): string =>
   path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user')
