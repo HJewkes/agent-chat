@@ -56,6 +56,7 @@ export interface AgentChatConfig {
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
+  heartbeatGate?: unknown
   orphanReapKill?: unknown
   poolPick?: unknown
   paceController?: unknown
@@ -201,6 +202,29 @@ export function resolveClaimWake(): ClaimWakeConfig | undefined {
   if (typeof parsed !== 'string') return parsed
   logInvalidOnce({ key: 'claimWake', value, reason: parsed, fallback: 'off' })
   return undefined
+}
+
+export interface HeartbeatGateConfig {
+  everyMinutes: number
+  maxQuietMinutes: number
+}
+
+export const DEFAULT_HEARTBEAT_GATE: HeartbeatGateConfig = { everyMinutes: 20, maxQuietMinutes: 120 }
+
+/** `heartbeatGate` in `config.json`: the gate verb's defaults. A key that is not a positive number is logged and defaulted. */
+export function resolveHeartbeatGate(): HeartbeatGateConfig {
+  const value = readConfig().heartbeatGate
+  if (value === undefined) return DEFAULT_HEARTBEAT_GATE
+  const raw = isObject(value) ? value : {}
+  const pick = (key: keyof HeartbeatGateConfig): number => {
+    const v = raw[key]
+    if (v === undefined) return DEFAULT_HEARTBEAT_GATE[key]
+    if (typeof v === 'number' && v > 0) return v
+    logInvalidOnce({ key: `heartbeatGate.${key}`, value: v, fallback: DEFAULT_HEARTBEAT_GATE[key] })
+    return DEFAULT_HEARTBEAT_GATE[key]
+  }
+  if (!isObject(value)) logInvalidOnce({ key: 'heartbeatGate', value, fallback: DEFAULT_HEARTBEAT_GATE })
+  return { everyMinutes: pick('everyMinutes'), maxQuietMinutes: pick('maxQuietMinutes') }
 }
 
 /**
