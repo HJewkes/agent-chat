@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { withBroker } from '../cli/client.js'
 import {
   gateLoop,
@@ -37,7 +37,10 @@ beforeEach(() => {
   git('commit', '-q', '--allow-empty', '-m', 'first')
 })
 
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+afterEach(() => {
+  vi.restoreAllMocks()
+  fs.rmSync(dir, { recursive: true, force: true })
+})
 
 describe('heartbeat gate --once', () => {
   it('prints nothing on the seeding run and nothing again until HEAD moves', async () => {
@@ -52,6 +55,26 @@ describe('heartbeat gate --once', () => {
     expect(idle.lines).toEqual([])
     expect(moved.lines).toHaveLength(1)
     expect(moved.lines[0]).toMatch(new RegExp(`^changed: ${repo}@main [0-9a-f]{40} -> [0-9a-f]{40}$`))
+  })
+
+  it('writes the state file through a temp file renamed into place', async () => {
+    const rename = vi.spyOn(fs, 'renameSync')
+
+    await once({ git: [`${repo}:main`] })
+
+    expect(rename).toHaveBeenCalledWith(expect.stringMatching(/gate\.json\.\d+\.tmp$/), stateFile)
+    expect(fs.readdirSync(path.dirname(stateFile))).toEqual(['gate.json'])
+  })
+
+  it('ignores a stale temp file left beside the state file and still reports the change', async () => {
+    const watch = { git: [`${repo}:main`] }
+    await once(watch)
+    fs.writeFileSync(`${stateFile}.${process.pid}.tmp`, '{"fp":')
+    git('commit', '-q', '--allow-empty', '-m', 'second')
+
+    const moved = await once(watch)
+
+    expect(moved.lines).toHaveLength(1)
   })
 
   it('names the new file when a report lands in a watched directory', async () => {

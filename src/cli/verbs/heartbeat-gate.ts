@@ -62,7 +62,9 @@ export function loadState(file: string): GateState | undefined {
 
 function saveState(file: string, state: GateState): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, `${JSON.stringify(state)}\n`)
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, `${JSON.stringify(state)}\n`)
+  fs.renameSync(tmp, file)
 }
 
 /** One state file per watch set, so two `--once` callers watching different things never share one. */
