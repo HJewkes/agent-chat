@@ -1362,8 +1362,8 @@ line only when one changed, or a quiet line after --max-quiet minutes of no chan
 prints nothing. Defaults come from heartbeatGate in config.json
 
 Options:
-  --git <repo[:ref]>     a git ref to watch, HEAD by default (repeatable)
-  --path <path>          a file or directory to watch (repeatable)
+  --git <value>          repo[:ref], a git ref to watch, HEAD by default (repeatable)
+  --path <value>         a file or directory to watch (repeatable)
   --every <minutes>      poll interval
   --max-quiet <minutes>  print a quiet line after this long silent
   --once                 one poll against the state file, then exit

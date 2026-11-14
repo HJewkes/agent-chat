@@ -114,8 +114,8 @@ export const heartbeatGateVerb = defineVerb({
   result: Report,
   cli: {
     options: {
-      git: { long: '--git <repo[:ref]>', description: 'a git ref to watch, HEAD by default (repeatable)' },
-      path: { long: '--path <path>', description: 'a file or directory to watch (repeatable)' },
+      git: { long: '--git', description: 'repo[:ref], a git ref to watch, HEAD by default (repeatable)' },
+      path: { long: '--path', description: 'a file or directory to watch (repeatable)' },
       every: { long: '--every <minutes>', description: 'poll interval' },
       maxQuiet: { long: '--max-quiet <minutes>', description: 'print a quiet line after this long silent' },
       once: { long: '--once', description: 'one poll against the state file, then exit' },
