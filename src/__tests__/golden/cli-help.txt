@@ -764,6 +764,12 @@ Commands:
                                   heldRelay.recipients name) that has taken no turn since, filed as
                                   one human-queue notice per message and deduped across passes. A
                                   no-op until heldRelay.enabled
+  held-relay-install [options]    install the launchd job (systemd --user units on Linux) that runs
+                                  `seats held-relay` every heldRelay.everyMinutes; the pass stays a
+                                  no-op until heldRelay.enabled
+  held-relay-uninstall [options]  stop the held-relay job and keep it from starting at login; on
+                                  Linux, also remove its units
+  held-relay-status [options]     launchd state of the held-relay job, or its systemd units on Linux
   help [command]                  display help for command
 
 === agent-chat seats watchdog
@@ -988,6 +994,39 @@ Options:
   --now <value>  ISO instant to replay the pass at; needs --dry-run
   --db <value>   events.db to read (default: the broker home)
   -h, --help     display help for command
+
+=== agent-chat seats held-relay-install
+Usage: agent-chat seats held-relay-install [options]
+
+install the launchd job (systemd --user units on Linux) that runs `seats held-relay` every
+heldRelay.everyMinutes; the pass stays a no-op until heldRelay.enabled
+
+Options:
+  --dry-run                  print the plist and launchctl calls (units and systemctl calls on
+                             Linux); load nothing
+  --agent-chat-home <value>  the home the job runs against, over $AGENT_CHAT_HOME; on Linux a
+                             non-default home suffixes the unit names
+  -h, --help                 display help for command
+
+=== agent-chat seats held-relay-uninstall
+Usage: agent-chat seats held-relay-uninstall [options]
+
+stop the held-relay job and keep it from starting at login; on Linux, also remove its units
+
+Options:
+  --agent-chat-home <value>  the home the job runs against, over $AGENT_CHAT_HOME; on Linux a
+                             non-default home suffixes the unit names
+  -h, --help                 display help for command
+
+=== agent-chat seats held-relay-status
+Usage: agent-chat seats held-relay-status [options]
+
+launchd state of the held-relay job, or its systemd units on Linux
+
+Options:
+  --agent-chat-home <value>  the home the job runs against, over $AGENT_CHAT_HOME; on Linux a
+                             non-default home suffixes the unit names
+  -h, --help                 display help for command
 
 === agent-chat port
 Usage: agent-chat port [options] [command]
