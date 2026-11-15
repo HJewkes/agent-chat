@@ -689,7 +689,9 @@ Commands:
                                   restart without "restart done". A latest journal line starting
                                   WRAP, PARKED or BUDGET-PAUSE stops both the wake and the resume
                                   until the seat logs an ordinary line. Pages tp-operator once per
-                                  live seat blocked on AskUserQuestion over 5 min (CC-1057). An
+                                  live seat blocked on AskUserQuestion over 5 min (CC-1057). On a
+                                  full run, files one human-queue notice for agents detached from
+                                  the broker past detachedAlert.thresholdMinutes (OWNER-2). An
                                   unparsable seat-watchdog.json is an error and the run does nothing
   status [options] <seat>         what a seat reads before it dispatches (CC-317), read-only:
                                   implementers, reviewers and planners against their caps, its other
@@ -784,8 +786,9 @@ map of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>": "<reason>"}};
 re-enable), a seat at its spend stop, or any seat while the owner seat has announced a broker
 restart without "restart done". A latest journal line starting WRAP, PARKED or BUDGET-PAUSE stops
 both the wake and the resume until the seat logs an ordinary line. Pages tp-operator once per live
-seat blocked on AskUserQuestion over 5 min (CC-1057). An unparsable seat-watchdog.json is an error
-and the run does nothing
+seat blocked on AskUserQuestion over 5 min (CC-1057). On a full run, files one human-queue notice
+for agents detached from the broker past detachedAlert.thresholdMinutes (OWNER-2). An unparsable
+seat-watchdog.json is an error and the run does nothing
 
 Options:
   --dry-run           print each seat decision; wake nothing, write nothing
