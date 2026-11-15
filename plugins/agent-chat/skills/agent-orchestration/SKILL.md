@@ -241,6 +241,30 @@ Monitor(command: "agent-chat watch <your-name>",
 It starts at the log head, so it will not replay a backlog at you. Use
 `agent-chat watch <name> --once --since all` to read what you already missed.
 
+### When `chat_send` answers "not taking pushes"
+
+The broker holds a push in three cases only: the peer is parked (a `reason: "park"` teleport
+successor waiting on the human, held until the human writes to it, or a tree parked with
+`agent park`), retired, or set to do-not-disturb. An idle or compacted session is still
+pushed. The message waits in the inbox. A parked peer's held mail is pushed when it is
+unparked or resumed. A do-not-disturb peer's waits in its inbox until it reads it. A retired
+peer's is logged to its inbox but never pushed, so treat it as undelivered. A retired name with
+no live session is refused with `no_such_session` unless it is a seat or mid-teleport. For an owner-facing report (a review sheet, a merge, a
+Status), "held" is not delivery: a parked coordinator is waiting on the owner, so the owner
+is the one who must hear about it. Do three things:
+
+1. Write the report to your lane's fallback file as well, so it survives the inbox.
+2. After 15 minutes, check whether it was read: `chat_activity(<name>)`, or
+   `agent-chat watch <name> --once`.
+3. If it is still unread, tell the owner (through your own spawner if you have no other
+   route), naming the held msg_id, the coordinator, and how long it has waited. Do not
+   resend into the same inbox.
+
+A coordinator coming back from a compaction, teleport or restart reads its whole inbox
+before its first decision. Evidence: on 2026-11-13 a parked coordinator held a round-7
+review sheet and three lead reports for 9 to 10 h while both lanes idled (logan
+guest-retro-2026-11-13.md, Q4; watchdog-heartbeat-plan.md).
+
 ### Relaying an owner decision (`chat_endorse`)
 
 `chat_endorse(to, text)` queues a message for your human to approve; nothing is sent until
@@ -259,14 +283,19 @@ they do. Its result prints an `agent-chat endorse <id> --to <peer> --text ...` c
 A worker that has sent its first Status report is usually carrying its whole assignment in
 context, and every later turn pays for all of it again. A follow-up (review fixes, a second
 task on the same branch, a cold wake hours later) costs far less in a new session that starts
-from the report than in the old one. This is advice, not a cap. Use it when both are true:
+from the report than in the old one. A coordinator's "merged, next slice" is the usual way
+this goes wrong: on the logan room pipeline (2026-11-05 to 11-14), the 8 costliest workers
+each carried 8 to 24 serial tasks in one session at 340-500k tokens per turn, and those 8
+alone spent 4.4B tokens (logan guest-retro-2026-11-13.md, worker addendum). A new task is a
+new worker; only a fix to the same PR stays in place. This is advice, not a cap. Use it when
+both are true:
 
 - the worker has delivered its first Status report, and
 - its context fill (the roster's segment, or `session_budget(name)`) is above its role's
   advisory threshold. The thresholds are `DEFAULT_CONTEXT_HINTS` in `src/config.ts`,
   overridable by `contextHints` in `~/.agent-chat/config.json`. At the time of writing:
-  implementer and implementer-lite 200k, peer 250k, any other profile 250k. Explorer,
-  reviewer, researcher and planner have none, so keep their follow-ups in place.
+  implementer and implementer-lite 200k, peer 250k, planner 250k, reviewer 300k, any other
+  profile 250k. Explorer and researcher have none, so keep their follow-ups in place.
 
 Then spawn the successor with `agent_spawn(..., predecessor: "<old name>")` instead of a
 `chat_send` to the old session. The broker adds a Predecessor section ahead of your brief:
@@ -274,6 +303,11 @@ the old worker's newest `chat_send` to you, its branch and worktree, and its ses
 transcript path. Your brief only has to say what to do next. Pass the same `worktree` (or
 `cwd`) so the successor works on the existing branch instead of allocating a new one. Only
 the agent's own spawner can name it as a predecessor.
+
+Do not tell a worker to hold its turn open while a run is live. A worker that polls a long
+render or a GPU queue in its own turn re-reads its whole context on every poll; one comforter
+worker spent 29% of its tool calls polling for that reason. Have it launch the run detached,
+end its turn, and report when it is woken by the run's notification or by you.
 
 Keep the follow-up in place when it depends on what the worker holds in context and not in
 the report: a debugging trail it has not written down, or a decision it is midway through.
@@ -339,8 +373,13 @@ is not enough room left to write a good one.
 
 ### Teleporting
 
-- Teleport when your context is filling (a `[budget]` line), when you are parked waiting on
-  the human, or when your instructions or code have moved since you started.
+- Teleport at the first quiet point after your context passes your role's advisory (250k
+  for coordinators), when you are parked waiting on the human, or when your instructions or
+  code have moved since you started. Do not run on past the advisory because the window is
+  larger: every heartbeat and every reply re-reads the whole context. A lane lead that ran
+  79 h at ~470k per turn cost 202 USD equivalent, against about 12 USD for a typical 6-8 h
+  successor (logan guest-retro-2026-11-13.md, Q2). If teleport fails twice, write the
+  handoff anyway and ask your owner for a manual restart.
 - Write the handoff in this order: what you were mid-way through; state on disk; what you
   would do next and why; what you tried that did not work; who you are owed a reply to or
   owe one; files to read first as `@`-prefixed absolute paths. It is stored verbatim and
@@ -409,6 +448,12 @@ its context as the scarce resource, not the agents' time.
   that one source directly. See `docs/working-as-a-team.md` §2a.
 - Before any read that will return more than ~100 lines, ask whether a sonnet agent could
   return a 10-line answer instead.
+- A heartbeat is a cheap check first. Compare your inbox count, the integration head, run-state
+  mtimes and any named gate files with the previous wake. When nothing changed, end the turn
+  with one tick line and no further reads; do a full pass only on a change or every 2 h. A
+  lane whose queue is empty behind a named gate sleeps on that gate. Measured: 653 of 1,063
+  lead heartbeats on the logan room pipeline (2026-11-05 to 11-14) changed nothing and cost
+  671M tokens (logan guest-retro-2026-11-13.md, Q2).
 - `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context
   fill as well as your own. Use it to see which seats are expensive before deciding who does
   the next context-heavy job.
@@ -428,6 +473,13 @@ A coordinator's answers to its owner follow one shape:
    seat's or initiative's `decisions.md`, if it has one. Cite the item when one exists, and
    do not re-propose a decided item.
 5. **Lead with value, not budget.** Mention cost only when it changes the recommendation.
+6. **Word questions so they cannot be misread.** One question per line. Name the options
+   instead of using ordinals ("the 3x3 camera model", not "the 2nd"). Give a one-line plain
+   example for any term of art. Put the image inline or give its path. Ask only questions
+   still open, and relay the decisions you already made first. Ask about the real thing the
+   owner can see ("Do the walls look white or cream at night?"), not about your artifact.
+   When two options look identical to the owner, decide by your initiative's rule for ties
+   and report it; do not ask.
 
 ## Return contract
 
