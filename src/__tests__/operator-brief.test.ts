@@ -7,6 +7,8 @@ import {
   type OperatorBriefInput,
 } from '../agents/seats/operator-brief.js'
 import { readWaiting } from '../agents/seats/shepherd-waiting.js'
+import { DEFAULT_DETACHED_ALERT } from '../agents/seats/detached-alert.js'
+import { MAC_HOST, agentRows } from './helpers/detached-rows.js'
 import type { AgentIdentity, QueueItem } from '../protocol.js'
 
 /** CC-1551: the pure operator brief. Every seat, repo, sha and agent is synthetic. */
@@ -200,5 +202,36 @@ describe('the Shepherd waiting reader', () => {
 
   it('throws on another exit code so the brief reports Shepherd unavailable', () => {
     expect(() => readWaiting({ status: 2, stdout: body })).toThrow()
+  })
+})
+
+describe('the detached line', () => {
+  const macRows = (): AgentIdentity[] =>
+    ['agent-a', 'agent-b'].map(name =>
+      agentRows({ name, host: MAC_HOST, detachedAt: NOW.getTime() - 42 * 60_000, exit: 'remote-inferred' }),
+    )
+
+  it('keeps the detached header line when the brief is cut to five lines', () => {
+    const brief = deriveOperatorBrief(
+      input({ roster: macRows(), shepherd: fortyOne, detachedAlert: DEFAULT_DETACHED_ALERT }),
+    )
+
+    const lines = renderOperatorBrief(brief, { maxLines: 5 })
+
+    expect(lines).toContain(`detached >15m: agent-a 42m, agent-b 42m (host ${MAC_HOST}, unverified)`)
+  })
+
+  it('prints no detached line when no agent is past the threshold', () => {
+    const lines = renderOperatorBrief(deriveOperatorBrief(input({ detachedAlert: DEFAULT_DETACHED_ALERT })))
+
+    expect(lines.some(l => l.startsWith('detached'))).toBe(false)
+  })
+
+  it('prints no detached line when the alert is disabled', () => {
+    const rules = { ...DEFAULT_DETACHED_ALERT, enabled: false }
+
+    const lines = renderOperatorBrief(deriveOperatorBrief(input({ roster: macRows(), detachedAlert: rules })))
+
+    expect(lines.some(l => l.startsWith('detached'))).toBe(false)
   })
 })

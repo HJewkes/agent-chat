@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { DEFAULT_DETACHED_ALERT } from '../agents/seats/detached-alert.js'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -161,6 +162,7 @@ describe('agent-chat operator-brief', () => {
     const expected = await readOperatorBrief(liveBriefPorts(system()), {
       now: NOW,
       plain: err => plainError(err, [tmp]),
+      detachedAlert: DEFAULT_DETACHED_ALERT,
     })
     const parsed = JSON.parse(line as string) as typeof expected
     expect(parsed).toEqual(JSON.parse(JSON.stringify(expected)))

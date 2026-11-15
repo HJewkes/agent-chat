@@ -1,6 +1,12 @@
 import type { AgentIdentity, QueueItem } from '../../protocol.js'
 import { roleOfProfile, type AgentRole } from './agent-rows.js'
 import { BLOCK_PAGE_TO } from './block-page.js'
+import {
+  briefText,
+  detachedCandidates,
+  type DetachedAlertConfig,
+  type DetachedCandidate,
+} from './detached-alert.js'
 import { branchOfSeat, type ShepherdFlight } from './in-flight-read.js'
 import type { ShepherdWaiting, WaitingGate } from './shepherd-waiting.js'
 import { ownedBy, type AccountPace, type InboxReading } from './status.js'
@@ -50,6 +56,8 @@ export interface OperatorBriefInput {
   burndown?: BurndownState | undefined
   /** Task status by the task id Shepherd names, such as `init/T-1`. */
   taskStatus?: Record<string, string> | undefined
+  /** OWNER-2: this host's rules; absent or disabled shows no detached line. */
+  detachedAlert?: DetachedAlertConfig | undefined
   unavailable: BriefUnavailable[]
 }
 
@@ -103,6 +111,8 @@ export interface BriefHeader {
   /** Open questions in the human queue; its notices and endorse requests are not counted. */
   ownerQuestions: number | null
   ownerGates: BriefGate[] | null
+  /** Agents detached past the threshold; null when the alert is off or the roster unread. */
+  detached: { thresholdMinutes: number; agents: DetachedCandidate[] } | null
 }
 
 export interface OperatorBrief {
@@ -234,7 +244,15 @@ function header(input: OperatorBriefInput): BriefHeader {
     burndown: input.burndown ?? null,
     ownerQuestions: input.queue === undefined ? null : input.queue.filter(i => i.kind === 'question').length,
     ownerGates: input.waiting === undefined ? null : input.waiting.owner.map(briefGate),
+    detached: detachedHeader(input),
   }
+}
+
+function detachedHeader(input: OperatorBriefInput): BriefHeader['detached'] {
+  const rules = input.detachedAlert
+  if (rules?.enabled !== true || input.roster === undefined) return null
+  const agents = detachedCandidates(input.roster, rules, input.now.getTime())
+  return { thresholdMinutes: rules.thresholdMinutes, agents }
 }
 
 export function deriveOperatorBrief(input: OperatorBriefInput): OperatorBrief {
@@ -295,6 +313,9 @@ function headerLines(brief: OperatorBrief): Line[] {
     poolsLine(h),
     burndownLine(h.burndown),
     ownerLine(h),
+    ...(h.detached === null || h.detached.agents.length === 0
+      ? []
+      : [briefText(h.detached.agents, h.detached)]),
     ...brief.unavailable.map(u => `unavailable: ${u.source} (${oneLine(u.reason)})`),
   ].map(text => ({ text, kind: 'keep' }))
 }

@@ -159,6 +159,9 @@ export function noticeText(candidates: readonly DetachedCandidate[], rules: Deta
 }
 
 /** The operator-brief header line; unprobed, so local rows carry no note. */
-export function briefText(candidates: readonly DetachedCandidate[], rules: DetachedAlertConfig): string {
+export function briefText(
+  candidates: readonly DetachedCandidate[],
+  rules: Pick<DetachedAlertConfig, 'thresholdMinutes'>,
+): string {
   return `detached >${rules.thresholdMinutes}m: ${candidateList(candidates, undefined)}`
 }
