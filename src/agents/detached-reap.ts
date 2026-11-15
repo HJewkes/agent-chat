@@ -94,8 +94,7 @@ export const REMOTE_UNPROBED = 'no connection through the settle window (the bro
  */
 export function agentLiveness(agent: AgentIdentity, probe: ProcessProbe, localHost = brokerHost()): Liveness {
   const remote = remoteHostOf(agent, localHost)
-  if (remote !== undefined)
-    return { dead: true, reason: `on host ${remote}, ${REMOTE_UNPROBED}` }
+  if (remote !== undefined) return { dead: true, reason: `on host ${remote}, ${REMOTE_UNPROBED}` }
   return launcherPid(agent.agentId) === undefined
     ? sessionLiveness(agent, probe)
     : launcherLiveness(agent.agentId, probe)
