@@ -41,7 +41,10 @@ describe('the detached sub-pass', () => {
     await runDetachedAlert(ports, { dryRun: false, nowMs: NOW + 120 * MINUTE })
 
     expect(ports.notify).toHaveBeenCalledTimes(2)
-    expect(ports.notify.mock.calls[0]?.[0]).toContain('agent-a 20m, agent-b 20m, agent-c 20m, agent-d 20m')
+    expect(ports.notify).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('agent-a 20m, agent-b 20m, agent-c 20m, agent-d 20m'),
+    )
     expect(Object.keys(state())).toHaveLength(4)
   })
 
