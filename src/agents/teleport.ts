@@ -52,7 +52,7 @@ import {
 } from './teleport-appendix.js'
 import { successorProvenance } from './spawn-provenance.js'
 import type { AccountTarget } from './account-move.js'
-import { childConfigDir } from './config-dir.js'
+import { childConfigDir, launchAccount } from './config-dir.js'
 import { machineLeastUsedDir, successorAccount, type SuccessorAccount } from './least-used-seat.js'
 import {
   ACCOUNT_MOVE_PREAMBLE,
@@ -1650,7 +1650,10 @@ export class Teleport {
   private successorDir(entry: Pending, resume?: ResumeOn): { configDir: string | undefined; unset: boolean } {
     if (resume !== undefined)
       return { configDir: childConfigDir(resume.target), unset: resume.target.unset === true }
-    if (entry.leastUsed !== undefined) return { configDir: entry.leastUsed.dir, unset: false }
+    if (entry.leastUsed !== undefined) {
+      const account = launchAccount(entry.leastUsed.dir)
+      return { configDir: childConfigDir(account), unset: account.unset === true }
+    }
     return this.configDirOf(entry.subject)
   }
 

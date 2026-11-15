@@ -23,6 +23,15 @@ export function machineLeastUsedDir(preferDir: string | undefined): string | und
   return choice.ok ? choice.dir : undefined
 }
 
+/** A pick whose readings cannot be read keeps the predecessor's account rather than failing the teleport. */
+function readOrKeep(pick: () => string | undefined): string | undefined {
+  try {
+    return pick()
+  } catch {
+    return undefined
+  }
+}
+
 export interface SuccessorAccount {
   dir: string
   /** The account the predecessor ran on, so the seat file follows the change. */
@@ -40,7 +49,7 @@ export function successorAccount(
 ): SuccessorAccount | undefined {
   if (!declaresLeastUsed(seatFile)) return undefined
   const from = currentDir ?? defaultConfigDir()
-  const dir = leastUsed(from)
+  const dir = readOrKeep(() => leastUsed(from))
   if (dir === undefined || path.resolve(dir) === path.resolve(from)) return undefined
   return { dir, from }
 }

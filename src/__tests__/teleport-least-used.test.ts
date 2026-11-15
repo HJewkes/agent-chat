@@ -53,12 +53,12 @@ function writeSeat(frontmatter: string): void {
   fs.writeFileSync(path.join(root, 'seats', 'scout.md'), `---\nprefix: SC\npool: alpha\n${frontmatter}---\n`)
 }
 
-function startServer(leastUsed: string | undefined): void {
+function startServer(leastUsed: string | undefined | (() => string | undefined)): void {
   const seatTeleport: SeatHandoffDeps = {
     autonomyRoot: root,
     now: () => new Date(),
     shepherd: async () => undefined,
-    leastUsedDir: () => leastUsed,
+    leastUsedDir: typeof leastUsed === 'function' ? leastUsed : () => leastUsed,
   }
   server = new SocketServer(core, {
     countdownMs: 0,
@@ -158,6 +158,31 @@ describe('a teleport of a seat that declares account: least-used', () => {
 
     expect(plan.env.CLAUDE_CONFIG_DIR).toBe(toDir)
     expect(spawnMeta(plan.agentId)).toMatchObject({ config_dir: toDir, account_from: fromDir })
+  })
+
+  // Regression: an explicit ~/.claude is a separate login and trust store from the default account (CC-200).
+  it('unsets CLAUDE_CONFIG_DIR when the least-used account is the default one', async () => {
+    writeSeat('account: least-used\n')
+    startServer(path.join(os.homedir(), '.claude'))
+    registerSubject()
+
+    const plan = await teleportSelf()
+
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+    expect(spawnMeta(plan.agentId)).toMatchObject({ account_from: fromDir })
+  })
+
+  // Mutation: an unguarded lookup that throws fails the teleport instead of keeping the account.
+  it('keeps its own account when the least-used lookup throws', async () => {
+    writeSeat('account: least-used\n')
+    startServer(() => {
+      throw new Error('usage file unreadable')
+    })
+    registerSubject()
+
+    const plan = await teleportSelf()
+
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBe(fromDir)
   })
 
   // Mutation: dropping the declares check moves a seat nobody opted in.

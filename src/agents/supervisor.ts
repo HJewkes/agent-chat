@@ -147,7 +147,13 @@ import {
 import { activeWorkRoot, resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { withLinkedDirs } from './linked-dirs.js'
 import { crossingBriefPaths } from './brief-paths.js'
-import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
+import {
+  childConfigDir,
+  defaultConfigDir,
+  launchAccount,
+  resolveConfigDir,
+  type ConfigDirResolution,
+} from './config-dir.js'
 import { pickAccount, rotationText, type RotationConfig, type RotationRecord } from './account-rotation.js'
 import { chooseAccount, LEAST_USED, remoteAccountDir, type AccountChoice } from './account-request.js'
 import type { AccountUsage } from './account-budget.js'
@@ -928,19 +934,15 @@ type SpawnProfile = { name: string; model: string }
 /** The default account runs with the variable unset (CC-200), as a spawner on it would leave its child. */
 const pickedAccount =
   (source: 'pool' | 'rotation') =>
-  (dir: string): Account => ({
-    dir,
-    source,
-    ...(path.resolve(dir) === defaultConfigDir() ? { unset: true as const } : {}),
-  })
+  (dir: string): Account => ({ ...launchAccount(dir), source })
 const poolAccount = pickedAccount('pool')
 const rotationAccount = pickedAccount('rotation')
 
 /** TP-4214: a requested account that lands on the default one runs it unset too, as a pick would. */
 const requestedBilling = (account: Account, choice: string): Account => ({
   ...account,
+  ...launchAccount(account.dir),
   choice,
-  ...(path.resolve(account.dir) === defaultConfigDir() ? { unset: true as const } : {}),
 })
 
 /**

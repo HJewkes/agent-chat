@@ -25,7 +25,7 @@ interface Attach {
   meta?: Record<string, string>
 }
 
-const harness = (agentName: string, configDir: string) => {
+const harness = (agentName: string, configDir: string | undefined, home: string = os.tmpdir()) => {
   const watchers: ((row: Attach) => void)[] = []
   const core: SeatFollowCore = {
     onAppend: watch => {
@@ -34,7 +34,7 @@ const harness = (agentName: string, configDir: string) => {
     },
     agents: { get: () => ({ name: agentName, configDir }) },
   }
-  watchSeatFollow(core, { root, home: os.tmpdir(), now: () => new Date(2026, 9, 14) })
+  watchSeatFollow(core, { root, home, now: () => new Date(2026, 9, 14) })
   return (row: Attach) => watchers.forEach(watch => watch(row))
 }
 
@@ -75,6 +75,20 @@ describe('seat follows the account', () => {
     harness('seat-a', agents)({ kind: 'agent_attached', ref: 'a1' })
 
     expect(fs.readFileSync(seatFile, 'utf8')).toBe(SEAT(personal))
+  })
+
+  // Regression: an agent running unset left its seat file naming the account it moved off.
+  it('names the default account when the agent runs with no config dir', () => {
+    harness(
+      'seat-a',
+      undefined,
+      root,
+    )({ kind: 'agent_attached', ref: 'a1', meta: { account_from: personal } })
+
+    const defaultDir = path.join(root, '.claude')
+    expect(fs.readFileSync(seatFile, 'utf8')).toContain(
+      `config_dir: ${defaultDir}  # pinned # CC-892 moved from`,
+    )
   })
 
   it('does not rewrite twice when the seat already holds the new account', () => {
