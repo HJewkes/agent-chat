@@ -32,7 +32,7 @@ const harness = (agentName: string, configDir: string | undefined, home: string 
       watchers.push(watch)
       return () => undefined
     },
-    agents: { get: () => ({ name: agentName, configDir }) },
+    agents: { get: () => ({ name: agentName, ...(configDir === undefined ? {} : { configDir }) }) },
   }
   watchSeatFollow(core, { root, home, now: () => new Date(2026, 9, 14) })
   return (row: Attach) => watchers.forEach(watch => watch(row))
