@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionRecord } from '../agents/claude-sessions.js'
-import type { ProcessProbe } from '../agents/detached-reap.js'
+import { REMOTE_UNPROBED, type ProcessProbe } from '../agents/detached-reap.js'
 import { readRuntimeState, writeRuntimeState } from '../agents/launch-files.js'
 import { countLiveHeadless } from '../agents/machine-guard.js'
 import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
@@ -335,9 +335,9 @@ describe('a detached row with no launcher pid', () => {
 
     expect(exitsOf(agentId)).toHaveLength(1)
     expect(exitsOf(agentId)[0]).toMatchObject({ meta: { inferred: 'true' } })
-    expect(h.core.events.agentEvents().find(r => r.kind === 'agent_exited')?.body).toContain(
-      'on host far-host',
-    )
+    const body = h.core.events.agentEvents().find(r => r.kind === 'agent_exited')?.body
+    expect(body).toContain('on host far-host')
+    expect(body).toContain(REMOTE_UNPROBED)
     expect(isAlive).not.toHaveBeenCalled()
     expect(sessionRecords).not.toHaveBeenCalled()
   })
