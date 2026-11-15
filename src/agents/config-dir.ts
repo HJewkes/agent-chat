@@ -163,6 +163,10 @@ export const childConfigDir = (account: { dir: string; unset?: boolean }): strin
 /** Where Claude Code keeps its config when `CLAUDE_CONFIG_DIR` is unset: the default account. */
 export const defaultConfigDir = (home: string = os.homedir()): string => path.join(home, '.claude')
 
+/** CC-200: a chosen dir as a launch account; the default account runs with `CLAUDE_CONFIG_DIR` unset. */
+export const launchAccount = (dir: string, home: string = os.homedir()): { dir: string; unset?: true } =>
+  path.resolve(dir) === defaultConfigDir(home) ? { dir, unset: true } : { dir }
+
 /** The last segment, which is what a human calls the account; `~/.claude` reads as `default`. */
 export const accountName = (dir: string, home: string = os.homedir()): string =>
   path.resolve(dir) === defaultConfigDir(home) ? 'default' : path.basename(dir)

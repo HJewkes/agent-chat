@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { defaultConfigDir } from './config-dir.js'
 import { parsePools } from './seats/charter.js'
 import { defaultAutonomyRoot, isWatchedSeat, readText } from './seats/io.js'
 import { poolForDir, rewriteSeatAccount, writeSeatFile } from './seats/seat-account-write.js'
@@ -34,15 +35,17 @@ function follow(core: SeatFollowCore, row: AttachRow, opts: SeatFollowOptions): 
   if (row.kind !== 'agent_attached' || row.ref === undefined || !oldDir) return
   const agent = core.agents.get(row.ref)
   const root = opts.root ?? defaultAutonomyRoot()
-  if (agent?.configDir === undefined || !isWatchedSeat(agent.name, root)) return
+  if (agent === undefined || !isWatchedSeat(agent.name, root)) return
   const home = opts.home ?? os.homedir()
+  // CC-200: an agent with no config dir runs unset, on the default account, which the seat file then names.
+  const newDir = agent.configDir ?? defaultConfigDir(home)
   const file = path.join(root, 'seats', `${agent.name}.md`)
   const text = readText(file)
   const charter = readText(path.join(root, 'charter.md'))
   if (text === undefined || charter === undefined) return
-  const newPool = poolForDir(parsePools(charter, home), agent.configDir)
+  const newPool = poolForDir(parsePools(charter, home), newDir)
   const next = rewriteSeatAccount(text, {
-    newDir: agent.configDir,
+    newDir,
     newPool,
     oldDir,
     date: localDate((opts.now ?? (() => new Date()))()),
