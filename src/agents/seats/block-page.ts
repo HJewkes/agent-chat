@@ -9,7 +9,7 @@ const LIVE_STATES = ['spawning', 'live', 'detached']
 
 export const blockKey = (block: OpenBlock): string => `${block.sessionId}@${block.since}`
 
-const SAFE_TOKEN = /^[A-Za-z0-9._-]+$/
+export const SAFE_TOKEN = /^[A-Za-z0-9._-]+$/
 
 /** The hook writes seat and session unchecked, so only plain tokens may reach the page text. */
 export const safeBlock = (block: OpenBlock): boolean =>
