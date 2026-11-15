@@ -5,6 +5,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   encode,
   lineReader,
+  ACCOUNT_GUARD,
+  ACCOUNT_MOVE_GUARD,
   HUMAN,
   isAnswerChannel,
   isAgentTeleportReason,
@@ -963,13 +965,17 @@ export class SocketServer {
     }
     if (typeof msg.to !== 'string' || (msg.force !== undefined && typeof msg.force !== 'boolean'))
       return turnedAway('preflight', 'account_move needs a "to" account and a boolean "force"')
+    const source = 'source' in msg ? msg.source : undefined
+    if (source !== undefined && source !== ACCOUNT_MOVE_GUARD)
+      return turnedAway('preflight', `account_move "source" may only be "${ACCOUNT_MOVE_GUARD}"`)
     const { registry } = this.core
     const target = registry.connFor(name)
     const entry = target === undefined ? undefined : registry.entryFor(target)
     if (target === undefined || entry?.agentId === undefined)
       return turnedAway('identity', `no live session with a durable identity is named "${name}"`)
     const subject = this.teleportSubject(target, { ...entry, agentId: entry.agentId })
-    const account = { to: msg.to, by: HUMAN, ...(msg.force === true ? { force: true } : {}) }
+    const by = source === ACCOUNT_MOVE_GUARD ? ACCOUNT_GUARD : HUMAN
+    const account = { to: msg.to, by, ...(msg.force === true ? { force: true } : {}) }
     // CC-1592: answered before teleport is reached, so a dry run records no handoff and ends nothing.
     if (msg.t === 'account_move_check')
       return replyTeleport(conn, this.supervisor.checkAccountMove(subject, account))

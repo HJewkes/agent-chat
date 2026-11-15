@@ -322,6 +322,9 @@ export interface SessionInfo {
  * how other sessions read the `from` attribute.
  */
 export const HUMAN = 'human'
+/** CC-894: the `source` on an automated `account_move`, and the requester its move is recorded under. */
+export const ACCOUNT_MOVE_GUARD = 'guard'
+export const ACCOUNT_GUARD = 'account-guard'
 /** A Codex host's synthetic session id, `codex:<hostPid>@<host>`, names no Claude transcript (CC-1508). */
 export const CODEX_SESSION_PREFIX = 'codex:'
 
@@ -1333,9 +1336,10 @@ export type ClientMessage =
    * CC-892: move the named live session to another account, resuming its same conversation there.
    * `to` is `claude`, a profile name or a config dir; `force` lifts the usage refusals only. Human-only
    * like `teleport_abort`: the broker refuses it from a REGISTERED connection. Answered with
-   * `teleport_result`.
+   * `teleport_result`. CC-894: `source: 'guard'` marks the account guard's automated move, which the
+   * broker records as by `account-guard` rather than the human; it still passes the human gate.
    */
-  | { t: 'account_move'; name: string; to: string; force?: boolean }
+  | { t: 'account_move'; name: string; to: string; force?: boolean; source?: typeof ACCOUNT_MOVE_GUARD }
   /**
    * CC-1592: `account_move`'s refusals with nothing ended, for a dry run. Its own frame, not a flag
    * on `account_move`, so a broker that predates it drops it unanswered instead of moving the

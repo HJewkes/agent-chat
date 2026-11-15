@@ -34,6 +34,7 @@ Agent commands:
   watch [options] <name>     stream messages for a session that cannot receive channel pushes
   heartbeat                  model-free wakes for a Monitor
   agent                      durable agents
+  accounts                   account placement for seats
   teleport                   teleport control
   handoff                    stored teleport handoffs
   profiles [name]            agent profiles available to spawn with
@@ -1587,6 +1588,34 @@ Options:
   --accounts        one line per account config dir: both rate-limit windows, resets and reading age
   --json            with --accounts, the same rows as one JSON array
   -h, --help        display help for command
+
+=== agent-chat accounts
+Usage: agent-chat accounts [options] [command]
+
+account placement for seats
+
+Options:
+  -h, --help       display help for command
+
+Commands:
+  guard [options]  move each idle seat whose seat file declares `account: least-used` to the
+                   least-used account when its own is at the five_hour ceiling or 90% seven_day and
+                   the target has 15 points more seven_day headroom; 60 min dwell, no move back
+                   before the tripping reset, one owner notice per episode with no target
+  help [command]   display help for command
+
+=== agent-chat accounts guard
+Usage: agent-chat accounts guard [options]
+
+move each idle seat whose seat file declares `account: least-used` to the least-used account when
+its own is at the five_hour ceiling or 90% seven_day and the target has 15 points more seven_day
+headroom; 60 min dwell, no move back before the tripping reset, one owner notice per episode with no
+target
+
+Options:
+  --dry-run       print each decision; move nothing, notify nothing, write nothing
+  --root <value>  autonomy directory holding charter.md and seats/
+  -h, --help      display help for command
 
 === agent-chat teleport
 Usage: agent-chat teleport [options] [command]

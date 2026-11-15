@@ -320,6 +320,58 @@ describe('an account move dry run (CC-1592)', () => {
   })
 })
 
+describe('who an account move is recorded as by (CC-894)', () => {
+  const handoffMeta = () => core.events.agentEvents().find(r => r.kind === 'agent_handoff')?.meta
+
+  // Mutation: recording every account_move as by the human hides the guard's automated move.
+  it('records the account guard’s move as by account-guard, not the human', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+    writeSourceTranscript()
+    const { conn, replies } = connection()
+
+    const result = await moveAs(conn, replies, {
+      t: 'account_move',
+      name: 'scout',
+      to: 'server',
+      source: 'guard',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(handoffMeta()).toMatchObject({ reason: 'account', account_by: 'account-guard' })
+  })
+
+  // Mutation: defaulting the requester to the guard misattributes the owner's own move-account.
+  it('records an owner-run move-account as by the human', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+    writeSourceTranscript()
+
+    const result = await humanMove()
+
+    expect(result.ok).toBe(true)
+    expect(handoffMeta()).toMatchObject({ reason: 'account', account_by: 'human' })
+  })
+
+  // Mutation: accepting any source lets a frame claim a requester the broker never vetted.
+  it('refuses a source other than the guard before anything ends', async () => {
+    startServer(fakeAccounts())
+    registerSubject()
+    const { conn, replies } = connection()
+
+    const result = await moveAs(conn, replies, {
+      t: 'account_move',
+      name: 'scout',
+      to: 'server',
+      source: 'someone',
+    } as unknown as ClientMessage)
+
+    expect(result.ok).toBe(false)
+    expect(checked).toBe(0)
+    expect(signals).toEqual([])
+  })
+})
+
 describe('an account move that goes through', () => {
   it('resumes the same session id on the target, carrying tags and subscriptions', async () => {
     startServer(fakeAccounts())
