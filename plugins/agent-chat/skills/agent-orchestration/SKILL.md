@@ -247,8 +247,9 @@ The broker holds a push in three cases only: the peer is parked (a `reason: "par
 successor waiting on the human, held until the human writes to it, or a tree parked with
 `agent park`), retired, or set to do-not-disturb. An idle or compacted session is still
 pushed. The message waits in the inbox. A parked peer's held mail is pushed when it is
-unparked or resumed; for do-not-disturb or retired it stays in the inbox until the peer
-reads it. For an owner-facing report (a review sheet, a merge, a
+unparked or resumed. A do-not-disturb peer's waits in its inbox until it reads it. A retired
+peer's is logged to its inbox but never pushed, so treat it as undelivered. A retired name with
+no live session is refused with `no_such_session` unless it is a seat or mid-teleport. For an owner-facing report (a review sheet, a merge, a
 Status), "held" is not delivery: a parked coordinator is waiting on the owner, so the owner
 is the one who must hear about it. Do three things:
 
