@@ -244,9 +244,11 @@ It starts at the log head, so it will not replay a backlog at you. Use
 ### When `chat_send` answers "not taking pushes"
 
 The broker holds a push in three cases only: the peer is parked (a `reason: "park"` teleport
-successor waiting on the human, held until the human writes to it), retired, or set to
-do-not-disturb. An idle or compacted session is still pushed. The message waits in the inbox
-and is flushed when the hold ends. For an owner-facing report (a review sheet, a merge, a
+successor waiting on the human, held until the human writes to it, or a tree parked with
+`agent park`), retired, or set to do-not-disturb. An idle or compacted session is still
+pushed. The message waits in the inbox. A parked peer's held mail is pushed when it is
+unparked or resumed; for do-not-disturb or retired it stays in the inbox until the peer
+reads it. For an owner-facing report (a review sheet, a merge, a
 Status), "held" is not delivery: a parked coordinator is waiting on the owner, so the owner
 is the one who must hear about it. Do three things:
 
@@ -291,8 +293,8 @@ both are true:
 - its context fill (the roster's segment, or `session_budget(name)`) is above its role's
   advisory threshold. The thresholds are `DEFAULT_CONTEXT_HINTS` in `src/config.ts`,
   overridable by `contextHints` in `~/.agent-chat/config.json`. At the time of writing:
-  implementer and implementer-lite 200k, peer 250k, any other profile 250k. Explorer,
-  reviewer, researcher and planner have none, so keep their follow-ups in place.
+  implementer and implementer-lite 200k, peer 250k, planner 250k, reviewer 300k, any other
+  profile 250k. Explorer and researcher have none, so keep their follow-ups in place.
 
 Then spawn the successor with `agent_spawn(..., predecessor: "<old name>")` instead of a
 `chat_send` to the old session. The broker adds a Predecessor section ahead of your brief:
