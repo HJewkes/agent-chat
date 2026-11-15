@@ -456,8 +456,9 @@ its context as the scarce resource, not the agents' time.
   671M tokens (logan guest-retro-2026-11-13.md, Q2).
 - A coordinator with no live workers and an empty queue stops its heartbeat. A heartbeat run by
   a model re-reads the whole context on every beat (lane-3 lead, 2026-11-14: 65 beats at about
-  450k context cost 91 M tokens and produced one action). Until the model-free gate is
-  installed, park instead of beating.
+  450k context cost 91M tokens and produced one action). Until
+  `agent-chat heartbeat gate --until-change` runs in your installed build, wait for messages
+  instead of beating; once it does, arm it as docs/working-as-a-team.md §5b describes.
 - `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context
   fill as well as your own. Use it to see which seats are expensive before deciding who does
   the next context-heavy job.
