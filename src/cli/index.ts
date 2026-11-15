@@ -59,6 +59,7 @@ import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
 import { unknownCommand } from './unknown-command.js'
 import { watch, type WatchOptions } from './watch.js'
+import { heartbeatGateVerb } from './verbs/heartbeat-gate.js'
 
 const HUMAN = 'Human commands:'
 const AGENTS = 'Agent commands:'
@@ -183,6 +184,12 @@ function addAgentCommands(program: Command): void {
     .option('--interval <seconds>', 'how often to poll', '2')
     .option('--once', 'print what is waiting and exit, instead of following')
     .action((name: string, options: WatchOptions) => watch(name, options))
+
+  const heartbeat = program
+    .command('heartbeat')
+    .description('model-free wakes for a Monitor')
+    .helpGroup(AGENTS)
+  addVerb(heartbeat, heartbeatGateVerb)
 
   const agent = program.command('agent').description('durable agents').helpGroup(AGENTS)
 
