@@ -8,7 +8,9 @@ import { accountIdentity } from '../../agents/account-identity.js'
 import { charterSeats, isSeatName } from '../../agents/seats/charter.js'
 import { appendSeatLog, defaultAutonomyRoot, readText } from '../../agents/seats/io.js'
 import type { BrokerClient } from '../../client/broker-client.js'
-import { ACCOUNT_MOVE_GUARD } from '../../protocol.js'
+import { ACCOUNT_MOVE_GUARD, type SessionInfo } from '../../protocol.js'
+import { readTurnEnded } from '../../agents/idle-print-wake.js'
+import { findTranscript } from '../../agents/transcript.js'
 import { resolveAccountRotation } from '../../config.js'
 import { defineVerb, Report, type AccountPool } from '../command.js'
 import { kicksInBroker } from './job-kick.js'
@@ -43,6 +45,14 @@ async function sendMove(
   return { ok: res.ok, detail: res.ok ? `moving to ${to}` : (res.reason ?? 'refused') }
 }
 
+/** CC-894: read from the session's own transcript, so a seat in a long tool call is never taken for idle. */
+function sessionTurnEnded(session: SessionInfo): boolean {
+  const sessionId = session.observed?.claudeSessionId
+  if (sessionId === undefined || sessionId === '') return false
+  const transcript = findTranscript(session.cwd, sessionId, session.observed?.configDir)
+  return transcript.exists && readTurnEnded(transcript.path)
+}
+
 /** The machine's seats, roster, readings and broker; the watchdog run reuses it with its own client. */
 export function liveGuardDeps(
   root: string,
@@ -60,6 +70,7 @@ export function liveGuardDeps(
     saveState: state => saveGuardState(state),
     move: (name, to) => sendMove(client, name, to),
     notify: notifyAsWatchdog,
+    turnEnded: sessionTurnEnded,
     seatLog: (seat, text) => void appendSeatLog(root, seat, new Date(), text),
     now: () => Date.now(),
   }

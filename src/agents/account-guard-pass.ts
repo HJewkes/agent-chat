@@ -9,7 +9,7 @@ import {
 } from './account-guard.js'
 import { LEAST_USED, moveNameOf } from './account-request.js'
 import type { RotationConfig } from './account-rotation.js'
-import { accountName, defaultConfigDir } from './config-dir.js'
+import { accountName } from './config-dir.js'
 import { ACCOUNT_GUARD, type SessionInfo } from '../protocol.js'
 
 /** CC-894: one guard tick over every charter seat: read, decide, then move or notify unless dry. */
@@ -31,6 +31,8 @@ export interface GuardDeps {
   /** Sends `account_move` for the session to the named account. */
   move(name: string, to: string): Promise<GuardOutcome>
   notify(text: string): Promise<GuardOutcome>
+  /** Whether the session's transcript ends on an ended turn; a missing or unreadable one reads false. */
+  turnEnded(session: SessionInfo): boolean
   /** Appends a line to the seat's own log, so its journal shows who moved it. */
   seatLog(seat: string, text: string): void
   now(): number
@@ -44,10 +46,11 @@ function guardSeats(deps: GuardDeps, roster: SessionInfo[]): GuardSeat[] {
     const row = roster.find(session => session.name === name)
     return {
       name,
-      configDir: row?.observed?.configDir ?? defaultConfigDir(),
+      configDir: row?.observed?.configDir,
       declares: declaresLeastUsed(seatFile),
       live: row !== undefined,
       idleMs: row?.idleMs ?? 0,
+      turnEnded: row !== undefined && deps.turnEnded(row),
     }
   })
 }

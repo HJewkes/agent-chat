@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { AccountUsage } from '../agents/account-budget.js'
 import {
   emptyGuardState,
@@ -14,6 +17,7 @@ import { DEFAULT_ROTATION } from '../agents/account-rotation.js'
 import type { ClientMessage, SessionInfo } from '../protocol.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import { liveGuardDeps } from '../cli/verbs/accounts-guard.js'
+import { transcriptPath } from '../agents/transcript.js'
 
 /** CC-894: the account guard over fake readings and a fake clock; nothing reads a real login. */
 
@@ -49,6 +53,7 @@ const seat = (over: Partial<GuardSeat> = {}): GuardSeat => ({
   declares: true,
   live: true,
   idleMs: 30 * MIN,
+  turnEnded: true,
   ...over,
 })
 
@@ -150,7 +155,23 @@ describe('the account guard deciding one seat', () => {
     expect(decision.kind).toBe('none')
   })
 
-  // Mutation: dropping the idle check ends a seat mid-turn.
+  // Mutation: dropping the turn check ends a seat in a long tool call that sends no chat frame.
+  it('leaves a seat mid-turn untouched though it sent no chat frame for 30 minutes', () => {
+    const decision = decide([usage('alpha', 95), usage('beta', 5)], {
+      seat: seat({ idleMs: 30 * MIN, turnEnded: false }),
+    })
+
+    expect(decision).toMatchObject({ kind: 'none', reason: expect.stringMatching(/^mid-turn/) })
+  })
+
+  // Mutation: falling back to the default account judges the seat on another account's reading.
+  it('leaves a seat that reports no config dir untouched', () => {
+    const decision = decide([usage('alpha', 95), usage('beta', 5)], { seat: seat({ configDir: undefined }) })
+
+    expect(decision).toMatchObject({ kind: 'none', reason: expect.stringMatching(/no config dir/) })
+  })
+
+  // Mutation: dropping the idle check moves a seat that just sent a chat frame.
   it('leaves a busy seat untouched', () => {
     const decision = decide([usage('alpha', 95), usage('beta', 5)], { seat: seat({ idleMs: 10_000 }) })
 
@@ -179,7 +200,7 @@ const rosterRow = (name: string, configDir: string, idleMs: number): SessionInfo
     observed: { configDir },
   }) as SessionInfo
 
-function fakeDeps(idleMs: number) {
+function fakeDeps(idleMs: number, turnEnded = true) {
   const moves: { name: string; to: string }[] = []
   const saved: GuardState[] = []
   const logged: { seat: string; text: string }[] = []
@@ -201,6 +222,7 @@ function fakeDeps(idleMs: number) {
       return { ok: true, detail: `moving to ${to}` }
     },
     notify: async () => ({ ok: true, detail: 'notice' }),
+    turnEnded: () => turnEnded,
     seatLog: (seat, text) => logged.push({ seat, text }),
     now: () => NOW,
   }
@@ -227,6 +249,15 @@ describe('one guard tick', () => {
     expect(moves).toEqual([])
     expect(saved).toEqual([])
     expect(lines.join('\n')).toContain('coord-a: WOULD MOVE alpha -> beta')
+  })
+
+  // Mutation: not passing the transcript's turn state to the decision moves a seat mid-turn.
+  it('sends no move for a seat whose transcript shows a turn in flight', async () => {
+    const { deps, moves } = fakeDeps(30 * MIN, false)
+
+    await runGuard(deps, { dryRun: false })
+
+    expect(moves).toEqual([])
   })
 
   // Mutation: reading idleMs as 0-means-idle moves a busy seat.
@@ -265,5 +296,54 @@ describe('the guard’s own record of a move', () => {
     await liveGuardDeps('/synthetic/autonomy', client, pool).move('coord-a', 'beta')
 
     expect(sent).toEqual([{ t: 'account_move', name: 'coord-a', to: 'beta', source: 'guard' }])
+  })
+})
+
+describe('the live turn reader', () => {
+  const SESSION_ID = '0f1e2d3c-4b5a-6978-8091-a2b3c4d5e6f7'
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  function sessionWith(rows: object[] | undefined): SessionInfo {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-config-'))
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-cwd-'))
+    dirs.push(configDir, cwd)
+    if (rows !== undefined) {
+      const file = transcriptPath(cwd, SESSION_ID, configDir)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    }
+    return {
+      ...rosterRow('coord-a', configDir, 30 * MIN),
+      cwd,
+      observed: { configDir, claudeSessionId: SESSION_ID },
+    }
+  }
+
+  const turnEnded = (session: SessionInfo): boolean =>
+    liveGuardDeps('/synthetic/autonomy', {} as BrokerClient, {
+      readings: () => [],
+      config: () => DEFAULT_ROTATION,
+    }).turnEnded(session)
+
+  const prompt = { type: 'user', message: { role: 'user', content: 'run the suite' } }
+  const toolCall = { type: 'assistant', message: { role: 'assistant', stop_reason: 'tool_use', content: [] } }
+  const ended = { type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }
+
+  // Mutation: reading frame recency instead of the transcript calls a seat in a tool call idle.
+  it('reads a seat waiting on a tool call as mid-turn', () => {
+    expect(turnEnded(sessionWith([prompt, toolCall]))).toBe(false)
+  })
+
+  // Mutation: treating every transcript as busy never lets a seat move.
+  it('reads a transcript ending on end_turn as an ended turn', () => {
+    expect(turnEnded(sessionWith([prompt, ended]))).toBe(true)
+  })
+
+  // Mutation: reading a missing transcript as ended moves a seat the guard cannot see.
+  it('reads a missing transcript as mid-turn', () => {
+    expect(turnEnded(sessionWith(undefined))).toBe(false)
   })
 })
