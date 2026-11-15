@@ -10,7 +10,7 @@ import { moveNameOf } from './account-request.js'
 import type { RotationConfig } from './account-rotation.js'
 import { accountName, defaultConfigDir } from './config-dir.js'
 import { declaresLeastUsed } from './least-used-seat.js'
-import type { SessionInfo } from '../protocol.js'
+import { ACCOUNT_GUARD, type SessionInfo } from '../protocol.js'
 
 /** CC-894: one guard tick over every charter seat: read, decide, then move or notify unless dry. */
 
@@ -31,6 +31,8 @@ export interface GuardDeps {
   /** Sends `account_move` for the session to the named account. */
   move(name: string, to: string): Promise<GuardOutcome>
   notify(text: string): Promise<GuardOutcome>
+  /** Appends a line to the seat's own log, so its journal shows who moved it. */
+  seatLog(seat: string, text: string): void
   now(): number
 }
 
@@ -64,6 +66,12 @@ async function carryOut(deps: GuardDeps, decision: GuardDecision): Promise<Guard
   return undefined
 }
 
+/** Names the guard as the mover, never the human, whatever the broker records. */
+const guardLogLine = (decision: Extract<GuardDecision, { kind: 'move' }>, outcome: GuardOutcome): string =>
+  `${ACCOUNT_GUARD} ${outcome.ok ? 'moved' : 'failed to move'} this seat ` +
+  `${accountName(decision.from)} -> ${accountName(decision.to)}: ${decision.reason}` +
+  (outcome.ok ? '' : ` (${outcome.detail})`)
+
 export async function runGuard(deps: GuardDeps, options: { dryRun: boolean }): Promise<string[]> {
   const seats = guardSeats(deps, await deps.roster())
   const [usages, config, now] = [deps.readings(), deps.config(), deps.now()]
@@ -77,6 +85,7 @@ export async function runGuard(deps: GuardDeps, options: { dryRun: boolean }): P
     const outcome = await carryOut(deps, decision)
     if (outcome === undefined) continue
     lines.push(`  ${outcome.ok ? 'done' : 'failed'}: ${outcome.detail}`)
+    if (decision.kind === 'move') deps.seatLog(seat.name, guardLogLine(decision, outcome))
     if (outcome.ok) state = nextGuardState(state, decision, now)
   }
   if (!options.dryRun) deps.saveState(state)

@@ -6,8 +6,9 @@ import { readGuardState, saveGuardState } from '../../agents/account-guard-state
 import { runGuard, type GuardDeps } from '../../agents/account-guard-pass.js'
 import { accountIdentity } from '../../agents/account-identity.js'
 import { charterSeats, isSeatName } from '../../agents/seats/charter.js'
-import { defaultAutonomyRoot, readText } from '../../agents/seats/io.js'
+import { appendSeatLog, defaultAutonomyRoot, readText } from '../../agents/seats/io.js'
 import type { BrokerClient } from '../../client/broker-client.js'
+import { ACCOUNT_MOVE_GUARD } from '../../protocol.js'
 import { resolveAccountRotation } from '../../config.js'
 import { defineVerb, Report, type AccountPool } from '../command.js'
 import { kicksInBroker } from './job-kick.js'
@@ -36,7 +37,7 @@ async function sendMove(
   to: string,
 ): Promise<{ ok: boolean; detail: string }> {
   const res = (await client.request(
-    { t: 'account_move', name, to },
+    { t: 'account_move', name, to, source: ACCOUNT_MOVE_GUARD },
     'teleport_result',
   )) as Reply<'teleport_result'>
   return { ok: res.ok, detail: res.ok ? `moving to ${to}` : (res.reason ?? 'refused') }
@@ -59,6 +60,7 @@ export function liveGuardDeps(
     saveState: state => saveGuardState(state),
     move: (name, to) => sendMove(client, name, to),
     notify: notifyAsWatchdog,
+    seatLog: (seat, text) => void appendSeatLog(root, seat, new Date(), text),
     now: () => Date.now(),
   }
 }
