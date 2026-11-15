@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { PushHold } from '../../broker/push-hold.js'
+import type { Notified } from './notified-state.js'
 
 /**
  * The held-message relay: mail that sits unanswered in a coordinator's inbox past a threshold
@@ -56,8 +57,7 @@ export interface HeldItem {
   hold: PushHold | undefined
 }
 
-/** Dedupe state: item key to the epoch ms it was last noticed. */
-export type Notified = Record<string, number>
+export type { Notified } from './notified-state.js'
 
 export const itemKey = (item: Pick<HeldItem, 'recipient' | 'msgId'>): string =>
   `${item.recipient}:${item.msgId}`

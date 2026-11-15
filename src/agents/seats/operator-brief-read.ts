@@ -7,6 +7,7 @@ import { childEnv, type RunResult } from '../../exec.js'
 import type { AgentIdentity, QueueItem } from '../../protocol.js'
 import { SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, SHEPHERD_WAITING_ARGS } from '../../shepherd-client.js'
 import { taskScalars } from '../active-work.js'
+import type { DetachedAlertConfig } from './detached-alert.js'
 import { loadCharterPools, loadPolicy } from '../burndown/policy.js'
 import { readTail } from '../transcript-usage.js'
 import { BLOCK_PAGE_TO } from './block-page.js'
@@ -51,6 +52,7 @@ export interface BriefReadOptions {
   now: Date
   show?: string[]
   plain: (err: unknown) => string
+  detachedAlert?: DetachedAlertConfig
 }
 
 const value = <T>(s: Settled<T>): T | undefined => (s.ok ? s.value : undefined)
@@ -117,6 +119,7 @@ export async function readOperatorBrief(
     paceAgeSeconds: value(pace),
     burndown: value(burndown),
     taskStatus: value(tasks),
+    detachedAlert: opts.detachedAlert,
     unavailable: [...unavailableOf(sources), ...inboxUnavailable(inboxes)],
   })
 }

@@ -84,6 +84,9 @@ export const remoteHostOf = (
   localHost = brokerHost(),
 ): string | undefined => (agent.host !== undefined && agent.host !== localHost ? agent.host : undefined)
 
+/** The reason's stable tail for an agent on another host; the detached alert matches it in `exit.summary`. */
+export const REMOTE_UNPROBED = 'no connection through the settle window (the broker cannot probe that host)'
+
 /**
  * A remote agent's only evidence is presence: with no connection, it is read as gone. The detach
  * reaper asks after the settle window; a resume asks at once, as it does for a local agent with no
@@ -91,11 +94,7 @@ export const remoteHostOf = (
  */
 export function agentLiveness(agent: AgentIdentity, probe: ProcessProbe, localHost = brokerHost()): Liveness {
   const remote = remoteHostOf(agent, localHost)
-  if (remote !== undefined)
-    return {
-      dead: true,
-      reason: `on host ${remote}, no connection through the settle window (the broker cannot probe that host)`,
-    }
+  if (remote !== undefined) return { dead: true, reason: `on host ${remote}, ${REMOTE_UNPROBED}` }
   return launcherPid(agent.agentId) === undefined
     ? sessionLiveness(agent, probe)
     : launcherLiveness(agent.agentId, probe)

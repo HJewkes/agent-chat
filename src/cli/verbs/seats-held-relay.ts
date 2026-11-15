@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
 import {
@@ -10,6 +9,7 @@ import {
   type Notified,
 } from '../../agents/seats/held-relay.js'
 import { readHeldCandidates, readHolds } from '../../agents/seats/held-relay-read.js'
+import { loadNotified, saveNotified } from '../../agents/seats/notified-state.js'
 import type { WakeResult } from '../../agents/seats/run.js'
 import { logEvent } from '../../broker/log.js'
 import { resolveAutoStart, resolveHeldRelay } from '../../config.js'
@@ -76,21 +76,6 @@ export async function runHeldRelay(
 
 export const heldRelayStatePath = (): string => path.join(home(), 'held-relay.json')
 
-function loadState(file: string): Notified {
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
-    return z.record(z.string(), z.number()).parse(parsed)
-  } catch {
-    return {}
-  }
-}
-
-function saveState(file: string, notified: Notified): void {
-  const tmp = `${file}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, `${JSON.stringify(notified, null, 2)}\n`, { mode: 0o600 })
-  fs.renameSync(tmp, file)
-}
-
 function readItems(dbPath: string, rules: HeldRelayConfig, untilMs: number): HeldItem[] {
   const book = readHolds(dbPath, rules.recipients, untilMs)
   const names = new Set([...rules.recipients, ...(rules.includeCoordinators ? book.coordinators : [])])
@@ -103,8 +88,8 @@ function livePorts(dbPath: string, rules: HeldRelayConfig): RelayPorts {
   return {
     rules,
     read: untilMs => readItems(dbPath, rules, untilMs),
-    loadState: () => loadState(file),
-    saveState: notified => saveState(file, notified),
+    loadState: () => loadNotified(file),
+    saveState: notified => saveNotified(file, notified),
     notify: notifyAsWatchdog,
     wake: (recipient, text) => withRunningBroker(client => sendAsOwner(client, recipient, text)),
     log: detail => logEvent('held_relay', detail),

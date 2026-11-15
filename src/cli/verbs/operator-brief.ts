@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { readAccountBudget } from '../../agents/budget.js'
 import { defaultAutonomyRoot } from '../../agents/seats/io.js'
+import type { DetachedAlertConfig } from '../../agents/seats/detached-alert.js'
 import { renderOperatorBrief } from '../../agents/seats/operator-brief.js'
 import {
   execAsync,
@@ -14,6 +15,7 @@ import {
 } from '../../agents/seats/operator-brief-read.js'
 import { pacePath } from '../../agents/seats/pace-pass.js'
 import { plainError } from '../../agents/seats/status.js'
+import { resolveDetachedAlert } from '../../config.js'
 import { burndownPausePath, burndownTicksPath, home } from '../../paths.js'
 import { defineVerb, Report } from '../command.js'
 import { withRunningBroker } from './seat-broker.js'
@@ -52,12 +54,14 @@ export async function operatorBriefReport(
   args: BriefArgs,
   now: Date,
   dirs: string[],
+  detachedAlert: DetachedAlertConfig = resolveDetachedAlert(),
 ): Promise<Report> {
   const show = args.seat === undefined || args.seat.length === 0 ? undefined : args.seat
   const brief = await readOperatorBrief(ports, {
     now,
     ...(show === undefined ? {} : { show }),
     plain: err => plainError(err, dirs),
+    detachedAlert,
   })
   const lines = args.json === true ? [JSON.stringify(brief)] : renderOperatorBrief(brief, args)
   return { ok: true, lines }
