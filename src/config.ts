@@ -5,6 +5,11 @@ import { configPath } from './paths.js'
 import { parseClaimWake, type ClaimWakeConfig } from './broker/claim-wake.js'
 import { DEFAULT_HELD_RELAY, parseHeldRelay, type HeldRelayConfig } from './agents/seats/held-relay.js'
 import {
+  DEFAULT_DETACHED_ALERT,
+  parseDetachedAlert,
+  type DetachedAlertConfig,
+} from './agents/seats/detached-alert.js'
+import {
   DEFAULT_MACHINE_CPU_PRESSURE_PERCENT,
   DEFAULT_MACHINE_DISK_BYTES_PERCENT,
   DEFAULT_MACHINE_HEADLESS_AGENTS,
@@ -110,6 +115,8 @@ export interface AgentChatConfig {
   remoteBroker?: unknown
   /** The held-message relay (`seats held-relay`); unset or invalid (logged) keeps it off. */
   heldRelay?: unknown
+  /** OWNER-2: the detached-agent alert (watchdog notice and brief line); unset or invalid (logged) gives defaults. */
+  detachedAlert?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -238,6 +245,16 @@ export function resolveHeldRelay(): HeldRelayConfig {
   if (typeof parsed !== 'string') return parsed
   logInvalidOnce({ key: 'heldRelay', value, reason: parsed, fallback: 'defaults' })
   return DEFAULT_HELD_RELAY
+}
+
+/** `detachedAlert` in `config.json`, read per pass and per brief; unset or invalid (logged) gives the defaults. */
+export function resolveDetachedAlert(): DetachedAlertConfig {
+  const value = readConfig().detachedAlert
+  if (value === undefined) return DEFAULT_DETACHED_ALERT
+  const parsed = parseDetachedAlert(value)
+  if (typeof parsed !== 'string') return parsed
+  logInvalidOnce({ key: 'detachedAlert', value, reason: parsed, fallback: 'defaults' })
+  return DEFAULT_DETACHED_ALERT
 }
 
 /**

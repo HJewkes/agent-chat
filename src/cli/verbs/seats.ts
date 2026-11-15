@@ -25,6 +25,7 @@ import {
 } from '../../agents/machine-guard.js'
 import { readHostHeadroom } from '../../agents/host-headroom.js'
 import {
+  resolveDetachedAlert,
   resolveMachineLimits,
   resolveMachineStopLimits,
   resolvePoolPickMode,
@@ -112,6 +113,10 @@ import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../proto
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
 import { runGuard } from '../../agents/account-guard-pass.js'
+import { agentLiveness, hostProbe } from '../../agents/detached-reap.js'
+import { brokerRoster, runDetachedAlert, type DetachedPorts } from '../../agents/seats/detached-alert-run.js'
+import { loadNotified, saveNotified } from '../../agents/seats/notified-state.js'
+import { watchdogLines, type SubPass } from '../../agents/seats/sub-pass.js'
 import { liveGuardDeps } from './accounts-guard.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
 import {
@@ -361,20 +366,37 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
   }
 }
 
-/** CC-894: the account guard runs after the seats pass; its failure costs its own lines, never the pass. */
-async function guardPass(root: string, client: BrokerClient, dryRun: boolean): Promise<string[]> {
-  try {
-    return await runGuard(liveGuardDeps(root, client), { dryRun })
-  } catch (err) {
-    return [`guard: failed: ${(err as Error).message}`]
+/** CC-894: the account guard runs after the seats pass. */
+const guardPass = (root: string, client: BrokerClient, dryRun: boolean): SubPass => ({
+  label: 'guard',
+  run: () => runGuard(liveGuardDeps(root, client), { dryRun }),
+})
+
+export const detachedAlertStatePath = (): string => path.join(home(), 'detached-alert.json')
+
+/** OWNER-2: agents whose broker connection stayed closed past the threshold, as one human-queue notice. */
+function detachedPass(client: BrokerClient, dryRun: boolean): SubPass {
+  const file = detachedAlertStatePath()
+  const ports: DetachedPorts = {
+    rules: resolveDetachedAlert(),
+    roster: brokerRoster(client),
+    probe: agent => agentLiveness(agent, hostProbe),
+    loadState: () => loadNotified(file),
+    saveState: notified => saveNotified(file, notified),
+    notify: notifyAsWatchdog,
+    log: detail => logEvent('detached_alert', detail),
   }
+  return { label: 'detached', run: () => runDetachedAlert(ports, { dryRun, nowMs: Date.now() }) }
 }
 
 async function liveRun(root: string, options: WatchdogOptions): Promise<Report> {
-  const lines = await withRunningBroker(async client => [
-    ...(await runWatchdog(liveDeps(root, client), options)),
-    ...(options.seats === undefined ? await guardPass(root, client, options.dryRun) : []),
-  ])
+  const lines = await withRunningBroker(client =>
+    watchdogLines(
+      () => runWatchdog(liveDeps(root, client), options),
+      [guardPass(root, client, options.dryRun), detachedPass(client, options.dryRun)],
+      options.seats !== undefined,
+    ),
+  )
   return { ok: true, lines }
 }
 
@@ -438,7 +460,9 @@ export const seatsWatchdogVerb = defineVerb({
     'delete the entry to re-enable), a seat at its spend stop, or any seat while the owner seat has ' +
     'announced a broker restart without "restart done". A latest journal line starting WRAP, PARKED ' +
     'or BUDGET-PAUSE stops both the wake and the resume until the seat logs an ordinary line. Pages ' +
-    'tp-operator once per live seat blocked on AskUserQuestion over 5 min (CC-1057). An ' +
+    'tp-operator once per live seat blocked on AskUserQuestion over 5 min (CC-1057). On a full run, ' +
+    'files one human-queue notice for agents detached from the broker past detachedAlert.thresholdMinutes ' +
+    '(OWNER-2). An ' +
     'unparsable seat-watchdog.json is an error and the run does nothing',
   args: z.object({
     dryRun: z.boolean().optional(),
