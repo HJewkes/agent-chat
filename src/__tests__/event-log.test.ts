@@ -618,3 +618,33 @@ describe('long agent-row bodies read on demand (CC-1463)', () => {
     expect(agents.roster()[0]!.state).toBe('spawning')
   })
 })
+
+describe('report predicates (CC-747)', () => {
+  const send = (log: EventLog, body: string): void => {
+    log.append({ kind: 'message', actor: 'worker', target: 'boss', body })
+  }
+
+  it('does not count an interim mid-line marker as a report for the reported frame', () => {
+    const log = freshLog()
+    send(log, 'Task 1 status: DONE, starting task 2')
+
+    expect(log.hasStatusReport('worker', ['boss'], 0)).toBe(false)
+    expect(log.hasReportMarker('worker', ['boss'], 0)).toBe(true)
+  })
+
+  it('counts a message that opens with Status: under both predicates', () => {
+    const log = freshLog()
+    send(log, 'Status: DONE')
+
+    expect(log.hasStatusReport('worker', ['boss'], 0)).toBe(true)
+    expect(log.hasReportMarker('worker', ['boss'], 0)).toBe(true)
+  })
+
+  it('counts neither predicate for a message with no marker', () => {
+    const log = freshLog()
+    send(log, 'working on the status of it')
+
+    expect(log.hasStatusReport('worker', ['boss'], 0)).toBe(false)
+    expect(log.hasReportMarker('worker', ['boss'], 0)).toBe(false)
+  })
+})

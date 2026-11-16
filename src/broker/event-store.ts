@@ -117,6 +117,9 @@ export interface EventStore {
   /** Whether `from` sent any of `to` a message opening with `Status:` or `Verdict:` at or after `since` (CC-266). */
   hasStatusReport(from: string, to: readonly string[], since: number): boolean
 
+  /** CC-747: `hasStatusReport`, or a Status or Verdict marker anywhere in a message; for the exit notice only. */
+  hasReportMarker(from: string, to: readonly string[], since: number): boolean
+
   /** The newest of those reports, for the completion hook's facts (CC-763). */
   lastStatusReport(from: string, to: readonly string[], since: number): QueueItem | undefined
 

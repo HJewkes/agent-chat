@@ -206,6 +206,31 @@ describe('an agent that exits without its Status report', () => {
     expect(unreported()[0]?.text).toBe('scout exited with no Status report; last action: unknown')
   })
 
+  it.each([
+    ['at line start', 'Status: DONE\nPR: none'],
+    ['mid-line', 'TP-6701 (W47 NEW-2) status: DONE.'],
+    ['in lowercase', 'status: done_with_concerns'],
+    ['as a mid-line verdict', 'Review result. Verdict: APPROVE'],
+  ])('sends no notice when its report to the spawner has the marker %s (CC-747)', async (_where, body) => {
+    registerCoord()
+    await spawnScout()
+    core.append({ kind: 'message', actor: 'scout', target: 'coord', body })
+
+    await exitAndSettle()
+
+    expect(unreported()).toEqual([])
+  })
+
+  it('still sends the notice when its messages to the spawner carry no marker (CC-747)', async () => {
+    registerCoord()
+    await spawnScout()
+    core.append({ kind: 'message', actor: 'scout', target: 'coord', body: 'working on the status of it' })
+
+    await exitAndSettle()
+
+    expect(unreported()).toHaveLength(1)
+  })
+
   it('tells its spawner it exited with a pending background task when the resume is refused (CC-255)', async () => {
     const coord = registerCoord()
     const agentId = await spawnScout()
