@@ -1949,7 +1949,7 @@ export class Supervisor implements TeleportHost {
     const identity = this.core.agents.get(agentId)
     if (identity === undefined) return undefined
     const recipients = reportRecipients(identity.spawnedBy)
-    if (this.core.events.hasStatusReport(name, recipients, this.core.runStartedAt(identity))) return undefined
+    if (this.core.events.hasReportMarker(name, recipients, this.core.runStartedAt(identity))) return undefined
     const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
     const decision = backgroundResumeDecision({
       pendingBackground: tail.pendingBackground,
