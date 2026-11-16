@@ -169,6 +169,13 @@ export type ReportKind = 'status' | 'verdict'
 export const reportKindOf = (text: string): ReportKind | undefined =>
   REPORT_OPENING.exec(text)?.[1]?.toLowerCase() as ReportKind | undefined
 
+/**
+ * CC-747: a report marker anywhere in a message, any case. Only the exit notice uses it, since
+ * agents spawned with no return contract write `TP-1 status: DONE.` rather than a `Status:` line.
+ */
+const REPORT_MARKER =
+  /\b(status\s*:[\s*_`]*(done|done_with_concerns|blocked|needs_context)|verdict\s*:[\s*_`]*(merge|fix_first|wait|approve|changes|request_changes|revise|reject|blocked))(?![\w-])/i
+
 /** Whether a message opens as a return-contract report; the one test CC-266 and CC-321 share. */
 export const isReport = (text: string): boolean => reportKindOf(text) !== undefined
 
@@ -535,7 +542,19 @@ export class EventLog implements EventStore {
   }
 
   hasStatusReport(from: string, to: readonly string[], since: number): boolean {
-    return this.lastStatusReport(from, to, since) !== undefined
+    if (this.lastStatusReport(from, to, since) !== undefined) return true
+    return this.sentReportMarker(from, to, since)
+  }
+
+  private sentReportMarker(from: string, to: readonly string[], since: number): boolean {
+    if (to.length === 0) return false
+    const rows = this.db
+      .prepare(
+        `SELECT body FROM events
+         WHERE actor = ? AND kind = 'message' AND ts >= ? AND target IN (${to.map(() => '?').join(', ')})`,
+      )
+      .all(from, since, ...to) as unknown as { body: string | null }[]
+    return rows.some(r => REPORT_MARKER.test(r.body ?? ''))
   }
 
   lastStatusReport(from: string, to: readonly string[], since: number): QueueItem | undefined {
