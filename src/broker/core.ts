@@ -13,7 +13,19 @@ import {
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
-import { resolveClaimWake, resolveReportBatchMs, resolveSeatSteward } from '../config.js'
+import {
+  resolveClaimWake,
+  resolveReportBatchMs,
+  resolveSeatSingleInstanceMode,
+  resolveSeatSteward,
+} from '../config.js'
+import { loadSeatPolicy } from '../agents/seat-policy.js'
+import { policySeat } from '../agents/seat-root.js'
+import {
+  seatHolders,
+  singleInstanceRefusal,
+  type SingleInstanceRequest,
+} from '../agents/seats/single-instance.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport } from './event-log.js'
 import { ReportBatcher, type Unpushed } from './report-batch.js'
@@ -246,6 +258,11 @@ export class BrokerCore<C = Conn> {
       logEvent('register_rejected', { name: msg.name, agentId: msg.agentId, reason: claim.reason })
       return { ok: false, reason: claim.reason }
     }
+    const seatHeld = this.registerSeatRefusal(msg)
+    if (seatHeld !== undefined) {
+      logEvent('register_rejected', { name: msg.name, agentId: msg.agentId, reason: seatHeld })
+      return { ok: false, reason: seatHeld }
+    }
     // Deliberately NOT the resolved identity below: only an agent id the broker
     // minted and handed over in an environment may take a live name away from its
     // holder. A session id is merely evidence of which Claude Code process this
@@ -281,6 +298,41 @@ export class BrokerCore<C = Conn> {
       })
     }
     return { ok: true }
+  }
+
+  /** TP-5768: a registration under a policy seat's name while another identity holds it. */
+  private registerSeatRefusal(msg: RegisterMessage): string | undefined {
+    if (msg.agentId === undefined)
+      return this.seatSingleInstanceRefusal(
+        msg.name,
+        'register-adopted',
+        this.agents.bySession(msg.sessionId ?? '')?.agentId,
+      )
+    const teleportFrom = this.agents.get(msg.agentId)?.teleportFrom
+    return this.seatSingleInstanceRefusal(msg.name, 'register-agentId', msg.agentId, teleportFrom)
+  }
+
+  /** TP-5768: the single-instance guard for a policy seat, under `seatSingleInstance.mode`. */
+  seatSingleInstanceRefusal(
+    name: string,
+    request: SingleInstanceRequest,
+    self?: string,
+    teleportFrom?: string,
+  ): string | undefined {
+    return singleInstanceRefusal(resolveSeatSingleInstanceMode(), () => ({
+      name,
+      isPolicySeat: policySeat(loadSeatPolicy(), name) !== undefined,
+      holders: seatHolders(this.agents.roster(), name, this.boundIds(name)),
+      request,
+      self,
+      teleportFrom,
+    }))
+  }
+
+  private boundIds(name: string): Set<string> {
+    const conn = this.registry.connFor(name)
+    const agentId = conn === undefined ? undefined : this.registry.entryFor(conn)?.agentId
+    return new Set(agentId === undefined ? [] : [agentId])
   }
 
   /** CC-1614: `launch` only for an id `claimable()` accepted above; a session-id match is not checked against the name. */
