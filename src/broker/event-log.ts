@@ -436,6 +436,20 @@ export class EventLog implements EventStore {
     return rows.map(toMessage)
   }
 
+  /** CC-1486: which of `msgIds` an `inbox_shown` receipt for `name` already names (hook or supervisor drain). */
+  shownMsgIds(name: string, msgIds: string[], sinceTs: number): Set<string> {
+    const wanted = new Set(msgIds)
+    const shown = new Set<string>()
+    const rows = this.db
+      .prepare(`SELECT meta FROM events WHERE actor = ? AND kind = 'inbox_shown' AND ts >= ?`)
+      .all(name, sinceTs) as { meta: string | null }[]
+    for (const { meta } of rows) {
+      const ids = (JSON.parse(meta ?? '{}') as { msgIds?: string }).msgIds?.split(',') ?? []
+      for (const id of ids) if (wanted.has(id)) shown.add(id)
+    }
+    return shown
+  }
+
   /**
    * Position of one of `name`'s own inbox rows by msg_id, for `inbox after`.
    * Scoped to the target so an id from someone else's inbox cannot be probed.

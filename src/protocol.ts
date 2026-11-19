@@ -622,6 +622,8 @@ export interface DeliveredMessage {
    * is what stops all three answering it, and a recipient cannot infer it.
    */
   audience?: string[]
+  /** CC-1486: set on a chat_inbox replay when an `inbox_shown` receipt says the inbox hook already showed this message. */
+  shown?: boolean
   /** Marks non-conversational deliveries, e.g. an answer coming back from the human. */
   event?: string
   /**
