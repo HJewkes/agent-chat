@@ -608,6 +608,9 @@ export async function agentBudget(
   const agents = filterRoster(all, filter)
 
   const wanted = newestByName(name === undefined ? agents : agents.filter(a => a.name === name))
+  const filtered = options.mine === true || options.spawner !== undefined || options.prefix !== undefined
+  // Matches `agent ls`: a filter that selects nobody is an empty answer, not a failure.
+  if (wanted.length === 0 && name === undefined && filtered) return { ok: true, lines: [] }
   if (wanted.length === 0) {
     return {
       ok: false,

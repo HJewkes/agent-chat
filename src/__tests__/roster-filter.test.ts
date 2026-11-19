@@ -177,6 +177,32 @@ describe('agent ls / budget filters', () => {
     expect(report.lines.join('\n')).not.toContain('cc-a')
   })
 
+  it('ls --spawner with an unknown spawner lists nothing and does not exit nonzero', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    await run('ls', '--spawner', 'nobody', '--json')
+    expect(JSON.parse(logs.join('\n'))).toEqual([])
+    expect(exit).not.toHaveBeenCalledWith(1)
+  })
+
+  it('budget --spawner with an unknown spawner succeeds with an empty report', async () => {
+    const { agentBudget } = await import('../cli/agents.js')
+    const report = await agentBudget(undefined, { spawner: 'nobody' })
+    expect(report).toEqual({ ok: true, lines: [] })
+  })
+
+  it('budget --spawner with an unknown spawner exits 0 from the CLI', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    await run('budget', '--spawner', 'nobody')
+    expect(logs).toEqual([])
+    expect(exit).not.toHaveBeenCalledWith(1)
+  })
+
+  it('budget with an unknown name still reports the missing agent', async () => {
+    const { agentBudget } = await import('../cli/agents.js')
+    const report = await agentBudget('ghost', { spawner: 'boss' })
+    expect(report.ok).toBe(false)
+  })
+
   it('budget --mine reports only the callers agents', async () => {
     const { agentBudget } = await import('../cli/agents.js')
     const report = await agentBudget(undefined, { mine: true })
