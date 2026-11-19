@@ -34,10 +34,11 @@ describe('the broker wiring of predicted-cost admission', () => {
     readings.cpu = { someAvg60: limit - 0.01 }
     const services = openServices(true)
     try {
-      const frames: ServerMessage[] = []
-      const conn = {
-        write: (line: string) => frames.push(JSON.parse(line) as ServerMessage),
-      } as unknown as Conn
+      // CC-1743: awaits the reply itself. expect.poll gave up after its 1 s default under load,
+      // and closed the log under the spawn still running.
+      let answer: (frame: ServerMessage) => void = () => undefined
+      const reply = new Promise<ServerMessage>(resolve => (answer = resolve))
+      const conn = { write: (line: string) => answer(JSON.parse(line) as ServerMessage) } as unknown as Conn
 
       services.socketServer.handleMessage(conn, {
         t: 'spawn',
@@ -45,9 +46,8 @@ describe('the broker wiring of predicted-cost admission', () => {
         profile: 'implementer',
         brief: 'x',
       } as never)
-      await expect.poll(() => frames.length).toBe(1)
 
-      expect(frames[0]).toMatchObject({ t: 'spawn_result', ok: false, code: 'machine_predicted_cpu' })
+      expect(await reply).toMatchObject({ t: 'spawn_result', ok: false, code: 'machine_predicted_cpu' })
     } finally {
       services.socketServer.close()
       services.core.close()

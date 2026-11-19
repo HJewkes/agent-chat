@@ -648,3 +648,37 @@ describe('report predicates (CC-747)', () => {
     expect(log.hasReportMarker('worker', ['boss'], 0)).toBe(false)
   })
 })
+
+describe('commit durability (CC-1743)', () => {
+  const FULL = 2
+  const OFF = 0
+  const syncMode = (log: EventLog): number =>
+    (log.ledgerHandle().prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous
+
+  function fileForLog(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-log-'))
+    dirs.push(dir)
+    return path.join(dir, 'events.db')
+  }
+
+  it('flushes every commit to disk by default', () => {
+    const log = new EventLog(fileForLog())
+
+    expect(syncMode(log)).toBe(FULL)
+    log.close()
+  })
+
+  it('skips the flush for a non-durable log, whose rows a reopen still reads', () => {
+    const file = fileForLog()
+    const log = new EventLog(file, { durable: false })
+    const msgId = ask(log, 'scout', 'still here?')
+    expect(syncMode(log)).toBe(OFF)
+    log.close()
+
+    const reopened = new EventLog(file)
+
+    expect(syncMode(reopened)).toBe(FULL)
+    expect(reopened.rowIdOf(msgId)).toBeDefined()
+    reopened.close()
+  })
+})
