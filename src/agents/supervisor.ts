@@ -3731,7 +3731,28 @@ export class Supervisor implements TeleportHost {
     outcome: { code: number | null; inferred?: boolean },
   ): string | undefined {
     if (outcome.inferred === true || this.hasAttached(agentId)) return undefined
+    if (this.ranUnattached(agentId, outcome.code)) return undefined
     return `${name} was launched but never registered: claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
+  }
+
+  /**
+   * CC-1718: a clean exit after writing this run's transcript is a run that
+   * happened, even with no attach row. Under broker load the child's register
+   * frames can all time out and its `registered` row land after its exit, so
+   * the attach log alone called a finished worker (one with a valid verdict)
+   * a failed spawn.
+   */
+  private ranUnattached(agentId: string, code: number | null): boolean {
+    if (code !== 0) return false
+    const identity = this.core.agents.get(agentId)
+    if (!identity?.sessionId) return false
+    const transcript = identityTranscript(identity)
+    if (!transcript.found) return false
+    try {
+      return fs.statSync(transcript.path).mtimeMs >= this.core.runStartedAt(identity)
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -3755,6 +3776,10 @@ export class Supervisor implements TeleportHost {
 
     const outcome = await this.awaitAttach(agentId, handle)
     if (outcome.kind === 'attached') return { kind: 'attached' }
+    if (outcome.kind === 'exited' && this.ranUnattached(agentId, outcome.code)) {
+      logEvent('agent_ran_unattached', { agentId, code: outcome.code })
+      return { kind: 'attached' }
+    }
     if (outcome.kind === 'exited') {
       const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
       const output = readOutputTail(agentDir(agentId))
