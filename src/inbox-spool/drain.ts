@@ -41,6 +41,7 @@ export const DRAIN_BUDGET = 8000
 const TEXT_CAP = 2000
 const STALE_CLAIM_MS = 30_000
 const CLAIMED = '.claimed'
+const BAD = '.bad'
 
 interface Candidate {
   name: string
@@ -72,20 +73,47 @@ export function renderBlock(record: SpoolRecord): string {
   return `<channel ${attrs}>\n${neutralizeTags(text)}\n</channel>`
 }
 
-function readCandidates(dir: string, fs: DrainFs): Candidate[] {
+function isRecord(value: unknown): value is SpoolRecord {
+  if (typeof value !== 'object' || value === null) return false
+  const { meta, text } = value as { meta?: unknown; text?: unknown }
+  return typeof text === 'string' && typeof meta === 'object' && meta !== null
+}
+
+/** CC-1485: a record that cannot parse or render would otherwise wake the hook's shell guard forever. */
+function quarantine(dir: string, name: string, fs: DrainFs, reason: unknown): void {
+  try {
+    fs.mkdirSync(path.join(dir, BAD), { recursive: true, mode: 0o700 })
+    fs.renameSync(path.join(dir, name), path.join(dir, BAD, name))
+    const detail = reason instanceof Error ? reason.message : 'not a spool record'
+    process.stderr.write(`agent-chat: moved unreadable spool record ${name} to ${BAD}/ (${detail})\n`)
+  } catch {
+    // Claimed by a concurrent drain first.
+  }
+}
+
+function readCandidates(
+  dir: string,
+  fs: DrainFs,
+  onBad?: (name: string, reason: unknown) => void,
+): Candidate[] {
   const names = fs
     .readdirSync(dir)
     .filter(name => name.endsWith('.json') && !name.startsWith('.'))
     .sort()
   const candidates: Candidate[] = []
   for (const name of names) {
+    let text: string
     try {
-      candidates.push({
-        name,
-        record: JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')) as SpoolRecord,
-      })
+      text = fs.readFileSync(path.join(dir, name), 'utf8')
     } catch {
-      // Claimed by a concurrent drain, or not a record; either way not ours to show.
+      continue // Claimed by a concurrent drain.
+    }
+    try {
+      const record: unknown = JSON.parse(text)
+      if (!isRecord(record)) throw new Error('not a spool record')
+      candidates.push({ name, record })
+    } catch (error) {
+      onBad?.(name, error)
     }
   }
   return candidates.sort((a, b) => tier(a.record) - tier(b.record))
@@ -134,8 +162,15 @@ export function drainInbox(dir: string, deps: DrainDeps = {}): Drained {
   let used = 0
   try {
     recoverStaleClaims(dir, fs, deps)
-    for (const { name, record } of readCandidates(dir, fs)) {
-      const block = renderBlock(record)
+    const onBad = (name: string, reason: unknown): void => quarantine(dir, name, fs, reason)
+    for (const { name, record } of readCandidates(dir, fs, onBad)) {
+      let block: string
+      try {
+        block = renderBlock(record)
+      } catch (error) {
+        onBad(name, error)
+        continue
+      }
       if (used + block.length > budget) break
       const claimed = claim(dir, name, fs, deps.pid ?? process.pid)
       if (claimed === undefined) continue
