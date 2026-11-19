@@ -91,8 +91,22 @@ export const realTmpFs: TmpFs = {
   mkdir: (path, mode, recursive) => void fs.mkdirSync(path, { mode, recursive }),
   chmod: (path, mode) => fs.chmodSync(path, mode),
   // Recursive rm unlinks a symlink it meets inside the tree; it never follows one.
-  rm: path => fs.rmSync(path, { recursive: true }),
+  rm: path => {
+    unlockTree(path)
+    fs.rmSync(path, { recursive: true })
+  },
   reclaimTree: (path, budget) => reclaimTree(path, budget),
+}
+
+/**
+ * CC-1707: gives every real directory under `dir` owner rwx so a recursive rm can empty it; a 0555
+ * subdir otherwise fails the rm with EACCES and leaves the tmpdir behind. A symlink is never followed.
+ */
+function unlockTree(dir: string): void {
+  const stat = fs.lstatSync(dir)
+  if (!stat.isDirectory()) return
+  if ((stat.mode & 0o700) !== 0o700) fs.chmodSync(dir, stat.mode | 0o700)
+  for (const entry of fs.readdirSync(dir)) unlockTree(`${dir}/${entry}`)
 }
 
 /**
