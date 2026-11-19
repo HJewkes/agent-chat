@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { gitMarkerAt } from '../git-marker.js'
+import { sameAsHome } from '../agents/isolation/home-repo.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, AgentLifecycle, ServerMessage } from '../protocol.js'
 import { findTranscript } from '../agents/transcript.js'
@@ -187,8 +188,11 @@ export function awaitedChildren(
 
 const run = promisify(execFile)
 
+/** Bounds a status listing so a huge untracked tree fails the read rather than the broker's memory. */
+const GIT_MAX_BUFFER = 8 << 20
+
 const git = async (cwd: string, args: string[], timeout: number): Promise<string> =>
-  (await run('git', [...GIT_READ_ONLY, '-C', cwd, ...args], { timeout })).stdout
+  (await run('git', [...GIT_READ_ONLY, '-C', cwd, ...args], { timeout, maxBuffer: GIT_MAX_BUFFER })).stdout
 
 /** git exits 128 for a cwd outside any repo; a timeout or missing git is a different failure. */
 /** git exits 128 for a broken repo too (bad config, garbage HEAD, unreadable .git), so look for one. */
@@ -211,6 +215,7 @@ export async function readDirtyPaths(cwd: string, timeoutMs = GIT_TIMEOUT_MS): P
   } catch (error) {
     return notARepo(error, cwd) ? [] : undefined
   }
+  if (sameAsHome(root)) return undefined
   try {
     const porcelain = await git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all'], timeoutMs)
     return parseDirtyPaths(porcelain, root)

@@ -20,6 +20,7 @@ import {
 } from '@titan-design/worktree'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
+import { homeRefusal, isHomeRepo } from './home-repo.js'
 import { unsavedWork } from './unsaved-work.js'
 import { resolveReviewerWorktreeBudget, resolveWorktreeBudget } from '../../config.js'
 import { isReviewerTreeName } from '../reviewer-tree.js'
@@ -318,6 +319,10 @@ export async function inspectForRelease(
   baseRef: string,
   releaseProof: ReleaseProof = 'git',
 ): Promise<WorktreeReleaseSafety> {
+  if (existsSync(worktreePath) && (await isHomeRepo(worktreePath))) {
+    const dirty: ReleaseCheck = { name: 'dirty', ok: false, detail: homeRefusal(worktreePath) }
+    return { dirty: true, unmerged: false, landed: false, ahead: null, checked: [dirty] }
+  }
   const safety = await inspectWithPackage(gitRoot, worktreePath, branch, baseRef, releaseProof)
   const unsaved = existsSync(worktreePath) ? await unsavedWork(worktreePath, 'release') : undefined
   const detail =
