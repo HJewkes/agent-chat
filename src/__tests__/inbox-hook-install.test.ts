@@ -4,6 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { drainInbox, releaseClaims } from '../inbox-spool/drain.js'
 import { buildHookSettings, inboxHookCommand } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import type { AgentProfile } from '../agents/types.js'
@@ -178,6 +179,31 @@ describe('the shell guard', () => {
     const run = runUnderSh(command, POST)
 
     expect(run.status).not.toBe(0)
+  })
+})
+
+describe('a record that cannot be read (CC-1485)', () => {
+  it('is moved to .bad on the first drain, so the next tool call starts no node and the good record still shows', () => {
+    // Arrange
+    const spool = inboxSpoolDir(AGENT)
+    fs.mkdirSync(spool, { recursive: true })
+    fs.writeFileSync(path.join(spool, '0-bad.json'), '{not json')
+    fs.writeFileSync(path.join(spool, '1-shapeless.json'), '{}')
+    const good = { kind: 'message', msgId: 'm-1', meta: { from: 'scout' }, text: 'hello' }
+    fs.writeFileSync(path.join(spool, '2-good.json'), JSON.stringify(good))
+    const noNode = inboxHookCommand(CLI, AGENT, 'post').replace(process.execPath, path.join(dir, 'no-node'))
+
+    // Act
+    const first = drainInbox(spool)
+    releaseClaims(first.claimed)
+    const second = runUnderSh(noNode, POST)
+
+    // Assert
+    expect(first.blocks).toHaveLength(1)
+    expect(fs.readdirSync(path.join(spool, '.bad')).sort()).toEqual(['0-bad.json', '1-shapeless.json'])
+    expect(fs.readdirSync(spool).filter(name => name.endsWith('.json'))).toEqual([])
+    expect(second.status).toBe(0)
+    expect(second.stdout).toBe('')
   })
 })
 
