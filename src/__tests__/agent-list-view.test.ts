@@ -18,6 +18,7 @@ import { agentList } from '../server/commands/agent-list.js'
  */
 
 let dir: string
+let events: EventLog
 let core: BrokerCore
 let server: net.Server | undefined
 let client: BrokerClient | undefined
@@ -26,8 +27,9 @@ const previousHome = process.env['AGENT_CHAT_HOME']
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac1464-'))
   process.env['AGENT_CHAT_HOME'] = dir
+  events = new EventLog(path.join(dir, 'events.db'))
   core = new BrokerCore(() => undefined, {
-    events: new EventLog(path.join(dir, 'events.db')),
+    events,
     registry: new Registry<Conn>(),
   })
   const socketServer = new SocketServer(core)
@@ -64,7 +66,16 @@ function seed(name: string, fate: Fate, spawnedBy = 'scout'): void {
 }
 
 function seedMany(count: number, fate: Fate, stem: string): void {
-  for (let i = 0; i < count; i += 1) seed(`${stem}-${i}`, fate)
+  // One commit for the batch: a commit per row is what made 500 agents take over 20s under load.
+  const db = events.ledgerHandle()
+  db.exec('BEGIN')
+  try {
+    for (let i = 0; i < count; i += 1) seed(`${stem}-${i}`, fate)
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
 }
 
 const run = (args: Parameters<typeof agentList.run>[0], broker: unknown = client): Promise<string> =>
