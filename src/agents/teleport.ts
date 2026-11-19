@@ -1444,8 +1444,9 @@ export class Teleport {
     if (launch.successorFirst === true) return this.awaitRemoteSuccessor(entry, input)
     // CC-913: written once the predecessor is gone, not at the report: until its own connection
     // drops it may still be kept (`landFailed`), and a stand-down row reads as superseded for good.
-    await this.waitForNameFree(subject.name)
+    const freed = await this.waitForNameFree(subject.name)
     if (entry.landFailed === true) return void this.pending.delete(subject.agentId)
+    if (!freed) return this.nameHeld(entry, input)
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
     this.core.append({
       kind: 'agent_retired',
@@ -1456,6 +1457,21 @@ export class Teleport {
     })
     this.pending.delete(subject.agentId)
     this.completed(entry, { remote: true })
+  }
+
+  /**
+   * CC-1720: the predecessor's connection outlived the name wait, so it is still running and its
+   * successor never attached. Retiring it here lost an agent; it keeps its seat as on `landFailed`,
+   * and the closed landing refuses the helper's late report.
+   */
+  private nameHeld(entry: Pending, input: RelaunchInput): void {
+    this.closeLanding(entry.descendantId)
+    const waited = NAME_FREE_TIMEOUT_MS / 1000
+    this.keepPredecessor(
+      entry,
+      input,
+      `its connection was still open ${waited}s after the successor was armed`,
+    )
   }
 
   /**
@@ -1762,16 +1778,17 @@ export class Teleport {
    * Registration is what holds a name, and the descendant registers under the
    * predecessor's own name. Racing that would hit the same-agentId takeover path
    * or a flat "held by another session" — so this waits for presence to end
-   * rather than assuming a signal is instant. Timing out is not fatal: the
-   * launch proceeds and the descendant's own registration reports the collision.
+   * rather than assuming a signal is instant. False once it timed out; each
+   * caller decides whether a predecessor still connected keeps its seat.
    */
-  private async waitForNameFree(name: string): Promise<void> {
+  private async waitForNameFree(name: string): Promise<boolean> {
     const deadline = Date.now() + NAME_FREE_TIMEOUT_MS
     while (Date.now() < deadline) {
-      if (this.core.registry.connFor(name) === undefined) return
+      if (this.core.registry.connFor(name) === undefined) return true
       await sleep(NAME_FREE_POLL_MS)
     }
     logEvent('teleport_name_held', { name, waitedMs: NAME_FREE_TIMEOUT_MS })
+    return false
   }
 
   /** CC-402: a command typed while the predecessor still owns the pane is swallowed, so wait for its pid to exit. */
