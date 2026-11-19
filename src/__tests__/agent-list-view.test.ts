@@ -27,7 +27,7 @@ const previousHome = process.env['AGENT_CHAT_HOME']
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac1464-'))
   process.env['AGENT_CHAT_HOME'] = dir
-  events = new EventLog(path.join(dir, 'events.db'))
+  events = new EventLog(path.join(dir, 'events.db'), { durable: false })
   core = new BrokerCore(() => undefined, {
     events,
     registry: new Registry<Conn>(),

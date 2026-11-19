@@ -82,30 +82,32 @@ function seedBacklog(): string[] {
 }
 
 const stillDetached = (): number => h.core.agents.roster().filter(a => a.state === 'detached').length
-const tick = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
-
-/** The longest the event loop went without running a 5 ms timer, while `done` is false. */
-async function longestStall(done: () => boolean): Promise<number> {
+/**
+ * CC-1743: the most CPU this thread spent in one timer callback until `done`, stepping fake
+ * timers one at a time. Wall time between real timers measured the machine's load as much
+ * as the reaper, and flaked at load 60; CPU time on this thread counts only the reaper's work.
+ */
+function longestTurnCpuMs(done: () => boolean, maxSteps: number): number {
   let longest = 0
-  let last = performance.now()
-  const timer = setInterval(() => {
-    const now = performance.now()
-    longest = Math.max(longest, now - last)
-    last = now
-  }, 5)
-  while (!done()) await tick(20)
-  clearInterval(timer)
+  for (let step = 0; !done(); step += 1) {
+    if (step === maxSteps) throw new Error(`still reaping after ${maxSteps} timers`)
+    const before = process.threadCpuUsage()
+    vi.advanceTimersToNextTimer()
+    const used = process.threadCpuUsage(before)
+    longest = Math.max(longest, (used.user + used.system) / 1000)
+  }
   return longest
 }
 
 describe('a broker restart over a backlog of detached rows with no launcher pid', () => {
-  it('keeps answering while it reaps all of them', async () => {
+  it('keeps answering while it reaps all of them', () => {
+    vi.useFakeTimers()
     seedBacklog()
 
     h.restart()
-    const stall = await longestStall(() => stillDetached() === 0)
+    const longest = longestTurnCpuMs(() => stillDetached() === 0, BACKLOG * 2)
 
-    expect(stall).toBeLessThan(1000)
+    expect(longest).toBeLessThan(1000)
     const inferred = h.core.events.agentEvents().filter(r => r.kind === 'agent_exited' && r.meta.inferred)
     expect(inferred).toHaveLength(BACKLOG)
   })
@@ -126,12 +128,13 @@ describe('a broker restart over a backlog of detached rows with no launcher pid'
     expect(recordReads).toBeLessThanOrEqual(Math.ceil(BACKLOG / 25) * 2)
   })
 
-  it('reaps nothing when no session records can be read', async () => {
+  it('reaps nothing when no session records can be read', () => {
+    vi.useFakeTimers()
     seedBacklog()
     records = []
 
     h.restart()
-    await tick(SETTLE_MS * 4)
+    vi.advanceTimersByTime(SETTLE_MS * 20)
 
     expect(stillDetached()).toBe(BACKLOG)
   })

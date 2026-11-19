@@ -142,7 +142,7 @@ interface Generation {
 }
 
 function boot(home: string, options: HarnessOptions): Generation {
-  const events = new EventLog(path.join(home, 'events.db'))
+  const events = new EventLog(path.join(home, 'events.db'), { durable: false })
   const core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
   const semaphore = new Semaphore(options.slots)
   const ledger = (options.ledger ?? (log => shadowLedgerFromConfig(() => log.ledgerHandle())))(events)

@@ -363,13 +363,18 @@ export class EventLog implements EventStore {
    */
   private readonly deferredBody = deferredBodyOf(id => this.bodyOf(id))
 
-  constructor(dbPath?: string, options: { noticeTtlMs?: () => number } = {}) {
+  /**
+   * `durable: false` skips the fsync on each commit, for a test's throwaway log: at ~20 ms a
+   * flush on a loaded disk, a fixture's thousand commits outran the test timeout (CC-1743).
+   */
+  constructor(dbPath?: string, options: { noticeTtlMs?: () => number; durable?: boolean } = {}) {
     this.noticeTtlMs = options.noticeTtlMs ?? resolveNoticeTtlMs
     const file = dbPath ?? path.join(home(), 'events.db')
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     // Another process's write lock (a CLI, or a broker losing the boot race) is waited out, not thrown.
     this.db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS })
     this.db.exec('PRAGMA journal_mode = WAL')
+    if (options.durable === false) this.db.exec('PRAGMA synchronous = OFF')
     // TP-801: file-backed temp sorts of the roster read wrote 34 GB in a day.
     this.db.exec('PRAGMA temp_store = MEMORY')
     this.db.exec(SCHEMA)
