@@ -649,20 +649,21 @@ describe('removing the TMPDIR at run-agent exit', () => {
   })
 })
 
-describe('a real removal of a tree it cannot fully delete', () => {
-  it('throws EACCES with a code, which is what the callers must catch', () => {
+describe('a real removal of a tree with a read-only subdir', () => {
+  it('unlocks the subdir so the tmpdir is removed rather than left behind', () => {
     if (process.getuid?.() === 0) return
-    const root = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'cc901-rm-'))
+    const root = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'cc1707-rm-'))
     const readOnly = path.join(root, 'tree', 'ro')
     nodeFs.mkdirSync(readOnly, { recursive: true })
     nodeFs.writeFileSync(path.join(readOnly, 'f'), '')
     nodeFs.chmodSync(readOnly, 0o555)
 
     try {
-      expect(() => realTmpFs.rm(path.join(root, 'tree'))).toThrow(expect.objectContaining({ code: 'EACCES' }))
+      realTmpFs.rm(path.join(root, 'tree'))
+
+      expect(nodeFs.existsSync(path.join(root, 'tree'))).toBe(false)
     } finally {
-      nodeFs.chmodSync(readOnly, 0o755)
-      nodeFs.rmSync(root, { recursive: true })
+      nodeFs.rmSync(root, { recursive: true, force: true })
     }
   })
 })

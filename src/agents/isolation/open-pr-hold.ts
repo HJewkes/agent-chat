@@ -1,7 +1,7 @@
 import type { AgentEventRow } from '../../broker/event-store.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { allocatedWorktree, type ParkTarget } from './park.js'
-import type { ShepherdSkipPort } from './shepherd-skip.js'
+import type { ShepherdRun, ShepherdSkipPort } from './shepherd-skip.js'
 
 /**
  * CC-1325: the bulk finished retire keeps an implementer or reviewer while a PR it worked on is open,
@@ -82,4 +82,56 @@ export async function openPrHold(
     }
   }
   return undefined
+}
+
+/**
+ * CC-1499: a branch renamed with a suffix (`agent-chat/<name>-v2`) still belongs to `<name>`, and a reviewer
+ * named for a task id (`<task>-review`) belongs to the implementer `<task>-a`. Both match on the stem
+ * followed by end or `-`, so `cc-1` never claims `cc-10`.
+ */
+export function familyStems(agent: AgentIdentity): string[] {
+  const base = reviewedAgentName(agent.name)
+  return base === undefined ? [agent.name] : [agent.name, base]
+}
+
+const inFamily = (branch: string, stem: string): boolean =>
+  branch === `agent-chat/${stem}` || branch.startsWith(`agent-chat/${stem}-`)
+
+/** Repos to ask: the agent's own, plus those of roster rows in the same name family. */
+function familyRoots(
+  stems: readonly string[],
+  target: ParkTarget | undefined,
+  roster: readonly AgentIdentity[],
+  events: readonly AgentEventRow[],
+): string[] {
+  const rows = roster.filter(a => stems.some(s => a.name === s || a.name.startsWith(`${s}-`)))
+  const targets = rows.map(a => allocatedWorktree(events, a.agentId))
+  return [
+    ...new Set([target, ...targets].filter((t): t is ParkTarget => t !== undefined).map(t => t.gitRoot)),
+  ]
+}
+
+export async function familyPrHold(
+  listOpen: ((gitRoot: string) => Promise<string[]>) | undefined,
+  agent: AgentIdentity,
+  target: ParkTarget | undefined,
+  roster: readonly AgentIdentity[],
+  events: readonly AgentEventRow[],
+): Promise<string | undefined> {
+  if (listOpen === undefined) return undefined
+  const stems = familyStems(agent)
+  for (const gitRoot of familyRoots(stems, target, roster, events)) {
+    try {
+      const hit = (await listOpen(gitRoot)).find(b => stems.some(s => inFamily(b, s)))
+      if (hit !== undefined) return `open PR on ${hit} (kept until merged or closed)`
+    } catch (err) {
+      return `could not list open PRs (${firstLine(err)})`
+    }
+  }
+  return undefined
+}
+
+/** A live Shepherd run's own branch for this agent, whatever it is called. */
+export function runBranches(runs: readonly ShepherdRun[], agent: AgentIdentity): string[] {
+  return runs.flatMap(r => (r.branch !== null && r.names.includes(agent.name) ? [r.branch] : []))
 }

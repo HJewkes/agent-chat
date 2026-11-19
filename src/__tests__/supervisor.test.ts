@@ -3260,6 +3260,68 @@ describe('reporting a spawn only once the agent has attached', () => {
   })
 
   /**
+   * CC-1718: under broker load every register frame timed out, claude finished
+   * its turn and exited 0, and the `registered` row landed after the exit. The
+   * transcript it wrote is the evidence it ran, so the spawn is launched and the
+   * exit an ordinary finish, not agent_spawn_failed.
+   */
+  it('counts a clean exit with this run’s transcript as launched when it never registered', async () => {
+    stopAutoAttach()
+    const exitWithTranscript = (listener: (...args: unknown[]) => void): void => {
+      writeTranscriptFor(core.agents.roster().find(a => a.name === 'worker') as AgentIdentity)
+      listener(0, null)
+    }
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 60_000,
+        surface: {
+          platform: 'linux',
+          spawn: () => ({
+            pid: 4243,
+            unref: () => undefined,
+            once: (event: string, listener: (...args: unknown[]) => void) => {
+              if (event === 'exit') queueMicrotask(() => exitWithTranscript(listener))
+            },
+          }),
+        },
+      }),
+    )
+
+    const result = await supervisor.spawn(spawnReq({ name: 'worker' }))
+
+    expect(result.ok).toBe(true)
+    const agent = core.agents.get(result.agentId as string)
+    expect(agent?.exit?.failedToStart).toBeUndefined()
+    expect(pairPresence(agent as AgentIdentity, { connected: false }).status).toBe('finished')
+  })
+
+  it('still fails a clean exit that left no transcript from this run', async () => {
+    stopAutoAttach()
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 60_000,
+        surface: {
+          platform: 'linux',
+          spawn: () => ({
+            pid: 4244,
+            unref: () => undefined,
+            once: (event: string, listener: (...args: unknown[]) => void) => {
+              if (event === 'exit') queueMicrotask(() => listener(0, null))
+            },
+          }),
+        },
+      }),
+    )
+
+    const result = await supervisor.spawn(spawnReq())
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/exited before registering \(exit code 0\)/)
+  })
+
+  /**
    * The same race from the other side: an agent that DID register and then
    * exited is a finished agent, not a failed one. Without this the derivation
    * above would relabel every normal completion.
