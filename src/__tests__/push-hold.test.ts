@@ -217,6 +217,68 @@ describe('pushes to a retired or parked agent', () => {
   })
 })
 
+describe('automated wakes to a parked or retired seat (CC-1550)', () => {
+  const wake = (to: string, text: string): SendResult => {
+    const sender = wire()
+    server.handleMessage(sender.conn, { t: 'human_send', to, text, source: 'watchdog' })
+    return sender.frames.find((f): f is SendResult => f.t === 'send_result') as SendResult
+  }
+
+  // Catches: an automated wake taking the owner's override, so a parked seat is woken every tick.
+  it('pushes no watchdog wake to a seat whose tree was parked, and keeps it in the inbox', () => {
+    const parked = joinAdopted(SEAT)
+    parkTree(parked, SEAT)
+
+    const result = wake(SEAT, 'Heartbeat tick')
+
+    expect(result).toMatchObject({ ok: true, held: true, recipients: [SEAT] })
+    expect(result.reason).toContain('parked')
+    expect(pushed(parked)).toEqual([])
+    expect(inbox(SEAT)).toEqual(['Heartbeat tick'])
+  })
+
+  it('pushes no watchdog wake to a retired seat that still has a session', () => {
+    const retired = joinAdopted(SEAT)
+    retire(retired, SEAT)
+
+    const result = wake(SEAT, 'Heartbeat tick')
+
+    expect(result).toMatchObject({ ok: true, held: true })
+    expect(result.reason).toContain('retired')
+    expect(pushed(retired)).toEqual([])
+  })
+
+  // Catches: a hold applied to every sourced send, which would silence a live seat's heartbeat.
+  it('still pushes a watchdog wake to a live seat', () => {
+    const live = joinAdopted(SEAT)
+
+    const result = wake(SEAT, 'Heartbeat tick')
+
+    expect(result).toMatchObject({ ok: true, recipients: [SEAT] })
+    expect(result.held).toBeUndefined()
+    expect(pushed(live).map(m => m.text)).toEqual(['Heartbeat tick'])
+  })
+
+  // Catches: the wake's own row reading as the owner's word and unparking a park teleport's successor.
+  it("leaves a park teleport's successor parked after a watchdog wake", () => {
+    const successor = teleportInto(AGENT, 'park')
+    wake(AGENT, 'Heartbeat tick')
+
+    send(join('rev-one'), AGENT, 'Any news?')
+
+    expect(pushed(successor)).toEqual([])
+  })
+
+  it("still pushes the owner's own words to a parked seat", () => {
+    const parked = joinAdopted(SEAT)
+    parkTree(parked, SEAT)
+
+    server.handleMessage(wire().conn, { t: 'human_send', to: SEAT, text: 'Go ahead' })
+
+    expect(pushed(parked).map(m => m.text)).toEqual(['Go ahead'])
+  })
+})
+
 describe('mail held while an agent was parked', () => {
   const resume = (agentId: string, name: string): void =>
     void core.append({ kind: 'agent_resumed', actor: 'human', target: name, ref: agentId, body: '' })
