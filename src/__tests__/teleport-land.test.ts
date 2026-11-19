@@ -28,6 +28,7 @@ interface Wire {
 let home: string
 let core: BrokerCore
 let server: SocketServer
+let delivered: Array<{ conn: Conn; text: string }>
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -35,7 +36,8 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-land-'))
   process.env.AGENT_CHAT_HOME = home
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(home, 'active-work')
-  core = new BrokerCore(() => undefined, {
+  delivered = []
+  core = new BrokerCore((conn, message) => void delivered.push({ conn, text: message.text }), {
     events: new EventLog(path.join(home, 'events.db')),
     registry: new Registry<Conn>(),
   })
@@ -114,6 +116,44 @@ describe('the successor handed to the caller’s own host', () => {
     const { successor } = await armedLanding()
 
     expect(spawnedRow(successor)?.meta?.host).toBe(REMOTE)
+  })
+})
+
+/**
+ * CC-1720: the predecessor's report was accepted and its successor armed, but its connection never
+ * dropped, so the name wait timed out. Retiring it anyway left it working under a retired id while
+ * its successor never attached.
+ */
+describe('a predecessor still connected when the name wait times out', () => {
+  async function nameHeld() {
+    const armed = await armedLanding()
+    const predecessorId = idOf(armed.predecessor)
+    await vi.advanceTimersByTimeAsync(10_000)
+    return { ...armed, predecessorId }
+  }
+
+  it('keeps the predecessor registered and never stands it down or retires it', async () => {
+    const { predecessor, predecessorId } = await nameHeld()
+
+    expect(stateOf(predecessorId)).not.toBe('retired')
+    expect(kinds(predecessorId)).not.toContain('agent_stood_down')
+    expect(core.agents.stoodDown(predecessorId)).toBe(false)
+    expect(idOf(predecessor)).toBe(predecessorId)
+  })
+
+  it('retires the successor that never attached and tells the predecessor it is still live', async () => {
+    const { successor, predecessor } = await nameHeld()
+
+    expect(stateOf(successor)).toBe('retired')
+    const told = delivered.filter(d => d.conn === (predecessor.conn as unknown as Conn)).map(d => d.text)
+    expect(told).toContainEqual(expect.stringContaining('You are still live'))
+    expect(failedNotices()).toEqual([])
+  })
+
+  it('refuses the helper’s late landing report once the predecessor was kept', async () => {
+    const { successor, token } = await nameHeld()
+
+    expect(landFailed(successor, token)).toMatchObject({ ok: false })
   })
 })
 
@@ -200,7 +240,8 @@ describe('reporting an armed teleport successor unplaced', () => {
   })
 
   it('refuses a stale token once the landing window has passed', async () => {
-    const { successor, token } = await armedLanding()
+    const { successor, token, predecessor } = await armedLanding()
+    predecessor.conn.emit('close')
 
     await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS)
 
