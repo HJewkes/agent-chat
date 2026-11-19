@@ -1467,7 +1467,11 @@ export class Teleport {
   private nameHeld(entry: Pending, input: RelaunchInput): void {
     this.closeLanding(entry.descendantId)
     const waited = NAME_FREE_TIMEOUT_MS / 1000
-    this.keepPredecessor(entry, input, `its connection was still open ${waited}s after the successor was armed`)
+    this.keepPredecessor(
+      entry,
+      input,
+      `its connection was still open ${waited}s after the successor was armed`,
+    )
   }
 
   /**
