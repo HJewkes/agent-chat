@@ -198,6 +198,9 @@ export interface EventStore {
   /** The rows `agentEvents` would group under `agentId`, oldest first. */
   agentEventsFor(agentId: string): AgentEventRow[]
 
+  /** CC-601: the ids of spawn rows recording `sessionId`, oldest first, read from an index. */
+  agentIdsForSession(sessionId: string): string[]
+
   history(limit: number): QueueItem[]
 
   /**
