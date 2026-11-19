@@ -138,10 +138,23 @@ async function runVerb<Args>(
   const { envelope, exitCode } = await invokeCommand(verb, args, ctx, { invalidArgsCode: usageExit })
   if (!envelope.ok) {
     console.error(envelope.error)
-    process.exit(exitCode)
+    return exitAfterFlush(exitCode)
   }
   const report = verb.result.parse(envelope.data)
   for (const line of report.lines) console.log(line)
   for (const error of report.errors ?? []) console.error(error)
-  process.exit(report.ok ? 0 : (report.exit ?? 1))
+  return exitAfterFlush(report.ok ? 0 : (report.exit ?? 1))
+}
+
+/** An empty write completes only after the earlier ones have drained; nothing queued means nothing to wait for. */
+const drained = (stream: NodeJS.WriteStream) =>
+  new Promise<void>(resolve => {
+    if (stream.writableLength === 0) resolve()
+    else stream.write('', () => resolve())
+  })
+
+/** A piped stdout drains asynchronously, so exiting right after console.log truncates it at the pipe buffer (CC-1449). */
+export async function exitAfterFlush(code: number): Promise<never> {
+  await Promise.all([drained(process.stdout), drained(process.stderr)])
+  process.exit(code)
 }
