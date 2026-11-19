@@ -98,6 +98,13 @@ function stateBlocker(agent: AgentIdentity, tracked: boolean): string | undefine
   return `${agent.name} is ${state}; park takes only an agent whose process has exited or that this broker no longer tracks`
 }
 
+/**
+ * CC-1549: a one-shot `claude -p` that loaded agent-chat registers itself under a folder-derived name
+ * with no profile. Once it has exited it cannot be resumed or retired by name, so it must not hold a tree.
+ */
+const isFinishedOneShot = (a: AgentIdentity): boolean =>
+  a.state === 'exited' && a.origin === 'adopted' && a.profile === '' && a.spawnedBy === 'human'
+
 /** Any other identity that is not retired and works in the tree, live or not, since it could be resumed there. */
 function tenancyBlocker(
   agent: AgentIdentity,
@@ -107,7 +114,9 @@ function tenancyBlocker(
   const others = roster.filter(a => a.agentId !== agent.agentId)
   const occupant = occupantOf(tree, others)
   if (occupant) return `${occupant.name} is ${occupant.state} in ${tree}; not parked`
-  const tenants = others.filter(a => a.cwd !== '' && isAtOrUnder(canonicalPath(a.cwd), canonicalPath(tree)))
+  const tenants = others.filter(
+    a => a.cwd !== '' && !isFinishedOneShot(a) && isAtOrUnder(canonicalPath(a.cwd), canonicalPath(tree)),
+  )
   if (tenants.length === 0) return undefined
   const who = tenants.map(a => a.name).join(', ')
   return `${who} (not retired) also works in ${tree}, so parking ${agent.name} would pull it from under them; retire ${who} first`
