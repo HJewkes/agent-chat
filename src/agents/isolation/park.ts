@@ -6,6 +6,7 @@ import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import type { MergedPrReader } from './merged-pr.js'
 import { occupantOf } from './sweep.js'
+import { homeRefusal, isHomeRepo } from './home-repo.js'
 import { parkIgnoredFiles } from './unsaved-work.js'
 import {
   parkWorktree as parkTree,
@@ -166,6 +167,8 @@ export async function parkWorktree(
 ): Promise<({ ok: true; head: string } & Kept) | { ok: false; reason: string }> {
   const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
   if (occupied) return { ok: false, reason: occupied }
+  if (existsSync(target.worktree) && (await isHomeRepo(target.worktree)))
+    return { ok: false, reason: homeRefusal(target.worktree) }
   const options = {
     allowOriginHeadAncestor: true as const,
     allowDefaultBranchAncestor: true,

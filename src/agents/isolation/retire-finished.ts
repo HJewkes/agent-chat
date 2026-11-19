@@ -3,6 +3,7 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import { runGit, type GitRunner } from '../../git.js'
 import type { AgentIdentity, RetirePlanEntry, RetireResult } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
+import { homeRefusal, isHomeRepo } from './home-repo.js'
 import { familyPrHold, heldBranches, memoizeOpenPr, openPrHold, runBranches } from './open-pr-hold.js'
 import { allocatedWorktree, type ParkTarget } from './park.js'
 import { shepherdSkip, type ShepherdRun, type ShepherdSkipPort } from './shepherd-skip.js'
@@ -272,6 +273,7 @@ export async function workBlocker(target: ParkTarget, git: GitRunner = runGit): 
 
 /** `-uall` so `status.showUntrackedFiles=no` cannot hide an untracked file. */
 async function uncommitted(tree: string, git: GitRunner): Promise<string | undefined> {
+  if (await isHomeRepo(tree, git)) return homeRefusal(tree)
   const status = await git(['status', '--porcelain', '-uall'], tree)
   if (status === null) return `could not read git status in ${tree}`
   return status === '' ? undefined : `uncommitted changes in ${tree}`

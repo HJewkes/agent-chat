@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
+import { homeRefusal, isHomeRepo } from './home-repo.js'
 import { runGit as gitOrNull, type ParkIgnoredFilesPolicy } from '@titan-design/worktree'
 
 /**
@@ -146,6 +147,7 @@ function protectedIgnored(worktree: string, entries: readonly string[]): string[
 
 /** `-uall` so `status.showUntrackedFiles=no` cannot hide an untracked file the removal would take. */
 export async function unsavedWork(worktree: string, action: string): Promise<UnsavedWork | undefined> {
+  if (await isHomeRepo(worktree)) return { kind: 'other', detail: homeRefusal(worktree) }
   const status = await gitOrNull(['status', '--porcelain', '-uall'], worktree)
   if (status === null) return { kind: 'other', detail: `could not read git status in ${worktree}` }
   if (status !== '') return { kind: 'changes', detail: `uncommitted or untracked changes in ${worktree}` }
