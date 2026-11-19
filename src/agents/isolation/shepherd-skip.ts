@@ -31,6 +31,8 @@ export interface ShepherdSkipPort {
   activeRuns(): Promise<ShepherdRun[]>
   /** Whether `branch` has an open PR; rejects when that cannot be told. */
   hasOpenPr(gitRoot: string, branch: string): Promise<boolean>
+  /** CC-1499: head branches of every open PR in the repo, to catch a renamed (-v2) branch; rejects when unreadable. */
+  openPrBranches?(gitRoot: string): Promise<string[]>
 }
 
 const firstLine = (err: unknown): string => String((err as Error).message ?? err).split('\n')[0] ?? ''
@@ -161,8 +163,20 @@ async function readOpenPr(gitRoot: string, branch: string): Promise<boolean> {
   return prs.length > 0
 }
 
+async function readOpenPrBranches(gitRoot: string): Promise<string[]> {
+  const opts = { cwd: gitRoot, env: childEnv(), encoding: 'utf8' as const, timeout: READ_TIMEOUT_MS }
+  const remote = await execFileAsync('git', ['remote', 'get-url', 'origin'], opts).catch(() => null)
+  if (remote === null) return []
+  const args = ['pr', 'list', '--state', 'open', '--json', 'headRefName', '--limit', '500']
+  const { stdout } = await execFileAsync('gh', args, opts)
+  const prs: unknown = JSON.parse(stdout)
+  if (!Array.isArray(prs)) throw new Error('gh pr list did not answer a JSON array')
+  return prs.map(pr => text((pr as Record<string, unknown>).headRefName)).filter((b): b is string => !!b)
+}
+
 /** The broker's production reads; tests pass a fake. */
 export const cliShepherdSkipPort: ShepherdSkipPort = {
   activeRuns: () => readActiveRuns(),
   hasOpenPr: readOpenPr,
+  openPrBranches: readOpenPrBranches,
 }

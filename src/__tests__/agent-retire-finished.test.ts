@@ -630,6 +630,100 @@ describe('open PRs and Shepherd runs (CC-904)', () => {
     expect(out.results).toEqual([{ name: 'cc-merged', ok: true }])
   })
 
+  describe('renamed branches and reviewers (CC-1499)', () => {
+    let openBranches: string[] = []
+
+    beforeEach(() => {
+      sup.close()
+      openBranches = []
+      sup = new Supervisor(core, {
+        surface: {
+          platform: 'linux',
+          spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+        },
+        shepherdSkip: {
+          activeRuns: () => Promise.resolve(runs),
+          hasOpenPr: () => Promise.resolve(false),
+          openPrBranches: () => Promise.resolve(openBranches),
+        },
+      })
+    })
+
+    it('skips an implementer whose open PR is on its name plus a suffix', async () => {
+      const repo = repoWithOrigin()
+      const agent = await finishedIn('cc-tp-1-a', repo)
+      publish(repo, `agent-chat/${agent.name}`)
+      openBranches = ['agent-chat/cc-tp-1-a-v2']
+      pastGrace()
+
+      const out = await sup.retireFinished({ prefix: 'cc-', dryRun: true })
+
+      expect(out.plan).toEqual([
+        {
+          name: 'cc-tp-1-a',
+          action: 'skip',
+          reason: 'open PR on agent-chat/cc-tp-1-a-v2 (kept until merged or closed)',
+        },
+      ])
+    })
+
+    it('skips an implementer on the branch of a Shepherd run that names it', async () => {
+      const repo = repoWithOrigin()
+      const agent = await finishedIn('cc-tp-2-a', repo)
+      publish(repo, `agent-chat/${agent.name}`)
+      runs = [
+        { branch: 'agent-chat/other-name', names: [agent.name], implementer: agent.name, phase: 'review' },
+      ]
+      sup.close()
+      sup = new Supervisor(core, {
+        surface: {
+          platform: 'linux',
+          spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+        },
+        shepherdSkip: {
+          activeRuns: () => Promise.resolve(runs),
+          hasOpenPr: (_root, branch) => Promise.resolve(branch === 'agent-chat/other-name'),
+        },
+      })
+      pastGrace()
+
+      const out = await sup.retireFinished({ prefix: 'cc-', dryRun: true })
+
+      expect(out.plan[0]).toMatchObject({ name: 'cc-tp-2-a', action: 'skip' })
+    })
+
+    it('skips a reviewer whose task id matches an open PR branch', async () => {
+      const repo = repoWithOrigin()
+      const impl = await finishedIn('cc-tp-3-a', repo)
+      publish(repo, `agent-chat/${impl.name}`)
+      await finishedIn('cc-tp-3-review', repo)
+      openBranches = ['agent-chat/cc-tp-3-a-v2']
+      pastGrace()
+
+      const out = await sup.retireFinished({ prefix: 'cc-tp-3-review', dryRun: true })
+
+      expect(out.plan).toEqual([
+        {
+          name: 'cc-tp-3-review',
+          action: 'skip',
+          reason: 'open PR on agent-chat/cc-tp-3-a-v2 (kept until merged or closed)',
+        },
+      ])
+    })
+
+    it('does not let a stem claim a longer number', async () => {
+      const repo = repoWithOrigin()
+      const agent = await finishedIn('cc-tp-4', repo)
+      publish(repo, `agent-chat/${agent.name}`)
+      openBranches = ['agent-chat/cc-tp-40-v2']
+      pastGrace()
+
+      const out = await sup.retireFinished({ prefix: 'cc-', dryRun: true })
+
+      expect(out.plan).toEqual([{ name: 'cc-tp-4', action: 'retire' }])
+    })
+  })
+
   it('retires an agent that holds no branch', async () => {
     const agent = await spawnIn('cc-nobranch', makeRepo(), { isolation: 'none' })
     await exit(agent)

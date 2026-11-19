@@ -3,7 +3,7 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import { runGit, type GitRunner } from '../../git.js'
 import type { AgentIdentity, RetirePlanEntry, RetireResult } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
-import { heldBranches, memoizeOpenPr, openPrHold } from './open-pr-hold.js'
+import { familyPrHold, heldBranches, memoizeOpenPr, openPrHold, runBranches } from './open-pr-hold.js'
 import { allocatedWorktree, type ParkTarget } from './park.js'
 import { shepherdSkip, type ShepherdRun, type ShepherdSkipPort } from './shepherd-skip.js'
 import { isLive } from './sweep.js'
@@ -138,6 +138,18 @@ export function memoizedSkip(skip: ShepherdSkipPort): ShepherdSkipPort {
     // CC-1491: each read spawns `shepherd status`; one per candidate crashed its server on a large drain.
     activeRuns: () => (runs ??= skip.activeRuns()),
     hasOpenPr: memoizeOpenPr((root, b) => skip.hasOpenPr(root, b)),
+    ...(skip.openPrBranches === undefined ? {} : { openPrBranches: memoizeBranches(skip.openPrBranches) }),
+  }
+}
+
+function memoizeBranches(
+  read: (gitRoot: string) => Promise<string[]>,
+): (gitRoot: string) => Promise<string[]> {
+  const answers = new Map<string, Promise<string[]>>()
+  return root => {
+    let answer = answers.get(root)
+    if (answer === undefined) answers.set(root, (answer = read(root)))
+    return answer
   }
 }
 
@@ -168,12 +180,30 @@ async function finishedBlocker(
   if (byAdopter) return byAdopter
   const byShepherd = port.skip && (await shepherdSkip(port.skip, agent, target))
   if (byShepherd) return byShepherd
-  const byOpenPr =
-    port.skip && (await openPrHold(port.skip.hasOpenPr, heldBranches(agent, target, roster, events)))
+  const byOpenPr = port.skip && (await openPrBlocker(port.skip, agent, target, roster, events))
   if (byOpenPr) return byOpenPr
   if (target === undefined) return undefined
   return workBlocker(target, port.git).catch(
     (err: Error) => `could not read ${target.worktree}: ${err.message}`,
+  )
+}
+
+async function openPrBlocker(
+  skip: ShepherdSkipPort,
+  agent: AgentIdentity,
+  target: ParkTarget | undefined,
+  roster: readonly AgentIdentity[],
+  events: readonly AgentEventRow[],
+): Promise<string | undefined> {
+  const held = heldBranches(agent, target, roster, events)
+  const roots = held.map(h => h.gitRoot)
+  const runs = await skip.activeRuns().catch(() => [])
+  const viaRuns = roots
+    .slice(0, 1)
+    .flatMap(gitRoot => runBranches(runs, agent).map(branch => ({ gitRoot, branch })))
+  return (
+    (await openPrHold(skip.hasOpenPr, [...held, ...viaRuns])) ??
+    (await familyPrHold(skip.openPrBranches, agent, target, roster, events))
   )
 }
 
