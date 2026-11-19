@@ -71,10 +71,15 @@ interface Row {
   meta: string | null
 }
 
+/** The session id a spawn row records; `events_spawn_session` indexes it, so the query must spell it the same. */
+const SPAWN_SESSION = `json_extract(meta, '$.session_id')`
+
 /**
  * CC-1463: `events_actor` serves `lastMessageFrom` and `lastStatusReport`, which run as an
  * agent spawns or exits. Through `events_kind` they walked back over every message row,
  * about 90 MB of reads each on a large log, when the sender had nothing since `since`.
+ * CC-601: `events_spawn_session` serves `agentIdsForSession`, which every register runs.
+ * Partial, so only spawn rows are indexed and every other kind's meta is never parsed.
  */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS events (
@@ -93,6 +98,7 @@ CREATE INDEX IF NOT EXISTS events_msg_id ON events(msg_id);
 CREATE INDEX IF NOT EXISTS events_ref ON events(ref);
 CREATE INDEX IF NOT EXISTS events_kind ON events(kind, id);
 CREATE INDEX IF NOT EXISTS events_actor ON events(actor, kind, id);
+CREATE INDEX IF NOT EXISTS events_spawn_session ON events(${SPAWN_SESSION}) WHERE kind = 'agent_spawned';
 `
 
 /** Kinds that a recipient should see in their inbox. */
@@ -349,6 +355,7 @@ export class EventLog implements EventStore {
   /** CC-1459: the agent rows read so far, and the log's highest id when they were read. */
   private agentCache: { rows: AgentEventRow[]; throughId: number } = { rows: [], throughId: 0 }
   private bodyById: StatementSync | undefined
+  private spawnsForSession: StatementSync | undefined
   private strings = new Map<string, string>()
   /**
    * One getter for every deferred body, so those rows share V8 hidden classes: a closure per
@@ -1066,6 +1073,15 @@ export class EventLog implements EventStore {
       )
       .all(agentId, agentId) as unknown as Row[]
     return rows.map(toAgentEventRow)
+  }
+
+  agentIdsForSession(sessionId: string): string[] {
+    this.spawnsForSession ??= this.db.prepare(
+      `SELECT msg_id FROM events WHERE kind = 'agent_spawned' AND ${SPAWN_SESSION} = ?
+         AND msg_id IS NOT NULL ORDER BY id ASC`,
+    )
+    const rows = this.spawnsForSession.all(sessionId) as { msg_id: string }[]
+    return rows.map(row => row.msg_id)
   }
 
   history(limit: number): QueueItem[] {

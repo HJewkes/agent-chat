@@ -500,10 +500,19 @@ export class AgentLog {
    * the log, where every session on the machine can read it, so matching one
    * would make adoption a way to claim an agent's identity by quoting a field —
    * the hole `BrokerCore.claimable` closes for agent ids.
+   *
+   * CC-601: every register asks this, so it folds only the session's own spawns, never
+   * the whole log. The newest wins and an earlier spawn wins a tie, as in `all()`'s order.
    */
   bySession(sessionId: string): AgentIdentity | undefined {
     if (sessionId === '') return undefined
-    return this.all().find(a => a.origin === 'adopted' && a.sessionId === sessionId && a.state !== 'retired')
+    let newest: AgentIdentity | undefined
+    for (const id of this.events.agentIdsForSession(sessionId)) {
+      const agent = this.get(id)
+      if (agent?.origin !== 'adopted' || agent.sessionId !== sessionId || agent.state === 'retired') continue
+      if (newest === undefined || agent.spawnedAt > newest.spawnedAt) newest = agent
+    }
+    return newest
   }
 
   /**
