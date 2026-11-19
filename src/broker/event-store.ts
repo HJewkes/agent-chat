@@ -99,6 +99,9 @@ export interface EventStore {
   inboxRowId(name: string, msgId: string): number | undefined
   inboxSince(name: string, afterId: number, limit: number): CursoredMessage[]
 
+  /** CC-1486: which of `msgIds` an `inbox_shown` receipt for `name` already names. */
+  shownMsgIds(name: string, msgIds: string[], sinceTs: number): Set<string>
+
   /** One message row by msg_id, with `from` and `provenance` as stored (CC-1557). */
   messageById(msgId: string): StoredMessage | undefined
 
