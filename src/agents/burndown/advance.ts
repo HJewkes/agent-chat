@@ -319,8 +319,7 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
     return [update(claim, { phase: 'parked', questionId: report.parked, lastReport })]
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
     return [stall(claim, report.firstLine, 'failed')]
-  // CC-979: `PR: none` names no PR; beside a recorded one it still stalls in `handOff`.
-  const pr = claim.pr === undefined && prNone(report?.pr) ? undefined : (report?.pr ?? claim.pr)
+  const pr = closesWithoutPr(claim, report) ? undefined : (report?.pr ?? claim.pr)
   const handsOff = handsOffPr(report) && pr !== undefined
   const held = handsOff || obs.diff?.reviewable === true ? fenced(claim, obs, afterWorker) : undefined
   if (held !== undefined) return held
@@ -342,6 +341,10 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
 /** CC-1074: a finished worker, DONE or DONE_WITH_CONCERNS: with a PR it goes to Shepherd rather than a reviewer. */
 const handsOffPr = (report: Report | undefined): boolean =>
   report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS'
+
+/** CC-979: such a report with no recorded PR has nothing to hand off; any other `PR: none` stalls in `handOff`. */
+const closesWithoutPr = (claim: Claim, report: Report | undefined): boolean =>
+  report?.status === 'DONE_WITH_CONCERNS' && claim.pr === undefined && prNone(report.pr)
 
 /**
  * CC-1074: a stall `afterWorker` left on a finished worker whose PR is known, from its report or a Shepherd run

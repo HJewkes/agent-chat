@@ -426,22 +426,21 @@ describe('burndown hands a PR to Shepherd', () => {
     expect(after[0]?.stalledReason).toBeUndefined()
   })
 
-  it.each(['DONE', 'DONE_WITH_CONCERNS'])(
-    'closes a %s worker that reports PR: none, registering and stalling nothing (CC-979)',
-    status => {
-      const { actions, after } = step(claim(), {
-        agent: exited,
-        report: parseReport(`Status: ${status}\nPR: none`),
-        diff: { reviewable: false, reason: 'clean and level' },
-      })
+  it('closes a DONE_WITH_CONCERNS worker that reports PR: none, registering and stalling nothing (CC-979)', () => {
+    const { actions, after } = step(claim(), {
+      agent: exited,
+      report: parseReport('Status: DONE_WITH_CONCERNS\nPR: none'),
+      diff: { reviewable: false, reason: 'clean and level' },
+    })
 
-      expect([...registers(actions), ...spawns(actions)]).toEqual([])
-      expect(actions).toContainEqual(expect.objectContaining({ kind: 'retire' }))
-      expect(after).toEqual([expect.objectContaining({ phase: 'done', lastReport: `Status: ${status}` })])
-      expect(after[0]?.stalledReason).toBeUndefined()
-      expect(after[0]?.pr).toBeUndefined()
-    },
-  )
+    expect([...registers(actions), ...spawns(actions)]).toEqual([])
+    expect(actions).toContainEqual(expect.objectContaining({ kind: 'retire' }))
+    expect(after).toEqual([
+      expect.objectContaining({ phase: 'done', lastReport: 'Status: DONE_WITH_CONCERNS' }),
+    ])
+    expect(after[0]?.stalledReason).toBeUndefined()
+    expect(after[0]?.pr).toBeUndefined()
+  })
 
   it("tells the seat the report's first line when it closes a DONE_WITH_CONCERNS claim (CC-979)", () => {
     const before = claim({ seat: 'alpha' })
