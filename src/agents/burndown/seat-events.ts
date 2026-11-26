@@ -5,6 +5,7 @@ import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
 import { BRAKE_WINDOW_MS, brakeSince, releasesDue, releasesSince } from './ladder.js'
 import { factFingerprint } from './liveness.js'
+import { parseReport } from './report.js'
 import { localDate } from './seat-tick.js'
 import { ownerDue, stallDetail } from './triage.js'
 
@@ -17,6 +18,7 @@ export const EVENT_KINDS = [
   'dispatched',
   'ready-to-merge',
   'merged',
+  'closed-with-concerns',
   'stalled',
   'stalled-after-claim',
   'stall-aged',
@@ -80,6 +82,12 @@ const merged = (before: Claim | undefined, after: Claim): boolean =>
     (LINKED_PHASES.includes(before?.phase ?? '') && after.pr !== undefined) ||
     after.notified?.includes('ready-to-merge') === true)
 
+/** CC-979: such a claim has no merge to tell the seat of, so its concerns would otherwise go unheard. */
+const closedWithConcerns = (claim: Claim): boolean =>
+  claim.phase === 'done' &&
+  claim.pr === undefined &&
+  parseReport(claim.lastReport ?? '').status === 'DONE_WITH_CONCERNS'
+
 /** Kinds the claim's state holds now; `notified` drops the delivered ones, so an undelivered kind is due again next tick. */
 function kindsOf(
   before: Claim | undefined,
@@ -92,6 +100,7 @@ function kindsOf(
   if (spawned || after.agentId !== undefined) events.push(event('dispatched'))
   if (after.phase === 'awaiting-merge') events.push(event('ready-to-merge', after.pr))
   if (merged(before, after)) events.push(event('merged', after.pr))
+  if (closedWithConcerns(after)) events.push(event('closed-with-concerns', after.lastReport))
   // CC-649: while a triage job waits or runs the owner is not told; once it settles the event carries that it ran.
   if (after.stalledReason !== undefined && ownerDue(after)) events.push(...stallEvents(after, opts))
   // CC-663: a dirty, uncommitted claim's notice waits one tick behind its checkpoint request.
