@@ -64,6 +64,7 @@ export type RefusalKind =
   | 'role-cap'
   | 'backoff'
   | 'plan-blocked'
+  | 'dep-blocked'
   | 'stop-line'
   | 'review-backpressure'
   | 'out-of-scope'
