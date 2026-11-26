@@ -20,6 +20,7 @@ import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
 import { newMsgId } from './msg-id.js'
 import { SEAT_HOLD_MARK } from './seat-hold.js'
+import { OWNER_CONTACT_SQL } from './event-store.js'
 import type {
   AgentEventRow,
   AppendInput,
@@ -436,6 +437,20 @@ export class EventLog implements EventStore {
     return rows.map(toMessage)
   }
 
+  /** CC-1486: which of `msgIds` an `inbox_shown` receipt for `name` already names (hook or supervisor drain). */
+  shownMsgIds(name: string, msgIds: string[], sinceTs: number): Set<string> {
+    const wanted = new Set(msgIds)
+    const shown = new Set<string>()
+    const rows = this.db
+      .prepare(`SELECT meta FROM events WHERE actor = ? AND kind = 'inbox_shown' AND ts >= ?`)
+      .all(name, sinceTs) as { meta: string | null }[]
+    for (const { meta } of rows) {
+      const ids = (JSON.parse(meta ?? '{}') as { msgIds?: string }).msgIds?.split(',') ?? []
+      for (const id of ids) if (wanted.has(id)) shown.add(id)
+    }
+    return shown
+  }
+
   /**
    * Position of one of `name`'s own inbox rows by msg_id, for `inbox after`.
    * Scoped to the target so an id from someone else's inbox cannot be probed.
@@ -628,12 +643,10 @@ export class EventLog implements EventStore {
     return { file: String(row.file ?? '<unknown>'), field: String(row.field ?? '<unknown>') }
   }
 
+  /** CC-1550: a human send with a wake source is a watchdog, Shepherd or console wake, not the owner's word. */
   humanContactSince(name: string, since: number): boolean {
     const row = this.db
-      .prepare(
-        `SELECT 1 FROM events WHERE target = ? AND ts >= ?
-         AND (kind IN ('answer', 'decided') OR (kind = 'message' AND actor = ?)) LIMIT 1`,
-      )
+      .prepare(`SELECT 1 FROM events WHERE target = ? AND ts >= ? AND ${OWNER_CONTACT_SQL} LIMIT 1`)
       .get(name, since, HUMAN)
     return row !== undefined
   }

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { EventStore, AgentEventRow } from '../../broker/event-store.js'
+import { OWNER_CONTACT_SQL, type EventStore, type AgentEventRow } from '../../broker/event-store.js'
 import { pushHoldFor, type PushHold } from '../../broker/push-hold.js'
 import { HUMAN, type EventKind } from '../../protocol.js'
 import { AgentLog, groupByAgent } from '../identity.js'
@@ -68,8 +68,7 @@ function humanContactBefore(db: DatabaseSync, untilMs: number) {
   return (name: string, since: number): boolean =>
     db
       .prepare(
-        `SELECT 1 FROM events WHERE target = ? AND ts >= ? AND ts < ?
-         AND (kind IN ('answer', 'decided') OR (kind = 'message' AND actor = ?)) LIMIT 1`,
+        `SELECT 1 FROM events WHERE target = ? AND ts >= ? AND ts < ? AND ${OWNER_CONTACT_SQL} LIMIT 1`,
       )
       .get(name, since, untilMs, HUMAN) !== undefined
 }

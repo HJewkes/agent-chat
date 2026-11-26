@@ -2180,6 +2180,9 @@ export class SocketServer {
       if (held?.ok) return replyHeld(conn, to, held.msgId)
       return this.failHumanSend(conn, to, held?.reason)
     }
+    const pushHold = source === undefined ? undefined : core.registry.pushHold(to)
+    if (source !== undefined && pushHold !== undefined)
+      return this.holdAutomatedWake(conn, { to, text, source, pushHold })
     const { msgId } = core.append({
       kind: 'message',
       actor: HUMAN,
@@ -2199,6 +2202,38 @@ export class SocketServer {
     })
     logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: true, recipients: [to] })
     reply(conn, { t: 'send_result', ok: true, msgId, recipients: [to] })
+  }
+
+  /**
+   * CC-1550: a watchdog, Shepherd or console wake is not the owner typing, so it does not
+   * override a retired or parked session's push hold. It waits in the inbox, and its row
+   * does not count as the owner's word to a park teleport's successor.
+   */
+  private holdAutomatedWake(
+    conn: Conn,
+    wake: { to: string; text: string; source: WakeSource; pushHold: string },
+  ): void {
+    const { to, text, source, pushHold } = wake
+    const { msgId } = this.core.append({
+      kind: 'message',
+      actor: HUMAN,
+      target: to,
+      body: text,
+      meta: { source, push_hold: pushHold },
+    })
+    logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: false, held: pushHold })
+    const reason =
+      `"${to}" is ${pushHold}, so this ${source} wake is kept in its inbox and not pushed; ` +
+      'do not resend it.'
+    reply(conn, {
+      t: 'send_result',
+      ok: true,
+      held: true,
+      msgId,
+      recipients: [to],
+      results: [{ name: to, status: 'held', reason }],
+      reason,
+    })
   }
 
   /**
@@ -2286,8 +2321,22 @@ export class SocketServer {
       msg.after !== undefined
         ? this.inboxAfter(name, msg.after, msg.limit)
         : { t: 'inbox_result' as const, messages: name ? this.core.events.inboxFor(name, msg.limit) : [] }
-    if (name !== undefined) this.logInboxRead(name, result.messages)
-    return result
+    if (name === undefined) return result
+    const messages = this.markShown(name, result.messages)
+    this.logInboxRead(name, messages)
+    return { ...result, messages }
+  }
+
+  /** CC-1486: a replay is a log, so a message the inbox hook already showed is marked, never dropped. */
+  private markShown(name: string, messages: DeliveredMessage[]): DeliveredMessage[] {
+    if (messages.length === 0) return messages
+    const oldest = Math.min(...messages.map(m => m.at))
+    const shown = this.core.events.shownMsgIds(
+      name,
+      messages.map(m => m.msgId),
+      oldest,
+    )
+    return messages.map(m => (shown.has(m.msgId) ? { ...m, shown: true } : m))
   }
 
   /** CC-1680: one receipt per read that returned records, so "how long did it wait" is a query. */

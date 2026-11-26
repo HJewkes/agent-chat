@@ -437,7 +437,7 @@
     },
     {
       "name": "chat_inbox",
-      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed. Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N.",
+      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed. Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N. Marked \"shown\" = your hook already printed it.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -12,6 +12,7 @@ function formatInbox(messages: DeliveredMessage[], after?: string): string {
   if (messages.length === 0) return after ? `No messages after ${after}.` : 'No messages yet.'
   const rows = messages.map(m => {
     const tags = [
+      m.shown ? 'shown' : null,
       m.broadcast ? 'broadcast' : null,
       m.audience ? `also to ${m.audience.join(', ')}` : null,
       m.inReplyTo ? `re ${m.inReplyTo}` : null,
@@ -33,7 +34,8 @@ export const chatInbox = defineTool({
   name: 'chat_inbox',
   description:
     'Re-read recent messages sent to this session. Useful if several arrived at once or one was missed. ' +
-    'Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N.',
+    'Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N. ' +
+    'Marked "shown" = your hook already printed it.',
   args: z.object({
     limit: positiveLimit('limit').describe('How many recent messages to return (default 10)').optional(),
     after: z
