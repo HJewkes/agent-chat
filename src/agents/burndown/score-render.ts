@@ -21,6 +21,7 @@ import {
   type Components,
   type Exclusions,
   type ScoredTask,
+  type ScoreRow,
   type ScoringDefaults,
 } from './score.js'
 
@@ -43,6 +44,8 @@ export interface ScoredPlan {
   scope: number
   /** Open tasks read across that scope, excluded ones included. */
   open: number
+  /** CC-1220: a line per scored row a dependency sentence blocks, whatever `top` is; none of them is in `order`. */
+  depBlocked?: string[]
   /** Exclusions from scoring, then share-cap skips from the dispatch order. */
   refused: Record<string, number>
   /** `<slug>/<file>` of each malformed open task the reader left out, so a low count from skips is not a real drop. */
@@ -97,18 +100,25 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     ...(input.failedUpstreams !== undefined && { failedUpstreams: input.failedUpstreams }),
   })
   const unnamed = unnamedCriterionLines(input)
+  const depBlocked = depBlockedLines(scored.rows)
   return {
     order: planned.order,
     scope: Object.keys(weights).length,
     open: tasks.length,
     refused: { ...scored.refused, ...planned.refused },
     skipped: [...skipped],
+    ...(depBlocked.length > 0 && { depBlocked }),
     tagErrors: planned.tagErrors.map(describeTagError),
     ...(unnamed.length > 0 && { unnamedCriteria: unnamed }),
     ...(planned.epicsHeld.length > 0 && { epicsHeld: planned.epicsHeld }),
     ...(planned.edgeLines.length > 0 && { edgeLines: planned.edgeLines }),
   }
 }
+
+const depBlockedLines = (rows: readonly ScoreRow[]): string[] =>
+  rows.flatMap(({ initiative, id, blockedReason }) =>
+    blockedReason === undefined ? [] : [`refused ${initiative} ${id} [dep-blocked]: ${blockedReason}`],
+  )
 
 function unnamedCriterionLines({ tasks, milestones, knownIds }: ScoredPlanInputs): string[] {
   if (milestones === undefined) return []
@@ -314,6 +324,7 @@ export function renderScored(plan: ScoredPlan): string[] {
   return [
     ...(plan.briefGate === 'on' ? [GATE_HEADER] : []),
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
+    ...(plan.depBlocked ?? []),
     ...milestones,
     ...table,
     ...(plan.edgeLines ?? []),

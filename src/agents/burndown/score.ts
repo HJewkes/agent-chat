@@ -76,6 +76,8 @@ export interface ScoreRow {
   unblocks: number
   ageDays: number
   blocked: string[]
+  /** CC-1220: set when `blocked` is not empty: each sentence that names a blocker, with the ids it names. */
+  blockedReason?: string
   stopShort: string[]
   route: Route
   title: string
@@ -136,16 +138,31 @@ export function priorityPercentile(priority: number, peers: readonly number[]): 
   return 1 - ahead / Math.max(1, peers.length - 1)
 }
 
+/** The sentences that read as a dependency, each with every ID it names. */
+function dependencySentences(task: ScoredTask): { sentence: string; ids: string[] }[] {
+  const body = [task.title, task.done_when, task.notes].map(text).join(' ')
+  return body
+    .split(/(?<=[.;])\s+/)
+    .filter(sentence => DEP.test(sentence))
+    .map(sentence => ({ sentence, ids: sentence.match(ID) ?? [] }))
+}
+
 /** IDs the task says it waits on: every ID in a sentence that reads as a dependency, minus its own. */
 export function namedDependencies(task: ScoredTask): Set<string> {
-  const body = [task.title, task.done_when, task.notes].map(text).join(' ')
-  const ids = new Set<string>()
-  for (const sentence of body.split(/(?<=[.;])\s+/)) {
-    if (!DEP.test(sentence)) continue
-    for (const id of sentence.match(ID) ?? []) ids.add(id)
-  }
+  const ids = new Set(dependencySentences(task).flatMap(s => s.ids))
   ids.delete(task.id)
   return ids
+}
+
+/** One line quoting, for each of `blocked`, the first sentence that names it. */
+function blockedReasonOf(task: ScoredTask, blocked: readonly string[]): string {
+  const unnamed = new Set(blocked)
+  const parts: string[] = []
+  for (const { sentence, ids } of dependencySentences(task)) {
+    const named = ids.filter(id => unnamed.delete(id))
+    if (named.length > 0) parts.push(`${sentence.replace(/\s+/g, ' ').trim()} names open ${named.join(', ')}`)
+  }
+  return parts.join(' ')
 }
 
 export interface DependencyGraph {
@@ -415,6 +432,7 @@ function scoreTask(task: ScoredTask, ctx: ScoringContext): ScoreRow {
     unblocks,
     ageDays: age,
     blocked,
+    ...(blocked.length > 0 && { blockedReason: blockedReasonOf(task, blocked) }),
     stopShort,
     route: route(task),
     title: task.title,

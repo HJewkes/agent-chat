@@ -71,7 +71,7 @@ describe('scored plan rendering of the parity fixture', () => {
 
   it("prints score.py's ten picks in its order with its effective and raw scores", () => {
     const columns = lines
-      .slice(0, -1)
+      .slice(0, 10)
       .map(line => /^ *(\d+) +([\d.]+) \( *([\d.]+)\) (\S+) +(\S+) /.exec(line)?.slice(1))
 
     expect(columns).toEqual(
@@ -88,7 +88,8 @@ describe('scored plan rendering of the parity fixture', () => {
   it('ends with the scope, open count and refusal counts', () => {
     const open = snapshot.tasks.filter(t => (t as { status?: string }).status === 'open').length
 
-    expect(lines).toHaveLength(11)
+    expect(lines).toHaveLength(12)
+    expect(lines[10]).toBe('refused alpha AL-4 [dep-blocked]: Depends on AL-2 landing first. names open AL-2')
     expect(lines.at(-1)).toBe(
       `scope=5 initiatives, ${open} open, skipped: 0, refused={excluded-tag: 4, excluded-pattern: 1}`,
     )

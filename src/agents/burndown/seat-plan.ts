@@ -299,7 +299,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       reason,
       ...(blocker !== undefined && { blocker }),
     })
-  plan.refusals.push(...outOfScope)
+  plan.refusals.push(...proseRefusals(rows, inputs.ledger), ...outOfScope)
   plan.notes.push(...walk.notes)
   plan.notes.push(...idleNotes(inputs.seat.seat, walk))
   const shareMix =
@@ -609,6 +609,16 @@ function tagRefusals(
       const refusal = { initiative: row.initiative, task: row.id, reason }
       return [reason === 'dep-blocked' ? { ...refusal, ...namedDeps(row.id, base.tasks, ledger) } : refusal]
     })
+}
+
+/** CC-1220: `dispatchOrder` and `tagRefusals` both leave out a row a dependency sentence blocks. */
+function proseRefusals(rows: readonly ScoreRow[], ledger: Ledger): Refusal[] {
+  return rows.flatMap(({ initiative, id, blocked, blockedReason }) => {
+    const [first] = blocked
+    if (first === undefined || blockedReason === undefined) return []
+    const blocker = { task: first, state: depState(first, ledger) }
+    return [{ initiative, task: id, kind: 'dep-blocked', reason: blockedReason, blocker }]
+  })
 }
 
 /** CC-1241: `dep-blocked` names each open dep with its claim state; the first one is the snapshot's blocker. */
