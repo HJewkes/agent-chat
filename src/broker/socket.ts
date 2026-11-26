@@ -2286,8 +2286,22 @@ export class SocketServer {
       msg.after !== undefined
         ? this.inboxAfter(name, msg.after, msg.limit)
         : { t: 'inbox_result' as const, messages: name ? this.core.events.inboxFor(name, msg.limit) : [] }
-    if (name !== undefined) this.logInboxRead(name, result.messages)
-    return result
+    if (name === undefined) return result
+    const messages = this.markShown(name, result.messages)
+    this.logInboxRead(name, messages)
+    return { ...result, messages }
+  }
+
+  /** CC-1486: a replay is a log, so a message the inbox hook already showed is marked, never dropped. */
+  private markShown(name: string, messages: DeliveredMessage[]): DeliveredMessage[] {
+    if (messages.length === 0) return messages
+    const oldest = Math.min(...messages.map(m => m.at))
+    const shown = this.core.events.shownMsgIds(
+      name,
+      messages.map(m => m.msgId),
+      oldest,
+    )
+    return messages.map(m => (shown.has(m.msgId) ? { ...m, shown: true } : m))
   }
 
   /** CC-1680: one receipt per read that returned records, so "how long did it wait" is a query. */
