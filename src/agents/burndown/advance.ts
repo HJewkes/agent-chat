@@ -20,7 +20,7 @@ import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
 import { taskClosed } from './reconcile.js'
-import { classifyStale } from './stale-claim.js'
+import { classifyStale, prNone } from './stale-claim.js'
 import type { ActivityRead } from './stall.js'
 import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
@@ -319,7 +319,8 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
     return [update(claim, { phase: 'parked', questionId: report.parked, lastReport })]
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
     return [stall(claim, report.firstLine, 'failed')]
-  const pr = report?.pr ?? claim.pr
+  // CC-979: `PR: none` names no PR; beside a recorded one it still stalls in `handOff`.
+  const pr = claim.pr === undefined && prNone(report?.pr) ? undefined : (report?.pr ?? claim.pr)
   const handsOff = handsOffPr(report) && pr !== undefined
   const held = handsOff || obs.diff?.reviewable === true ? fenced(claim, obs, afterWorker) : undefined
   if (held !== undefined) return held
@@ -332,13 +333,13 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
     const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice, claim.namePrefix)
     return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr })
   }
-  if (report?.status === 'DONE') return [update(claim, { phase: 'done', lastReport }), retireAll(claim)]
+  if (handsOffPr(report)) return [update(claim, { phase: 'done', lastReport }), retireAll(claim)]
   return [
     stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport, 'failed'),
   ]
 }
 
-/** CC-1074: a worker that finished DONE or DONE_WITH_CONCERNS and names a PR goes to Shepherd rather than a reviewer. */
+/** CC-1074: a finished worker, DONE or DONE_WITH_CONCERNS: with a PR it goes to Shepherd rather than a reviewer. */
 const handsOffPr = (report: Report | undefined): boolean =>
   report?.status === 'DONE' || report?.status === 'DONE_WITH_CONCERNS'
 

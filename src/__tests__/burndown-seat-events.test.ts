@@ -94,6 +94,7 @@ describe('seatEvents', () => {
     dispatched: { agentId: 'id-1' },
     'ready-to-merge': { phase: 'awaiting-merge' },
     merged: { phase: 'done', notified: ['ready-to-merge'] },
+    'closed-with-concerns': { phase: 'done', lastReport: 'Status: DONE_WITH_CONCERNS' },
     stalled: { stalledReason: 'timed out' },
     'stall-aged': {
       stalledReason: 'timed out',
@@ -130,6 +131,19 @@ describe('seatEvents', () => {
   it('does not report merged for a claim done without a merge', () => {
     const done = ledger(claim({ phase: 'done' }))
     expect(kinds(done, ledger(claim({ phase: 'implementing' })))).toEqual([])
+  })
+
+  it('reports a claim closed with concerns again while it is still undelivered', () => {
+    const done = ledger(claim({ phase: 'done', lastReport: 'Status: DONE_WITH_CONCERNS' }))
+    expect(kinds(done, done)).toEqual(['closed-with-concerns'])
+  })
+
+  it.each([
+    ['a plain DONE', { lastReport: 'Status: DONE' }],
+    ['a merged PR', { lastReport: 'Status: DONE_WITH_CONCERNS', pr: 'o/r#5' }],
+  ])('tells no concerns for a done claim with %s', (_name, over) => {
+    const done = ledger(claim({ phase: 'done', ...over }))
+    expect(kinds(done, done)).toEqual([])
   })
 
   it('reports a landed agent as dispatched without a spawn result', () => {

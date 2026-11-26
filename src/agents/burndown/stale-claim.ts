@@ -43,7 +43,7 @@ export const blockedUntil = (text: string): string | undefined => DATE_AFTER.exe
 
 const QUESTION = /^Status:\s*(?:BLOCKED|NEEDS_CONTEXT)\b/
 
-const prNone = (pr: string | undefined): boolean => /^none\b/i.test(pr ?? '')
+export const prNone = (pr: string | undefined): boolean => /^none\b/i.test(pr ?? '')
 
 /**
  * CC-1230 a: an exit that said nothing, left no commits, and has no PR on GitHub had nothing to do (TD-829 a).

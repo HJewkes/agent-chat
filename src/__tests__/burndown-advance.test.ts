@@ -7,6 +7,7 @@ import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '
 import { withFindings } from '../agents/burndown/finding.js'
 import { observe } from '../agents/burndown/observe.js'
 import { parseReport, type Report } from '../agents/burndown/report.js'
+import { seatEvents } from '../agents/burndown/seat-events.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 import type { StallCode } from '../agents/burndown/stall-code.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -423,6 +424,77 @@ describe('burndown hands a PR to Shepherd', () => {
       expect.objectContaining({ phase: 'shepherding', pr: PR, lastReport: 'Status: DONE_WITH_CONCERNS' }),
     ])
     expect(after[0]?.stalledReason).toBeUndefined()
+  })
+
+  it.each(['DONE', 'DONE_WITH_CONCERNS'])(
+    'closes a %s worker that reports PR: none, registering and stalling nothing (CC-979)',
+    status => {
+      const { actions, after } = step(claim(), {
+        agent: exited,
+        report: parseReport(`Status: ${status}\nPR: none`),
+        diff: { reviewable: false, reason: 'clean and level' },
+      })
+
+      expect([...registers(actions), ...spawns(actions)]).toEqual([])
+      expect(actions).toContainEqual(expect.objectContaining({ kind: 'retire' }))
+      expect(after).toEqual([expect.objectContaining({ phase: 'done', lastReport: `Status: ${status}` })])
+      expect(after[0]?.stalledReason).toBeUndefined()
+      expect(after[0]?.pr).toBeUndefined()
+    },
+  )
+
+  it("tells the seat the report's first line when it closes a DONE_WITH_CONCERNS claim (CC-979)", () => {
+    const before = claim({ seat: 'alpha' })
+    const { after } = step(before, {
+      agent: exited,
+      report: parseReport('Status: DONE_WITH_CONCERNS\nPR: none\nThe change was already present.'),
+    })
+
+    const events = seatEvents(
+      { ...EMPTY_LEDGER, claims: [before] },
+      { ...EMPTY_LEDGER, claims: after },
+      [],
+      {},
+      { now: NOW },
+    )
+
+    expect(events.alpha).toContainEqual({
+      kind: 'closed-with-concerns',
+      taskId: 'CC-1',
+      detail: 'Status: DONE_WITH_CONCERNS',
+    })
+  })
+
+  it.each(['BLOCKED', 'NEEDS_CONTEXT'])('stalls a %s worker that reports PR: none (CC-979)', status => {
+    const { after } = step(claim(), { agent: exited, report: parseReport(`Status: ${status}\nPR: none`) })
+
+    expect(after).toEqual([
+      expect.objectContaining({ phase: 'implementing', stalledReason: `Status: ${status}` }),
+    ])
+  })
+
+  it('sends a PR: none worker with a reviewable diff to a reviewer (CC-979)', () => {
+    const { actions } = step(claim(), {
+      agent: exited,
+      report: parseReport('Status: DONE_WITH_CONCERNS\nPR: none'),
+      diff: { reviewable: true, reason: '2 commits ahead' },
+    })
+
+    expect(spawns(actions)).toEqual([expect.objectContaining({ role: 'reviewer' })])
+  })
+
+  it('does not close a claim with a recorded PR on a report of PR: none (CC-979)', () => {
+    const { after } = step(claim({ pr: PR }), {
+      agent: exited,
+      report: parseReport('Status: DONE_WITH_CONCERNS\nPR: none'),
+    })
+
+    expect(after).toEqual([
+      expect.objectContaining({
+        phase: 'implementing',
+        stalledReason: expect.stringContaining('not a GitHub PR Shepherd can take'),
+      }),
+    ])
   })
 
   it('moves a finished worker whose PR Shepherd already holds under its name without registering again', () => {
