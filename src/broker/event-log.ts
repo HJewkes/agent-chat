@@ -20,6 +20,7 @@ import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
 import { newMsgId } from './msg-id.js'
 import { SEAT_HOLD_MARK } from './seat-hold.js'
+import { OWNER_CONTACT_SQL } from './event-store.js'
 import type {
   AgentEventRow,
   AppendInput,
@@ -642,12 +643,10 @@ export class EventLog implements EventStore {
     return { file: String(row.file ?? '<unknown>'), field: String(row.field ?? '<unknown>') }
   }
 
+  /** CC-1550: a human send with a wake source is a watchdog, Shepherd or console wake, not the owner's word. */
   humanContactSince(name: string, since: number): boolean {
     const row = this.db
-      .prepare(
-        `SELECT 1 FROM events WHERE target = ? AND ts >= ?
-         AND (kind IN ('answer', 'decided') OR (kind = 'message' AND actor = ?)) LIMIT 1`,
-      )
+      .prepare(`SELECT 1 FROM events WHERE target = ? AND ts >= ? AND ${OWNER_CONTACT_SQL} LIMIT 1`)
       .get(name, since, HUMAN)
     return row !== undefined
   }

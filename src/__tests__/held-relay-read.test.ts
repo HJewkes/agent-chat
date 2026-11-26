@@ -107,6 +107,24 @@ describe('held-relay reads', () => {
     expect(after.holds.get('seat-park')).toBeUndefined()
   })
 
+  it('keeps a park successor held after a sourced wake, as the broker does', () => {
+    seed([
+      {
+        ts: at(35),
+        kind: 'message',
+        actor: 'human',
+        target: 'seat-park',
+        msgId: 'w1',
+        body: 'Any news?',
+        meta: { source: 'watchdog' },
+      },
+    ])
+
+    const { holds } = readHolds(db, [], at(38))
+
+    expect(holds.get('seat-park')).toBe('parked')
+  })
+
   it('lists the waiting message, but not one the recipient answered after it arrived', () => {
     const { holds } = readHolds(db, [], at(30))
 
