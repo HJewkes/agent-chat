@@ -10,6 +10,14 @@ import type {
 import type { StoredHandoff } from './handoffs.js'
 
 /**
+ * CC-1550: which event rows count as the owner's word to a seat. A human message with a
+ * `meta.source` was sent by the watchdog, Shepherd or the console, not the owner. Every
+ * reader of this rule binds the single `?` to `HUMAN`.
+ */
+export const OWNER_CONTACT_SQL = `(kind IN ('answer', 'decided')
+  OR (kind = 'message' AND actor = ? AND json_extract(meta, '$.source') IS NULL))`
+
+/**
  * The storage seam. Everything downstream of the broker depends on this
  * interface, never on the sqlite-backed `EventLog` that implements it today —
  * so re-hosting the log behind a service is a matter of adding a second
